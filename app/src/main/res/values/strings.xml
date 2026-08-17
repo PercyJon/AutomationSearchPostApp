@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Douyin Automation POC</string>
+    <string name="accessibility_service_label">Douyin automation diagnostics</string>
+    <string name="accessibility_service_description">Provides opt-in on-device diagnostics and guided UI automation for the M0 proof of concept. It pauses for verification codes, risk notices, and other manual handoff situations.</string>
+</resources>

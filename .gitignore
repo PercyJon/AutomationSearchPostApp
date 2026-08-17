@@ -1,0 +1,14 @@
+.gradle/
+.DS_Store
+.idea/
+local.properties
+*.iml
+build/
+app/build/
+captures/
+
+# Local device captures, APK iterations, node dumps, and OCR/log diagnostics.
+outputs/
+artifacts/
+work/
+*.log
