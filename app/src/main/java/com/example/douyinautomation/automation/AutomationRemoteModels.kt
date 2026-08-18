@@ -75,6 +75,8 @@ data class RemoteTaskProgress(
     val lastPageNumber: Int?,
     val lastPageFingerprint: String?,
     val checkpointVersion: Int,
+    /** Terminal identities returned by the backend for safe resume when the last row is clipped. */
+    val processedUserKeys: List<String> = emptyList(),
 )
 
 /**

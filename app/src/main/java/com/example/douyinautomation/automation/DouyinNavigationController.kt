@@ -304,10 +304,20 @@ class DouyinNavigationController(
         processedUserIdentities.clear()
         processedUserIdentityRecords.clear()
         processedIdentityHashes.clear()
-        remoteResumeAnchor?.let { anchor ->
-            processedUserIdentities += anchor.key
-            processedUserIdentityRecords += anchor
-            processedIdentityHashes += anchor.key.hashCode()
+        // Rehydrate the complete terminal identity ledger when the backend provides it. The last
+        // user anchor alone is not enough when the feed reorders or clips that row; known earlier
+        // identities let the controller choose the first genuinely new visible row instead of
+        // swiping through several pages waiting for an OCR key that may no longer be present.
+        remoteResume?.progress?.let { progress ->
+            val knownKeys = (progress.processedUserKeys + listOfNotNull(progress.lastUserKey)).distinct()
+            knownKeys.forEach { key ->
+                val savedName = key.takeIf { it == progress.lastUserKey }?.let { progress.lastUserName }
+                val identity = remoteAnchorIdentity(key, savedName)
+                if (processedUserIdentities.add(identity.key)) {
+                    processedUserIdentityRecords += identity
+                }
+                processedIdentityHashes += identity.key.hashCode()
+            }
         }
         currentUserIdentityHash = null
         cachedUserResultsViewportSignature = null
@@ -1483,6 +1493,41 @@ class DouyinNavigationController(
                     selectVisibleUser(
                         identityContext,
                         minimumAnchorTop = anchorRow.anchor.bounds.bottom.toFloat(),
+                    )
+                    return
+                }
+
+                // The exact last anchor can be absent after a feed reorder or OCR truncation,
+                // while one or more earlier terminal rows are still visible. The backend ledger
+                // now lets us safely continue from the first row not already processed.
+                val firstUnprocessedIndex = identities.indexOfFirst { identity ->
+                    identity != null && processedUserIdentityMatchReason(identity) == null
+                }
+                val hasKnownProcessedRow = identities.any { identity ->
+                    identity != null && processedUserIdentityMatchReason(identity) != null
+                }
+                if (identities.all { it != null } && hasKnownProcessedRow && firstUnprocessedIndex >= 0) {
+                    val firstNewRow = rows[firstUnprocessedIndex]
+                    logger.info(
+                        "remote_resume_ledger_fallback",
+                        message = "The exact remote anchor is absent; continuing after the visible processed ledger",
+                        attributes = mapOf(
+                            "attempt" to attempt + 1,
+                            "processed_row_count" to identities.count { identity ->
+                                identity != null && processedUserIdentityMatchReason(identity) != null
+                            },
+                            "first_unprocessed_index" to firstUnprocessedIndex,
+                        ),
+                    )
+                    remoteResumePending = false
+                    remotePageNumber = remoteResumeTargetPageNumber ?: remotePageNumber
+                    phase = AutomationPhase.WAITING_FOR_USER_RESULTS
+                    AutomationStore.publishPhase(phase)
+                    // findAfter is strict; subtract one pixel so the first new row itself is
+                    // selected while still preserving the structural name-area click route.
+                    selectVisibleUser(
+                        identityContext,
+                        minimumAnchorTop = firstNewRow.anchor.bounds.top.toFloat() - 1f,
                     )
                     return
                 }

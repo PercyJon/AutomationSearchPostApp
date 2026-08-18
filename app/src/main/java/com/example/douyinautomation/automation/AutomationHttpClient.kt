@@ -321,6 +321,7 @@ class AutomationHttpClient(
             lastPageNumber = if (isNull("last_page_number")) null else optInt("last_page_number"),
             lastPageFingerprint = optNullableString("last_page_fingerprint"),
             checkpointVersion = optInt("checkpoint_version"),
+            processedUserKeys = optStringList("processed_user_keys"),
         )
 
         fun JSONObject.toCheckpointResponse(): RemoteCheckpointResponse = RemoteCheckpointResponse(

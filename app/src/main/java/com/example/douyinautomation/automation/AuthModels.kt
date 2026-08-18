@@ -177,7 +177,7 @@ object AuthStore {
                     ?.let(::AutomationHttpClient)
                     ?: UnconfiguredHeartbeatGateway
             },
-            appVersion = "0.3.0-m3-g",
+            appVersion = "0.3.0-m3-p3",
         )
         coordinator?.state?.let { state ->
             scope.launch { state.collect { _uiState.emit(it) } }
