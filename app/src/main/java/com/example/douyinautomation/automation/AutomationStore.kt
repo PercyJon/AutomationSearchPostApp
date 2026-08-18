@@ -61,6 +61,7 @@ enum class AutomationPhase {
     VERIFYING_EMPTY_MESSAGE,
     WAITING_FOR_EMPTY_MESSAGE_RESULT,
     COMPLETED_EMPTY_MESSAGE_PROBE,
+    COMPLETED_TASK,
     SENDING_MESSAGE,
     WAITING_FOR_MESSAGE_RESULT,
     COMPLETED_MESSAGE_SENT,
@@ -82,6 +83,11 @@ data class AutomationUiState(
     val awaitingManualHandoff: Boolean = false,
     /** Current task metadata and counters are intentionally visible for operator diagnosis. */
     val taskId: String? = null,
+    val taskName: String? = null,
+    val taskQueryIndex: Int = 0,
+    val taskQueryCount: Int = 0,
+    val taskMaxUsers: Int? = null,
+    val taskBlockedKeywordCount: Int = 0,
     val taskStartedAtMillis: Long? = null,
     val taskHandledUserCount: Int = 0,
     val taskDuplicateUserCount: Int = 0,
@@ -137,6 +143,11 @@ object AutomationStore {
         _uiState.update {
             it.copy(
                 taskId = taskId,
+                taskName = snapshot?.taskName,
+                taskQueryIndex = 0,
+                taskQueryCount = snapshot?.composedQueries?.size ?: 1,
+                taskMaxUsers = snapshot?.maxUsers,
+                taskBlockedKeywordCount = snapshot?.normalizedBlockedKeywords?.size ?: 0,
                 taskStartedAtMillis = now,
                 taskHandledUserCount = 0,
                 taskDuplicateUserCount = 0,

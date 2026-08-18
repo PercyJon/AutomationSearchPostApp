@@ -370,10 +370,18 @@ private fun CurrentTaskCard(
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("当前任务", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            state.taskName?.takeIf(String::isNotBlank)?.let { Text(it, fontWeight = FontWeight.SemiBold) }
             Text(phaseLabel(state.phase), fontWeight = FontWeight.SemiBold)
             Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
                 Text("已处理 ${state.taskHandledUserCount}")
                 Text("已跳过 ${state.taskDuplicateUserCount}")
+            }
+            if (state.taskQueryCount > 0 || state.taskMaxUsers != null) {
+                Text(
+                    "搜索词 ${state.taskQueryIndex + 1}/${state.taskQueryCount.coerceAtLeast(1)} · 上限 ${state.taskMaxUsers ?: "未设置"}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             state.lastError?.takeIf(String::isNotBlank)?.let {
                 Text(it, color = MaterialTheme.colorScheme.error, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -447,6 +455,7 @@ private fun phaseLabel(phase: AutomationPhase): String = when (phase) {
     AutomationPhase.STOPPED -> "已停止"
     AutomationPhase.FAILED -> "执行失败"
     AutomationPhase.COMPLETED_EMPTY_MESSAGE_PROBE -> "安全探测完成"
+    AutomationPhase.COMPLETED_TASK -> "任务已完成"
     AutomationPhase.COMPLETED_AT_MESSAGE_PAGE -> "已进入私信页"
     else -> "执行中 · ${phase.name}"
 }

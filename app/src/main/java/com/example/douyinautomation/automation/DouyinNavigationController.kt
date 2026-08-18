@@ -572,6 +572,11 @@ class DouyinNavigationController(
         context: ScreenContext,
         minimumAnchorTop: Float? = null,
     ) {
+        val maxUsers = activeTaskSnapshot?.maxUsers
+        if (maxUsers != null && processedUserIdentityRecords.size >= maxUsers) {
+            completeTaskAtUserLimit(maxUsers)
+            return
+        }
         phase = AutomationPhase.SELECTING_USER_RESULT
         AutomationStore.publishPhase(phase)
         // Prefer the structural row route whenever it is available. It deliberately targets the
@@ -1777,6 +1782,22 @@ class DouyinNavigationController(
         phase = AutomationPhase.COMPLETED_MESSAGE_SENT
         AutomationStore.publishPhase(phase)
         logger.info("message_send_completed", message = "One operator-requested message was verified in the conversation")
+    }
+
+    private fun completeTaskAtUserLimit(maxUsers: Int) {
+        timeoutJob?.cancel()
+        initialObservationJob?.cancel()
+        profilePostconditionJob?.cancel()
+        messageEntryPostconditionJob?.cancel()
+        messageResultJob?.cancel()
+        taskActive = false
+        logger.info(
+            "task_completed_user_limit",
+            message = "The configured user limit was reached; no additional profile was opened",
+            attributes = mapOf("max_users" to maxUsers),
+        )
+        phase = AutomationPhase.COMPLETED_TASK
+        AutomationStore.publishPhase(phase)
     }
 
     private fun scheduleMessageResultCheck(expectedMessage: String) {
