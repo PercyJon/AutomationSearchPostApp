@@ -260,6 +260,12 @@ class AutomationHttpClient(
             for (index in 0 until length()) add(optJSONObject(index)?.toRemoteTask() ?: continue)
         }
 
+        fun JSONArray?.toStringList(): List<String> = if (this == null) emptyList() else buildList(length()) {
+            for (index in 0 until length()) {
+                optString(index).trim().takeIf(String::isNotEmpty)?.let(::add)
+            }
+        }
+
         fun JSONObject.toRemoteTask(): RemoteTask = RemoteTask(
             id = optLong("id"),
             code = optString("code"),
@@ -283,6 +289,7 @@ class AutomationHttpClient(
             lastPageNumber = if (isNull("last_page_number")) null else optInt("last_page_number"),
             lastPageFingerprint = optNullableString("last_page_fingerprint"),
             checkpointVersion = optInt("checkpoint_version"),
+            blockedKeywords = optJSONArray("blocked_keywords").toStringList(),
         )
 
         fun JSONObject.toProgress(): RemoteTaskProgress = RemoteTaskProgress(

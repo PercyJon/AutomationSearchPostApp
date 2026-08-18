@@ -223,6 +223,20 @@ object AuthStore {
         forceRefresh: Boolean = false,
     ): SearchPresetCatalog = searchPresetRepository(context).load(forceRefresh)
 
+    suspend fun loadRegionCatalog(context: android.content.Context): RegionCatalog {
+        initialize(context)
+        val config = secureStore?.read()?.takeIf(AuthConfig::isUsable)
+            ?: return RegionCatalog("local-empty", emptyList(), null)
+        return AutomationHttpClient(config).fetchRegionCatalog()
+    }
+
+    suspend fun loadBlockKeywordCatalog(context: android.content.Context): BlockKeywordCatalog {
+        initialize(context)
+        val config = secureStore?.read()?.takeIf(AuthConfig::isUsable)
+            ?: return BlockKeywordCatalog("local-empty", emptyList(), null)
+        return AutomationHttpClient(config).fetchBlockKeywordCatalog()
+    }
+
     suspend fun loadRemoteTasks(context: android.content.Context): List<RemoteTask> {
         initialize(context)
         val config = secureStore?.read()?.takeIf(AuthConfig::isUsable) ?: return emptyList()

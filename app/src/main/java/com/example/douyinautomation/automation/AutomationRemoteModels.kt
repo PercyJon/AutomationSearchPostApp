@@ -56,6 +56,8 @@ data class RemoteTask(
     val lastPageNumber: Int?,
     val lastPageFingerprint: String?,
     val checkpointVersion: Int,
+    /** Optional task-level snapshot supplied by newer backend versions. */
+    val blockedKeywords: List<String> = emptyList(),
 )
 
 data class RemoteTaskProgress(

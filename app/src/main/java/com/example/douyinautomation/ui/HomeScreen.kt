@@ -51,6 +51,8 @@ import com.example.douyinautomation.automation.QueryComposer
 import com.example.douyinautomation.automation.RemoteTask
 import com.example.douyinautomation.automation.RemoteTaskResume
 import com.example.douyinautomation.automation.RemoteTaskResumePolicy
+import com.example.douyinautomation.automation.RegionCatalog
+import com.example.douyinautomation.automation.BlockKeywordCatalog
 import com.example.douyinautomation.automation.SearchPreset
 import com.example.douyinautomation.automation.SearchPresetCatalog
 import com.example.douyinautomation.automation.TaskDraft
@@ -163,12 +165,20 @@ private fun TaskDashboard(
         )
     }
     var presetCatalog by remember { mutableStateOf(builtInCatalog) }
+    var regionCatalog by remember { mutableStateOf(RegionCatalog("local-empty", emptyList(), null)) }
+    var blockKeywordCatalog by remember { mutableStateOf(BlockKeywordCatalog("local-empty", emptyList(), null)) }
     var remoteTasks by remember { mutableStateOf<List<RemoteTask>>(emptyList()) }
     var remoteStartingTaskId by remember { mutableStateOf<Long?>(null) }
     LaunchedEffect(context) {
         presetCatalog = runCatching {
             withContext(Dispatchers.IO) { AuthStore.loadSearchPresets(context) }
         }.getOrElse { builtInCatalog }
+        regionCatalog = runCatching {
+            withContext(Dispatchers.IO) { AuthStore.loadRegionCatalog(context) }
+        }.getOrDefault(regionCatalog)
+        blockKeywordCatalog = runCatching {
+            withContext(Dispatchers.IO) { AuthStore.loadBlockKeywordCatalog(context) }
+        }.getOrDefault(blockKeywordCatalog)
     }
     LaunchedEffect(context, licenseState.status) {
         remoteTasks = runCatching {
@@ -312,6 +322,21 @@ private fun TaskDashboard(
                     label = { Text("地区（可选，例如广东）") },
                     singleLine = true,
                 )
+                if (regionCatalog.items.isNotEmpty()) {
+                    Text("后台地区规则", style = MaterialTheme.typography.labelLarge)
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        regionCatalog.items.forEach { rule ->
+                            FilterChip(
+                                selected = region == rule.prefix,
+                                onClick = { region = rule.prefix },
+                                label = { Text(rule.name) },
+                            )
+                        }
+                    }
+                }
                 OutlinedTextField(
                     value = blockedKeywords,
                     onValueChange = { blockedKeywords = it },
@@ -320,6 +345,33 @@ private fun TaskDashboard(
                     placeholder = { Text("例如：工厂，批发") },
                     singleLine = true,
                 )
+                if (blockKeywordCatalog.items.isNotEmpty()) {
+                    Text("后台屏蔽词", style = MaterialTheme.typography.labelLarge)
+                    val selectedBlocked = blockedKeywords
+                        .split(',', '，', '\n')
+                        .map(String::trim)
+                        .filter(String::isNotEmpty)
+                        .toSet()
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        blockKeywordCatalog.items.forEach { rule ->
+                            FilterChip(
+                                selected = rule.keyword in selectedBlocked,
+                                onClick = {
+                                    val next = if (rule.keyword in selectedBlocked) {
+                                        selectedBlocked - rule.keyword
+                                    } else {
+                                        selectedBlocked + rule.keyword
+                                    }
+                                    blockedKeywords = next.joinToString(",")
+                                },
+                                label = { Text(rule.keyword) },
+                            )
+                        }
+                    }
+                }
                 OutlinedTextField(
                     value = maxUsers,
                     onValueChange = { maxUsers = it.filter(Char::isDigit) },
@@ -411,21 +463,24 @@ private fun RemoteTaskCard(
     }
 }
 
-private fun RemoteTask.toTaskSnapshot(): com.example.douyinautomation.automation.TaskSnapshot =
+private fun RemoteTask.toTaskSnapshot(): com.example.douyinautomation.automation.TaskSnapshot = run {
+    val selectedRegion = regionPrefix ?: regionName.orEmpty()
+    val composedQuery = QueryComposer.compose(selectedRegion, keyword)?.query ?: keyword
     com.example.douyinautomation.automation.TaskSnapshot(
         taskId = id.toString(),
         taskName = name,
         presetVersion = catalogVersion.toString(),
         baseKeywords = listOf(keyword),
-        region = regionName.orEmpty(),
-        composedQueries = listOf(keyword),
-        normalizedBlockedKeywords = emptyList(),
+        region = QueryComposer.normalize(selectedRegion),
+        composedQueries = listOf(composedQuery),
+        normalizedBlockedKeywords = blockedKeywords,
         maxUsers = maxUsers.takeIf { it > 0 } ?: TaskDraft.DEFAULT_MAX_USERS,
         messageTemplate = message.takeIf { it.isNotBlank() },
         // Never turn a server task into an automatic real-message send in this milestone.
         executionMode = TaskExecutionMode.SAFE_BLANK_PROBE,
         createdAtMillis = System.currentTimeMillis(),
     )
+}
 
 @Composable
 private fun PresetChips(
