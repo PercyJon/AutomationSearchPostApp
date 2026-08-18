@@ -10,11 +10,15 @@ adb -s "$task_serial" logcat -c
 adb -s "$task_serial" shell am start -n com.example.douyinautomation/.MainActivity
 adb -s "$task_serial" exec-out screencap -p > "$task_dir/app-launch.png"
 
+if ! ALLOW_ADB_ACCESSIBILITY="${ALLOW_ADB_ACCESSIBILITY:-0}" scripts/ensure-accessibility.sh "$task_serial"; then
+  echo "Accessibility is not yet confirmed; enable it in Settings, then return to the app."
+fi
+
 cat <<EOF
-POC app launched. Manually enable “Douyin automation diagnostics” in Android Accessibility settings,
-open the POC, enter a test keyword, and press Start test. This script does not enable accessibility
-or send any messages. When the run is finished, use the command below to save app logs:
+POC app launched. Enter a test keyword and press Start test after accessibility is confirmed.
+By default this script only opens Settings; to attempt the development-only ADB shortcut, use
+ALLOW_ADB_ACCESSIBILITY=1. This script never uses root and never sends any messages. When the run
+is finished, use the command below to save app logs:
 
   adb -s $task_serial logcat -d -v threadtime DyinPoc:* *:S > $task_dir/logcat.txt
 EOF
-

@@ -36,7 +36,11 @@ scripts/check-device.sh <adb-serial>
 scripts/build-test.sh
 scripts/install-debug.sh <adb-serial>
 scripts/capture-device-screen.sh <adb-serial>
+scripts/ensure-accessibility.sh <adb-serial>
 ```
+
+开发机可以显式尝试 `ALLOW_ADB_ACCESSIBILITY=1 scripts/ensure-accessibility.sh <adb-serial>`；
+脚本只使用 ADB shell，不使用 Root，失败时会打开系统设置等待人工确认。正式 App 不包含该能力。
 
 不要在日常真机上运行 `:app:connectedDebugAndroidTest`；Gradle UTP 的清理阶段可能卸载应用。真机验证使用 `adb install -r` 和显式 `adb shell am instrument`，并需要明确设置 `CONFIRM_DEVICE_TEST=1`。
 
