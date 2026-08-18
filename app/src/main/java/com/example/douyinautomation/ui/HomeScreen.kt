@@ -197,6 +197,10 @@ private fun TaskDashboard(
     var blockKeywordCatalog by remember { mutableStateOf(BlockKeywordCatalog("local-empty", emptyList(), null)) }
     var remoteTasks by remember { mutableStateOf<List<RemoteTask>>(emptyList()) }
     var remoteStartingTaskId by remember { mutableStateOf<Long?>(null) }
+    var remoteRefreshNonce by remember { mutableStateOf(0) }
+    var remoteRefreshInFlight by remember { mutableStateOf(false) }
+    var remoteRefreshAtMillis by remember { mutableStateOf<Long?>(null) }
+    var remoteRefreshMessage by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(context) {
         presetCatalog = runCatching {
             withContext(Dispatchers.IO) { AuthStore.loadSearchPresets(context) }
@@ -208,19 +212,25 @@ private fun TaskDashboard(
             withContext(Dispatchers.IO) { AuthStore.loadBlockKeywordCatalog(context) }
         }.getOrDefault(blockKeywordCatalog)
     }
+    LaunchedEffect(context, licenseState.status, remoteRefreshNonce) {
+        remoteRefreshInFlight = true
+        remoteRefreshMessage = null
+        runCatching {
+            withContext(Dispatchers.IO) { AuthStore.loadRemoteTasks(context) }
+        }.onSuccess { tasks ->
+            remoteTasks = tasks
+            remoteRefreshAtMillis = System.currentTimeMillis()
+        }.onFailure { error ->
+            if (error is CancellationException) return@onFailure
+            remoteRefreshMessage = "远程任务刷新失败：${error.message ?: "网络异常"}"
+            AutomationStore.publishRemoteSyncError(remoteRefreshMessage.orEmpty())
+        }
+        remoteRefreshInFlight = false
+    }
     LaunchedEffect(context, licenseState.status) {
         while (true) {
-            runCatching {
-                withContext(Dispatchers.IO) { AuthStore.loadRemoteTasks(context) }
-            }.onSuccess { tasks ->
-                remoteTasks = tasks
-            }.onFailure { error ->
-                if (error is CancellationException) return@onFailure
-                AutomationStore.publishRemoteSyncError(
-                    "远程任务刷新失败：${error.message ?: "网络异常"}",
-                )
-            }
             delay(10_000L)
+            remoteRefreshNonce += 1
         }
     }
     val presets = presetCatalog.items
@@ -303,11 +313,15 @@ private fun TaskDashboard(
 
         CurrentTaskCard(state = state)
 
-        if (remoteTasks.isNotEmpty()) {
+        if (remoteTasks.isNotEmpty() || licenseState.status != LicenseStatus.NOT_CONFIGURED) {
             RemoteTaskCard(
                 tasks = remoteTasks,
                 serviceConnected = state.serviceConnected,
                 startingTaskId = remoteStartingTaskId,
+                refreshInFlight = remoteRefreshInFlight,
+                lastRefreshAtMillis = remoteRefreshAtMillis,
+                refreshMessage = remoteRefreshMessage,
+                onRefresh = { remoteRefreshNonce += 1 },
                 onStart = { remoteTask ->
                     scope.launch {
                         remoteStartingTaskId = remoteTask.id
@@ -526,6 +540,10 @@ private fun RemoteTaskCard(
     tasks: List<RemoteTask>,
     serviceConnected: Boolean,
     startingTaskId: Long?,
+    refreshInFlight: Boolean,
+    lastRefreshAtMillis: Long?,
+    refreshMessage: String?,
+    onRefresh: () -> Unit,
     onStart: (RemoteTask) -> Unit,
 ) {
     Card(
@@ -534,18 +552,46 @@ private fun RemoteTaskCard(
             .padding(horizontal = 16.dp),
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("远程任务", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text("远程任务", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                OutlinedButton(onClick = onRefresh, enabled = !refreshInFlight) {
+                    Text(if (refreshInFlight) "刷新中" else "刷新")
+                }
+            }
             Text(
                 "来自后台的待执行任务。领取后仍由本地无障碍状态机执行，网络同步在后台完成。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            tasks.take(5).forEach { task ->
+            lastRefreshAtMillis?.let {
+                Text(
+                    "最近刷新：${formatTaskTime(it)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            refreshMessage?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+            if (tasks.isEmpty()) {
+                Text(
+                    "当前没有可领取的后台任务",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else tasks.take(5).forEach { task ->
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(task.name, fontWeight = FontWeight.SemiBold)
                         Text(
-                            "#${task.id} · ${task.keyword} · 已处理 ${task.processedCount}/${task.maxUsers.takeIf { it > 0 } ?: "不限"}",
+                            "#${task.id} · ${remoteTaskListStatusLabel(task.status)} · ${task.keyword}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            "已处理 ${task.processedCount}/${task.maxUsers.takeIf { it > 0 } ?: "不限"}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -558,6 +604,17 @@ private fun RemoteTaskCard(
             }
         }
     }
+}
+
+private fun remoteTaskListStatusLabel(status: Int): String = when (status) {
+    0 -> "草稿"
+    1 -> "待执行"
+    2 -> "执行中"
+    3 -> "已暂停"
+    4 -> "已完成"
+    5 -> "失败"
+    6 -> "已取消"
+    else -> "未知状态"
 }
 
 private fun RemoteTask.toTaskSnapshot(): com.example.douyinautomation.automation.TaskSnapshot = run {
