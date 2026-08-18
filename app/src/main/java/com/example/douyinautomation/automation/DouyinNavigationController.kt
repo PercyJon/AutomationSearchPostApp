@@ -1164,6 +1164,11 @@ class DouyinNavigationController(
         previous.key == identity.key -> "exact_key"
         !previous.accountHandle.isNullOrBlank() &&
             previous.accountHandle == identity.accountHandle -> "account_handle"
+        // The remote progress endpoint supplies stable user keys but older records do not always
+        // carry a separate display name. In that case compare the non-volatile company/metadata
+        // segments directly; requiring one shared stable segment still avoids name-only matches.
+        previous.displayName.isNullOrBlank() &&
+            metadataOverlap(previous.stableMetadata, identity.stableMetadata) -> "remote_metadata"
         sameDisplayName(previous.displayName, identity.displayName) &&
             metadataOverlap(previous.stableMetadata, identity.stableMetadata) -> "name_metadata"
         sameDisplayName(previous.displayName, identity.displayName) &&
