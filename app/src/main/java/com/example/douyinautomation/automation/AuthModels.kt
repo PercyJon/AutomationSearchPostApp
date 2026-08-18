@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.security.MessageDigest
 
 enum class LicenseStatus {
     NOT_CONFIGURED,
@@ -114,15 +115,31 @@ class HeartbeatCoordinator(
         val response = runCatching {
             gatewayProvider().verify(
                 HeartbeatRequest(
-                    deviceIdHash = config.deviceId.hashCode().toString(16),
+                    // The backend requires a stable, non-reversible digest (minimum 16 chars).
+                    // Do not send the device identifier itself over the wire.
+                    deviceIdHash = stableDeviceHash(config.deviceId),
                     appVersion = appVersion,
                 ),
             )
-        }.getOrNull()
+        }.getOrElse { error ->
+            // Authentication failures are a definitive rejection; timeouts and transport
+            // failures remain temporary so a device can recover without blocking local safety
+            // diagnostics.
+            if (error is AutomationGatewayException && error.statusCode in setOf(401, 403)) {
+                HeartbeatResponse(accepted = false, message = error.message ?: "授权被拒绝")
+            } else {
+                null
+            }
+        }
         val nextState = HeartbeatPolicy.evaluate(config, response, nowMillis())
         _state.emit(nextState)
         return nextState
     }
+
+    private fun stableDeviceHash(value: String): String = MessageDigest
+        .getInstance("SHA-256")
+        .digest(value.toByteArray(Charsets.UTF_8))
+        .joinToString("") { byte -> "%02x".format(byte) }
 
     fun start(scope: CoroutineScope, intervalMillis: Long = HeartbeatResponse.DEFAULT_HEARTBEAT_INTERVAL_MILLIS) {
         periodicJob?.cancel()
@@ -154,8 +171,13 @@ object AuthStore {
         secureStore = store
         coordinator = HeartbeatCoordinator(
             configProvider = { store.read() },
-            gatewayProvider = { UnconfiguredHeartbeatGateway },
-            appVersion = "0.3.0-m3",
+            gatewayProvider = {
+                store.read()
+                    ?.takeIf(AuthConfig::isUsable)
+                    ?.let(::AutomationHttpClient)
+                    ?: UnconfiguredHeartbeatGateway
+            },
+            appVersion = "0.3.0-m3-f",
         )
         coordinator?.state?.let { state ->
             scope.launch { state.collect { _uiState.emit(it) } }
@@ -166,4 +188,38 @@ object AuthStore {
     fun verifyNow() {
         scope.launch { coordinator?.verifyNow() }
     }
+
+    /** Saves a validated endpoint/token/device tuple in Android Keystore-backed storage. */
+    fun saveConfig(context: android.content.Context, config: AuthConfig): Boolean {
+        initialize(context)
+        return secureStore?.save(config) == true
+    }
+
+    fun clearConfig(context: android.content.Context) {
+        initialize(context)
+        secureStore?.clear()
+        verifyNow()
+    }
+
+    fun currentConfig(): AuthConfig? = secureStore?.read()
+
+    /** Remote-first catalog with the existing 24-hour cache and built-in fallback. */
+    fun searchPresetRepository(context: android.content.Context): SearchPresetRepository {
+        initialize(context)
+        val config = secureStore?.read()
+        val remote = if (config?.isUsable() == true) {
+            AutomationHttpClient(config)
+        } else {
+            SearchPresetRemoteSource { throw IllegalStateException("后端授权尚未配置") }
+        }
+        return CachedSearchPresetRepository(
+            remote = remote,
+            cache = SharedPreferencesSearchPresetCache(context),
+        )
+    }
+
+    suspend fun loadSearchPresets(
+        context: android.content.Context,
+        forceRefresh: Boolean = false,
+    ): SearchPresetCatalog = searchPresetRepository(context).load(forceRefresh)
 }

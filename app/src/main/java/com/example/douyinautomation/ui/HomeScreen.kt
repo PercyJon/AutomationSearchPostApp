@@ -28,6 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -41,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import com.example.douyinautomation.automation.AutomationCommand
 import com.example.douyinautomation.automation.AutomationPhase
 import com.example.douyinautomation.automation.AutomationStore
+import com.example.douyinautomation.automation.AuthConfig
 import com.example.douyinautomation.automation.AuthStore
 import com.example.douyinautomation.automation.LicenseStatus
 import com.example.douyinautomation.automation.LocalSearchPresetRepository
@@ -54,6 +56,9 @@ import com.example.douyinautomation.automation.TaskRunStatus
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 
 private enum class HomeSection {
     TASKS,
@@ -142,15 +147,21 @@ private fun TaskDashboard(
 ) {
     val state by AutomationStore.uiState.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
-    val presets = remember { LocalSearchPresetRepository.BUILT_IN_PRESETS }
-    val presetCatalog = remember {
+    val builtInCatalog = remember {
         SearchPresetCatalog(
             version = LocalSearchPresetRepository.BUILT_IN_VERSION,
-            items = presets,
+            items = LocalSearchPresetRepository.BUILT_IN_PRESETS,
             updatedAtMillis = 0L,
             source = SearchPresetCatalog.Source.BUILT_IN,
         )
     }
+    var presetCatalog by remember { mutableStateOf(builtInCatalog) }
+    LaunchedEffect(context) {
+        presetCatalog = runCatching {
+            withContext(Dispatchers.IO) { AuthStore.loadSearchPresets(context) }
+        }.getOrElse { builtInCatalog }
+    }
+    val presets = presetCatalog.items
     var taskName by rememberSaveable { mutableStateOf("红木客户筛选") }
     var keyword by rememberSaveable(initialKeyword) { mutableStateOf(initialKeyword) }
     var region by rememberSaveable { mutableStateOf("") }
@@ -482,6 +493,14 @@ private fun SettingsPage(
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val licenseState by AuthStore.uiState.collectAsState()
+    val existingConfig = remember { AuthStore.currentConfig() }
+    val defaultDeviceId = remember {
+        Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID).orEmpty()
+    }
+    var endpoint by rememberSaveable { mutableStateOf(existingConfig?.endpoint.orEmpty()) }
+    var licenseToken by rememberSaveable { mutableStateOf(existingConfig?.licenseToken.orEmpty()) }
+    var deviceId by rememberSaveable { mutableStateOf(existingConfig?.deviceId ?: defaultDeviceId) }
+    var configMessage by rememberSaveable { mutableStateOf<String?>(null) }
     Column(
         modifier = Modifier
             .padding(padding)
@@ -499,11 +518,56 @@ private fun SettingsPage(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                OutlinedTextField(
+                    value = endpoint,
+                    onValueChange = { endpoint = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("后端地址（HTTPS）") },
+                    placeholder = { Text("例如 https://api.example.com") },
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = licenseToken,
+                    onValueChange = { licenseToken = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("授权 Token") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = deviceId,
+                    onValueChange = { deviceId = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("设备标识（默认 Android ID）") },
+                    singleLine = true,
+                )
+                Button(
+                    onClick = {
+                        val saved = AuthStore.saveConfig(
+                            context,
+                            AuthConfig(
+                                endpoint = endpoint.trim().trimEnd('/'),
+                                licenseToken = licenseToken.trim(),
+                                deviceId = deviceId.trim(),
+                            ),
+                        )
+                        configMessage = if (saved) {
+                            "授权配置已加密保存"
+                        } else {
+                            "配置无效：后端地址必须使用 HTTPS，且三项均不能为空"
+                        }
+                        if (saved) AuthStore.verifyNow()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("保存并验证") }
+                configMessage?.let {
+                    Text(it, color = if (it.startsWith("授权")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
+                }
                 OutlinedButton(onClick = { AuthStore.verifyNow() }) {
                     Text("立即验证 heartbeat")
                 }
                 Text(
-                    "授权配置使用 Android Keystore 加密保存；当前未绑定具体后端地址，不影响本地安全探测。",
+                    "Token 使用 Android Keystore 加密保存；请求仅携带 Bearer 授权，不会写入 Logcat。未配置后端时仍可使用本地安全探测。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -514,7 +578,7 @@ private fun SettingsPage(
                 Text("设备与服务", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Text("目标应用：抖音\n执行方式：Android 无障碍服务\n安全模式：空白消息探测")
                 Text(
-                    "预设搜索词：本地内置；远程接口与本地缓存适配器已准备，接入后端地址后可切换来源。",
+                    "预设搜索词：远程优先，失败时使用本地缓存和内置词；地区规则、屏蔽词与任务断点接口已接入客户端网关。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
