@@ -157,6 +157,33 @@ data class TaskHistoryEntry(
     val errorMessage: String? = null,
 )
 
+/**
+ * Builds a new immutable run contract from a historical task without copying its task id.
+ * Retrying must create a separate audit entry; the original result must remain unchanged.
+ */
+fun TaskHistoryEntry.toRetrySnapshot(
+    newTaskId: String,
+    nowMillis: Long,
+): TaskSnapshot? {
+    val queries = searchQueries.map(String::trim).filter(String::isNotEmpty).distinct()
+    if (queries.isEmpty()) return null
+    return TaskSnapshot(
+        taskId = newTaskId,
+        taskName = "$taskName（重试）",
+        presetVersion = "history",
+        baseKeywords = queries,
+        region = QueryComposer.normalize(region),
+        composedQueries = queries,
+        normalizedBlockedKeywords = BlockedKeywordEvaluator.normalizeTerms(blockedKeywords),
+        maxUsers = maxUsers.coerceIn(1, TaskDraft.MAX_USERS),
+        // A retry is intentionally converted to the non-delivery safety mode.  Real sending
+        // requires a separate, reviewed confirmation flow and is never inherited implicitly.
+        messageTemplate = null,
+        executionMode = TaskExecutionMode.SAFE_BLANK_PROBE,
+        createdAtMillis = nowMillis,
+    )
+}
+
 data class ComposedSearchQuery(
     val baseKeyword: String,
     val query: String,

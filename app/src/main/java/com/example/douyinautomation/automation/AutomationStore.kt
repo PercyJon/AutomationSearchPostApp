@@ -259,6 +259,43 @@ object AutomationStore {
         decodeTaskDraft(recordPreferences?.getString(TASK_DRAFT_KEY, null))
     }
 
+    /**
+     * Start a new safe-probe run from a failed/paused/stopped historical task.
+     * The old task and its per-user results remain immutable for audit purposes.
+     * Returns null when the retry was queued, otherwise a user-facing rejection reason.
+     */
+    fun retryTask(taskId: String): String? {
+        val history: TaskHistoryEntry
+        synchronized(recordLock) {
+            history = taskHistory.firstOrNull { it.taskId == taskId }
+                ?: return "任务记录不存在或已被清理"
+        }
+        val phase = _uiState.value.phase
+        if (phase !in RETRY_ALLOWED_PHASES) {
+            return "当前仍有任务执行中，请先暂停或等待任务结束"
+        }
+        if (!_uiState.value.serviceConnected) {
+            return "请先开启无障碍服务"
+        }
+        val snapshot = history.toRetrySnapshot(
+            newTaskId = UUID.randomUUID().toString(),
+            nowMillis = System.currentTimeMillis(),
+        ) ?: return "原任务没有可复用的搜索词"
+        logger.info(
+            "task_retry_requested",
+            attributes = mapOf("source_task_id_hash" to taskId.hashCode()),
+        )
+        send(
+            AutomationCommand.Start(
+                keyword = snapshot.composedQueries.first(),
+                message = "",
+                safetyProbe = true,
+                taskSnapshot = snapshot,
+            ),
+        )
+        return null
+    }
+
     fun saveTaskDraft(draft: TaskDraft) {
         synchronized(recordLock) {
             recordPreferences?.edit()
@@ -1184,5 +1221,13 @@ object AutomationStore {
         AutomationPhase.FAILED,
         AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF,
         AutomationPhase.STOPPED,
+    )
+    private val RETRY_ALLOWED_PHASES = setOf(
+        AutomationPhase.IDLE,
+        AutomationPhase.SERVICE_READY,
+        AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF,
+        AutomationPhase.STOPPED,
+        AutomationPhase.FAILED,
+        AutomationPhase.COMPLETED_TASK,
     )
 }

@@ -99,6 +99,10 @@ fun AppHomeScreen(
                 detailTaskId = null
                 section = HomeSection.TASKS.name
             },
+            onRetry = {
+                detailTaskId = null
+                section = HomeSection.TASKS.name
+            },
         )
         return
     }
@@ -764,9 +768,11 @@ private fun TaskRecordDetailScreen(
     taskId: String,
     onBack: () -> Unit,
     onReuse: () -> Unit,
+    onRetry: () -> Unit,
 ) {
     val state by AutomationStore.uiState.collectAsState()
     val history = state.taskHistory.firstOrNull { it.taskId == taskId }
+    var retryMessage by rememberSaveable(taskId) { mutableStateOf<String?>(null) }
     val records = state.recordEntries
         .filter { it.taskId == taskId }
         .sortedByDescending { it.startedAtMillis }
@@ -823,6 +829,22 @@ private fun TaskRecordDetailScreen(
                         },
                         modifier = Modifier.fillMaxWidth(),
                     ) { Text("复用此任务配置") }
+                    if (history.status in setOf(TaskRunStatus.PAUSED, TaskRunStatus.STOPPED, TaskRunStatus.FAILED)) {
+                        OutlinedButton(
+                            onClick = {
+                                val rejection = AutomationStore.retryTask(taskId)
+                                if (rejection == null) {
+                                    onRetry()
+                                } else {
+                                    retryMessage = rejection
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("重新执行（空消息安全探测）") }
+                        retryMessage?.let {
+                            Text(it, color = MaterialTheme.colorScheme.error)
+                        }
+                    }
                 }
             }
 

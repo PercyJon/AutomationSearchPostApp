@@ -94,4 +94,54 @@ class TaskDomainTest {
         assertFalse(next.hasNext)
         assertEquals(null, next.next())
     }
+
+    @Test
+    fun `retry snapshot gets a new task identity and always uses safe probe`() {
+        val history = TaskHistoryEntry(
+            taskId = "old-task",
+            taskName = "佛山红木家具",
+            queryCount = 1,
+            maxUsers = 30,
+            startedAtMillis = 1L,
+            updatedAtMillis = 2L,
+            status = TaskRunStatus.FAILED,
+            handledCount = 2,
+            skippedCount = 1,
+            filteredCount = 1,
+            duplicateCount = 0,
+            searchQueries = listOf("佛山红木家具"),
+            region = "佛山",
+            blockedKeywords = listOf("厂", "厂"),
+            messageTemplate = "真实内容不应被继承",
+            executionMode = TaskExecutionMode.REAL_SEND_REQUIRES_CONFIRMATION,
+        )
+
+        val snapshot = history.toRetrySnapshot("new-task", nowMillis = 3L)!!
+
+        assertEquals("new-task", snapshot.taskId)
+        assertEquals("佛山红木家具（重试）", snapshot.taskName)
+        assertEquals(listOf("佛山红木家具"), snapshot.composedQueries)
+        assertEquals(listOf("厂"), snapshot.normalizedBlockedKeywords)
+        assertEquals(TaskExecutionMode.SAFE_BLANK_PROBE, snapshot.executionMode)
+        assertEquals(null, snapshot.messageTemplate)
+    }
+
+    @Test
+    fun `retry snapshot rejects history with no usable queries`() {
+        val history = TaskHistoryEntry(
+            taskId = "old-task",
+            taskName = "空任务",
+            queryCount = 0,
+            maxUsers = 20,
+            startedAtMillis = 1L,
+            updatedAtMillis = 2L,
+            status = TaskRunStatus.FAILED,
+            handledCount = 0,
+            skippedCount = 0,
+            filteredCount = 0,
+            duplicateCount = 0,
+        )
+
+        assertEquals(null, history.toRetrySnapshot("new-task", nowMillis = 3L))
+    }
 }
