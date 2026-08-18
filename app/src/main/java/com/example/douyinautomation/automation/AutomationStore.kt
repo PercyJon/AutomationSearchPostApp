@@ -29,6 +29,8 @@ sealed interface AutomationCommand {
         val message: String = "",
         /** M2 default: submit one space and require Douyin's blank-message notice. */
         val safetyProbe: Boolean = true,
+        /** Optional M3 task snapshot; when absent the legacy single-keyword POC remains valid. */
+        val taskSnapshot: TaskSnapshot? = null,
     ) : AutomationCommand
     /** Explicitly sends one operator-provided message on the currently verified chat page. */
     data class SendMessage(val message: String) : AutomationCommand
@@ -128,7 +130,7 @@ object AutomationStore {
     }
 
     /** Starts a new in-memory task and returns its stable id for later task publishing. */
-    fun beginTask(keyword: String): String {
+    fun beginTask(keyword: String, snapshot: TaskSnapshot? = null): String {
         val taskId = UUID.randomUUID().toString()
         val now = System.currentTimeMillis()
         synchronized(recordLock) { currentTaskId = taskId }
@@ -144,7 +146,15 @@ object AutomationStore {
         }
         logger.info(
             "task_started",
-            attributes = mapOf("task_id_hash" to taskId.hashCode(), "keyword_hash" to keyword.hashCode()),
+            attributes = buildMap {
+                put("task_id_hash", taskId.hashCode())
+                put("keyword_hash", keyword.hashCode())
+                snapshot?.let {
+                    put("query_count", it.composedQueries.size)
+                    put("blocked_keyword_count", it.normalizedBlockedKeywords.size)
+                    put("preset_version_hash", it.presetVersion.hashCode())
+                }
+            },
         )
         return taskId
     }

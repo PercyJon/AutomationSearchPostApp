@@ -37,6 +37,7 @@ class DouyinNavigationController(
     private var phase = AutomationPhase.IDLE
     @Volatile private var taskActive = false
     private var keyword: String? = null
+    private var activeTaskSnapshot: TaskSnapshot? = null
     private var pendingStartMessage: String = ""
     private var pendingSafetyProbe: Boolean = true
     private var pausedPhase: AutomationPhase? = null
@@ -76,7 +77,12 @@ class DouyinNavigationController(
 
     suspend fun handle(command: AutomationCommand) = mutex.withLock {
         when (command) {
-            is AutomationCommand.Start -> start(command.keyword, command.message, command.safetyProbe)
+            is AutomationCommand.Start -> start(
+                searchKeyword = command.keyword,
+                startMessage = command.message,
+                safetyProbe = command.safetyProbe,
+                taskSnapshot = command.taskSnapshot,
+            )
             is AutomationCommand.SendMessage -> sendMessageOnce(command.message)
             AutomationCommand.Pause -> pause("Paused by the operator")
             AutomationCommand.Resume -> resume()
@@ -163,8 +169,15 @@ class DouyinNavigationController(
         }
     }
 
-    private suspend fun start(searchKeyword: String, startMessage: String, safetyProbe: Boolean) {
-        val sanitizedKeyword = searchKeyword.trim()
+    private suspend fun start(
+        searchKeyword: String,
+        startMessage: String,
+        safetyProbe: Boolean,
+        taskSnapshot: TaskSnapshot?,
+    ) {
+        val sanitizedKeyword = taskSnapshot?.composedQueries?.firstOrNull()?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: searchKeyword.trim()
         if (sanitizedKeyword.isEmpty()) {
             AutomationStore.publishFailure("Enter a search keyword before starting the POC.")
             return
@@ -182,6 +195,7 @@ class DouyinNavigationController(
 
         taskActive = true
         keyword = sanitizedKeyword
+        activeTaskSnapshot = taskSnapshot
         pendingStartMessage = startMessage.trim()
         pendingSafetyProbe = safetyProbe
         pausedPhase = null
@@ -202,7 +216,7 @@ class DouyinNavigationController(
         initialObservationJob?.cancel()
         phase = AutomationPhase.LAUNCHING_TARGET
         AutomationStore.publishPhase(phase)
-        AutomationStore.beginTask(sanitizedKeyword)
+        AutomationStore.beginTask(sanitizedKeyword, taskSnapshot)
         logger.info("poc_started", attributes = mapOf("target" to TargetAppLauncher.DOUYIN_PACKAGE))
 
         when (val result = TargetAppLauncher.launch(service)) {
@@ -640,6 +654,39 @@ class DouyinNavigationController(
                     skipDuplicateUser(rowContext, rowMatch!!)
                     return
                 }
+                val blockedEvaluation = activeTaskSnapshot?.let { snapshot ->
+                    BlockedKeywordEvaluator.evaluate(
+                        text = UserResultText(
+                            displayName = identity.displayName,
+                            accountHandle = identity.accountHandle,
+                            rowMetadata = identity.stableMetadata.toList(),
+                            ocrText = identity.visibleTokens.toList(),
+                        ),
+                        blockedKeywords = snapshot.normalizedBlockedKeywords,
+                    )
+                }
+                if (blockedEvaluation?.blocked == true) {
+                    logger.info(
+                        "user_result_blocked_keyword",
+                        message = "The visible user matched a task block rule; skipping before opening the profile",
+                        attributes = mapOf(
+                            "identity_hash" to identityHash,
+                            "matched_count" to blockedEvaluation.matches.size,
+                        ),
+                    )
+                    AutomationStore.recordUserTaskEvent(
+                        identityHash = identityHash,
+                        outcome = UserTaskRecord.Outcome.FILTERED_BY_KEYWORD,
+                        reason = "Blocked keywords matched: ${blockedEvaluation.matchedKeywords.joinToString()}",
+                    )
+                    // A filtered row is handled too. Retaining its identity makes the next
+                    // viewport anchor continue after it instead of exposing it again.
+                    processedUserIdentities.add(identity.key)
+                    processedUserIdentityRecords += identity
+                    lastProcessedUserAnchorBottom = rowMatch!!.anchor.bounds.bottom.toFloat()
+                    skipFilteredUser(rowContext, rowMatch!!)
+                    return
+                }
                 processedUserIdentities.add(identity.key)
                 processedUserIdentityRecords += identity
                 currentUserIdentityHash = identityHash
@@ -886,6 +933,35 @@ class DouyinNavigationController(
         phase = AutomationPhase.WAITING_FOR_USER_RESULTS
         AutomationStore.publishPhase(phase)
         selectAfterViewportAnchor(nextContext, "duplicate_user_skip")
+    }
+
+    /** Skip a row matched by the task's business filter without opening its profile. */
+    private suspend fun skipFilteredUser(context: ScreenContext, match: StructuralUserRowMatch) {
+        logger.info(
+            "user_result_filtered_next_requested",
+            attributes = mapOf("anchor_top" to match.anchor.bounds.top),
+        )
+        val nextVisible = StructuralUserRowDetector.findAfter(context, match.anchor.bounds.bottom.toFloat())
+        if (nextVisible != null) {
+            phase = AutomationPhase.WAITING_FOR_USER_RESULTS
+            AutomationStore.publishPhase(phase)
+            selectVisibleUser(context, minimumAnchorTop = match.anchor.bounds.bottom.toFloat())
+            return
+        }
+
+        val scroll = swipeToNextUserPage("blocked_keyword_skip")
+        if (!scroll.succeeded) {
+            pause("Could not advance after skipping a blocked-keyword user")
+            return
+        }
+        val nextContext = awaitUserResultsAfterScroll("blocked_keyword_skip")
+        if (nextContext == null) {
+            pause("The next user result page was not detected after skipping a blocked-keyword user")
+            return
+        }
+        phase = AutomationPhase.WAITING_FOR_USER_RESULTS
+        AutomationStore.publishPhase(phase)
+        selectAfterViewportAnchor(nextContext, "blocked_keyword_skip")
     }
 
     /**
@@ -1697,6 +1773,7 @@ class DouyinNavigationController(
         messageResultJob?.cancel()
         taskActive = false
         keyword = null
+        activeTaskSnapshot = null
         phase = AutomationPhase.COMPLETED_MESSAGE_SENT
         AutomationStore.publishPhase(phase)
         logger.info("message_send_completed", message = "One operator-requested message was verified in the conversation")
@@ -2444,6 +2521,7 @@ class DouyinNavigationController(
             currentUserIdentityHash = null
         }
         keyword = null
+        activeTaskSnapshot = null
         pendingStartMessage = ""
         pendingSafetyProbe = true
         lastProcessedUserAnchorBottom = null

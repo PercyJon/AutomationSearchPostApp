@@ -56,6 +56,7 @@ import com.example.douyinautomation.automation.AutomationStore
 fun DiagnosticsScreen(
     modifier: Modifier = Modifier,
     initialKeyword: String = "",
+    onBack: (() -> Unit)? = null,
 ) {
     val state by AutomationStore.uiState.collectAsState()
     val context = LocalContext.current
@@ -68,6 +69,13 @@ fun DiagnosticsScreen(
     ) {
         item {
             TopAppBar(
+                navigationIcon = {
+                    onBack?.let { back ->
+                        androidx.compose.material3.TextButton(onClick = back) {
+                            Text("返回")
+                        }
+                    }
+                },
                 title = {
                     Column {
                         Text("Douyin Automation POC")

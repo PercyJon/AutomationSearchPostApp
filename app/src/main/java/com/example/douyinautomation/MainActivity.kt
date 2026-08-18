@@ -12,7 +12,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.ui.Modifier
 import com.example.douyinautomation.automation.AutomationStore
-import com.example.douyinautomation.ui.DiagnosticsScreen
+import com.example.douyinautomation.ui.AppHomeScreen
 
 class MainActivity : ComponentActivity() {
     private val statusHandler = Handler(Looper.getMainLooper())
@@ -25,7 +25,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             DouyinAutomationTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    DiagnosticsScreen(
+                    AppHomeScreen(
                         initialKeyword = intent.getStringExtra(EXTRA_PREFILL_KEYWORD).orEmpty(),
                     )
                 }
