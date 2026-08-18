@@ -99,6 +99,7 @@ data class AutomationUiState(
     val savedTaskQueryIndex: Int = 0,
     val savedTaskQueryCount: Int = 0,
     val taskRecords: List<UserTaskRecord> = emptyList(),
+    val taskHistory: List<TaskHistoryEntry> = emptyList(),
     val diagnosticEntries: List<DiagnosticEntry> = emptyList(),
 )
 
@@ -116,6 +117,7 @@ object AutomationStore {
     private val recordLock = Any()
     private var recordPreferences: SharedPreferences? = null
     private var allTaskRecords: List<UserTaskRecord> = emptyList()
+    private var taskHistory: List<TaskHistoryEntry> = emptyList()
     private var currentTaskId: String? = null
     private var savedCheckpoint: TaskCheckpoint? = null
 
@@ -139,6 +141,7 @@ object AutomationStore {
                 Context.MODE_PRIVATE,
             )
             allTaskRecords = decodeRecords(recordPreferences?.getString(TASK_RECORDS_KEY, null))
+            taskHistory = decodeTaskHistory(recordPreferences?.getString(TASK_HISTORY_KEY, null))
             savedCheckpoint = decodeCheckpoint(recordPreferences?.getString(TASK_CHECKPOINT_KEY, null))
             _uiState.update { current ->
                 current.copy(
@@ -146,6 +149,7 @@ object AutomationStore {
                     savedTaskName = savedCheckpoint?.snapshot?.taskName,
                     savedTaskQueryIndex = savedCheckpoint?.queryIndex ?: 0,
                     savedTaskQueryCount = savedCheckpoint?.snapshot?.composedQueries?.size ?: 0,
+                    taskHistory = taskHistory,
                 )
             }
         }
@@ -182,7 +186,8 @@ object AutomationStore {
         resetRecords: Boolean,
     ) {
         val now = System.currentTimeMillis()
-        val existingRecords = synchronized(recordLock) {
+        val existingRecords: List<UserTaskRecord>
+        synchronized(recordLock) {
             currentTaskId = taskId
             if (resetRecords) {
                 allTaskRecords = allTaskRecords.filterNot { it.taskId == taskId }
@@ -191,7 +196,31 @@ object AutomationStore {
                 savedCheckpoint = null
                 recordPreferences?.edit()?.remove(TASK_CHECKPOINT_KEY)?.apply()
             }
-            allTaskRecords.filter { record -> record.taskId == taskId }
+            existingRecords = allTaskRecords.filter { record -> record.taskId == taskId }
+            val previous = taskHistory.firstOrNull { it.taskId == taskId }
+            val historyEntry = TaskHistoryEntry(
+                taskId = taskId,
+                taskName = snapshot?.taskName ?: keyword,
+                queryCount = snapshot?.composedQueries?.size ?: 1,
+                maxUsers = snapshot?.maxUsers ?: TaskDraft.DEFAULT_MAX_USERS,
+                startedAtMillis = previous?.startedAtMillis ?: now,
+                updatedAtMillis = now,
+                status = TaskRunStatus.RUNNING,
+                handledCount = existingRecords.count { record ->
+                    record.outcome != UserTaskRecord.Outcome.DUPLICATE_SKIPPED
+                },
+                skippedCount = existingRecords.count { record ->
+                    record.outcome == UserTaskRecord.Outcome.DUPLICATE_SKIPPED
+                },
+                filteredCount = existingRecords.count { record ->
+                    record.outcome == UserTaskRecord.Outcome.FILTERED_BY_KEYWORD
+                },
+                duplicateCount = existingRecords.count { record ->
+                    record.outcome == UserTaskRecord.Outcome.DUPLICATE_SKIPPED
+                },
+            )
+            taskHistory = (taskHistory.filterNot { it.taskId == taskId } + historyEntry).takeLast(MAX_TASK_HISTORY)
+            persistTaskHistoryLocked()
         }
         _uiState.update {
             it.copy(
@@ -214,6 +243,7 @@ object AutomationStore {
                 savedTaskName = snapshot?.taskName,
                 savedTaskQueryIndex = queryIndex,
                 savedTaskQueryCount = snapshot?.composedQueries?.size ?: 1,
+                taskHistory = taskHistory,
             )
         }
         logger.info(
@@ -386,6 +416,28 @@ object AutomationStore {
     private fun publishCurrentTaskRecordsLocked(lastEvent: String) {
         val taskId = currentTaskId ?: return
         val records = allTaskRecords.filter { it.taskId == taskId }
+        val currentHistory = taskHistory.firstOrNull { it.taskId == taskId }
+        if (currentHistory != null) {
+            taskHistory = taskHistory.map { entry ->
+                if (entry.taskId != taskId) return@map entry
+                entry.copy(
+                    updatedAtMillis = System.currentTimeMillis(),
+                    handledCount = records.count { record ->
+                        record.outcome != UserTaskRecord.Outcome.DUPLICATE_SKIPPED
+                    },
+                    skippedCount = records.count { record ->
+                        record.outcome == UserTaskRecord.Outcome.DUPLICATE_SKIPPED
+                    },
+                    filteredCount = records.count { record ->
+                        record.outcome == UserTaskRecord.Outcome.FILTERED_BY_KEYWORD
+                    },
+                    duplicateCount = records.count { record ->
+                        record.outcome == UserTaskRecord.Outcome.DUPLICATE_SKIPPED
+                    },
+                )
+            }
+            persistTaskHistoryLocked()
+        }
         _uiState.update {
             it.copy(
                 taskRecords = records,
@@ -396,6 +448,7 @@ object AutomationStore {
                     record.outcome == UserTaskRecord.Outcome.DUPLICATE_SKIPPED
                 },
                 taskLastEvent = lastEvent,
+                taskHistory = taskHistory,
             )
         }
     }
@@ -404,6 +457,13 @@ object AutomationStore {
         recordPreferences?.edit()?.putString(
             TASK_RECORDS_KEY,
             JSONArray(allTaskRecords.map { it.toJson() }).toString(),
+        )?.apply()
+    }
+
+    private fun persistTaskHistoryLocked() {
+        recordPreferences?.edit()?.putString(
+            TASK_HISTORY_KEY,
+            JSONArray(taskHistory.map { it.toJson() }).toString(),
         )?.apply()
     }
 
@@ -463,6 +523,48 @@ object AutomationStore {
         optJSONArray(key)?.let { values ->
             buildList(values.length()) { for (index in 0 until values.length()) add(values.getString(index)) }
         }.orEmpty()
+
+    private fun TaskHistoryEntry.toJson(): JSONObject = JSONObject().apply {
+        put("task_id", taskId)
+        put("task_name", taskName)
+        put("query_count", queryCount)
+        put("max_users", maxUsers)
+        put("started_at", startedAtMillis)
+        put("updated_at", updatedAtMillis)
+        put("status", status.name)
+        put("handled_count", handledCount)
+        put("skipped_count", skippedCount)
+        put("filtered_count", filteredCount)
+        put("duplicate_count", duplicateCount)
+    }
+
+    private fun decodeTaskHistory(raw: String?): List<TaskHistoryEntry> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching {
+            val json = JSONArray(raw)
+            buildList(minOf(json.length(), MAX_TASK_HISTORY)) {
+                val start = (json.length() - MAX_TASK_HISTORY).coerceAtLeast(0)
+                for (index in start until json.length()) {
+                    val item = json.getJSONObject(index)
+                    add(
+                        TaskHistoryEntry(
+                            taskId = item.getString("task_id"),
+                            taskName = item.getString("task_name"),
+                            queryCount = item.getInt("query_count"),
+                            maxUsers = item.getInt("max_users"),
+                            startedAtMillis = item.getLong("started_at"),
+                            updatedAtMillis = item.getLong("updated_at"),
+                            status = TaskRunStatus.valueOf(item.getString("status")),
+                            handledCount = item.getInt("handled_count"),
+                            skippedCount = item.getInt("skipped_count"),
+                            filteredCount = item.getInt("filtered_count"),
+                            duplicateCount = item.getInt("duplicate_count"),
+                        ),
+                    )
+                }
+            }
+        }.getOrDefault(emptyList())
+    }
 
     private fun UserTaskRecord.toJson(): JSONObject = JSONObject().apply {
         put("record_id", recordId)
@@ -592,13 +694,43 @@ object AutomationStore {
         error: String? = null,
         awaitingManualHandoff: Boolean = false,
     ) {
+        val historySnapshot = synchronized(recordLock) {
+            val taskId = currentTaskId
+            val status = phase.toTaskRunStatus()
+            if (taskId != null && status != null) {
+                taskHistory = taskHistory.map { entry ->
+                    if (entry.taskId == taskId) {
+                        entry.copy(status = status, updatedAtMillis = System.currentTimeMillis())
+                    } else {
+                        entry
+                    }
+                }
+                persistTaskHistoryLocked()
+            }
+            taskHistory
+        }
         _uiState.update {
             it.copy(
                 phase = phase,
                 lastError = error ?: it.lastError.takeUnless { phase != AutomationPhase.FAILED },
                 awaitingManualHandoff = awaitingManualHandoff,
+                taskHistory = historySnapshot,
             )
         }
+    }
+
+    private fun AutomationPhase.toTaskRunStatus(): TaskRunStatus? = when (this) {
+        AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF -> TaskRunStatus.PAUSED
+        AutomationPhase.STOPPED -> TaskRunStatus.STOPPED
+        AutomationPhase.FAILED -> TaskRunStatus.FAILED
+        AutomationPhase.COMPLETED_TASK,
+        AutomationPhase.COMPLETED_EMPTY_MESSAGE_PROBE,
+        AutomationPhase.COMPLETED_MESSAGE_SENT,
+        -> TaskRunStatus.COMPLETED
+        AutomationPhase.IDLE,
+        AutomationPhase.SERVICE_READY,
+        -> null
+        else -> TaskRunStatus.RUNNING
     }
 
     fun publishObservation(detection: PageDetection) {
@@ -651,6 +783,8 @@ object AutomationStore {
     private const val MAX_OCR_PREVIEW = 1_000
     private const val TASK_RECORDS_PREFERENCES = "automation_task_records"
     private const val TASK_RECORDS_KEY = "records"
+    private const val TASK_HISTORY_KEY = "history"
     private const val TASK_CHECKPOINT_KEY = "checkpoint"
     private const val MAX_TASK_RECORDS = 2_000
+    private const val MAX_TASK_HISTORY = 100
 }

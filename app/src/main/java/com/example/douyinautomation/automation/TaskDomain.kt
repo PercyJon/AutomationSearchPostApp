@@ -127,6 +127,29 @@ data class TaskCheckpoint(
     val updatedAtMillis: Long,
 )
 
+enum class TaskRunStatus {
+    RUNNING,
+    PAUSED,
+    STOPPED,
+    COMPLETED,
+    FAILED,
+}
+
+/** History metadata intentionally excludes user names, OCR text, and account handles. */
+data class TaskHistoryEntry(
+    val taskId: String,
+    val taskName: String,
+    val queryCount: Int,
+    val maxUsers: Int,
+    val startedAtMillis: Long,
+    val updatedAtMillis: Long,
+    val status: TaskRunStatus,
+    val handledCount: Int,
+    val skippedCount: Int,
+    val filteredCount: Int,
+    val duplicateCount: Int,
+)
+
 data class ComposedSearchQuery(
     val baseKeyword: String,
     val query: String,

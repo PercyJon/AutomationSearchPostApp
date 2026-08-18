@@ -47,6 +47,11 @@ import com.example.douyinautomation.automation.SearchPreset
 import com.example.douyinautomation.automation.SearchPresetCatalog
 import com.example.douyinautomation.automation.TaskDraft
 import com.example.douyinautomation.automation.TaskExecutionMode
+import com.example.douyinautomation.automation.TaskHistoryEntry
+import com.example.douyinautomation.automation.TaskRunStatus
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 private enum class HomeSection {
     TASKS,
@@ -415,9 +420,15 @@ private fun TaskRecordsPage(padding: PaddingValues) {
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Text("处理记录", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        if (state.taskRecords.isEmpty()) {
-            Text("暂无当前任务记录", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (state.taskHistory.isEmpty() && state.taskRecords.isEmpty()) {
+            Text("暂无任务记录", color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
+            state.taskHistory.asReversed().forEach { history ->
+                TaskHistoryCard(history)
+            }
+            if (state.taskRecords.isNotEmpty()) {
+                Text("当前任务明细", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            }
             state.taskRecords.asReversed().take(50).forEach { record ->
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp)) {
@@ -429,6 +440,38 @@ private fun TaskRecordsPage(padding: PaddingValues) {
         }
     }
 }
+
+@Composable
+private fun TaskHistoryCard(history: TaskHistoryEntry) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(history.taskName, fontWeight = FontWeight.SemiBold)
+            Text(
+                "${taskStatusLabel(history.status)} · ${formatTaskTime(history.updatedAtMillis)}",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text("搜索词 ${history.queryCount} · 已处理 ${history.handledCount} · 跳过 ${history.skippedCount}")
+            if (history.filteredCount > 0 || history.duplicateCount > 0) {
+                Text(
+                    "屏蔽 ${history.filteredCount} · 重复 ${history.duplicateCount}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+private fun taskStatusLabel(status: TaskRunStatus): String = when (status) {
+    TaskRunStatus.RUNNING -> "执行中"
+    TaskRunStatus.PAUSED -> "已暂停"
+    TaskRunStatus.STOPPED -> "已停止"
+    TaskRunStatus.COMPLETED -> "已完成"
+    TaskRunStatus.FAILED -> "执行失败"
+}
+
+private fun formatTaskTime(timestamp: Long): String =
+    SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(timestamp))
 
 @Composable
 private fun SettingsPage(
@@ -448,6 +491,11 @@ private fun SettingsPage(
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("设备与服务", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Text("目标应用：抖音\n执行方式：Android 无障碍服务\n安全模式：空白消息探测")
+                Text(
+                    "预设搜索词：本地内置；远程接口与本地缓存适配器已准备，接入后端地址后可切换来源。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 OutlinedButton(onClick = { openAccessibilitySettings(context) }) {
                     Text("无障碍服务设置")
                 }
