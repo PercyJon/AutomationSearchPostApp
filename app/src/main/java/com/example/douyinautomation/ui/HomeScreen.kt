@@ -264,8 +264,6 @@ private fun TaskDashboard(
                 }
                 Button(
                     onClick = {
-                        // M3-A keeps the existing controller contract: execute the first preview
-                        // query while the multi-query task runner is introduced in M3-C.
                         AutomationStore.send(
                             AutomationCommand.Start(
                                 keyword = queries.firstOrNull()?.query.orEmpty(),
@@ -382,6 +380,22 @@ private fun CurrentTaskCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+            if (state.savedTaskAvailable && state.phase in setOf(
+                    AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF,
+                    AutomationPhase.STOPPED,
+                    AutomationPhase.FAILED,
+                    AutomationPhase.IDLE,
+                )
+            ) {
+                Text(
+                    "已保存检查点：${state.savedTaskName.orEmpty()} · 搜索词 ${state.savedTaskQueryIndex + 1}/${state.savedTaskQueryCount.coerceAtLeast(1)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                FilledTonalButton(onClick = { AutomationStore.send(AutomationCommand.ResumeSavedTask) }) {
+                    Text("从检查点继续")
+                }
             }
             state.lastError?.takeIf(String::isNotBlank)?.let {
                 Text(it, color = MaterialTheme.colorScheme.error, maxLines = 2, overflow = TextOverflow.Ellipsis)

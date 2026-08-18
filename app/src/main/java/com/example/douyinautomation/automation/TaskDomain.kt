@@ -100,6 +100,33 @@ data class TaskSnapshot(
     val createdAtMillis: Long,
 )
 
+/**
+ * Cursor for a frozen task snapshot.  Query order is part of the task contract; callers must
+ * never rebuild it from the live UI while a task is running.
+ */
+data class TaskQueryCursor(
+    val queries: List<String>,
+    val index: Int = 0,
+) {
+    init {
+        require(queries.isNotEmpty()) { "A task must contain at least one query" }
+        require(index in queries.indices) { "Query index is outside the task snapshot" }
+    }
+
+    val current: String get() = queries[index]
+    val hasNext: Boolean get() = index + 1 < queries.size
+    fun next(): TaskQueryCursor? = if (hasNext) copy(index = index + 1) else null
+}
+
+/** Private durable checkpoint. Raw result text is deliberately not part of this model. */
+data class TaskCheckpoint(
+    val taskId: String,
+    val snapshot: TaskSnapshot,
+    val queryIndex: Int,
+    val processedIdentityHashes: List<Int> = emptyList(),
+    val updatedAtMillis: Long,
+)
+
 data class ComposedSearchQuery(
     val baseKeyword: String,
     val query: String,

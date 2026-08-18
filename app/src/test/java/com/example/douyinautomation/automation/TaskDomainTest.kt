@@ -82,4 +82,16 @@ class TaskDomainTest {
 
         assertTrue(errors.any { it.contains("消息模板") })
     }
+
+    @Test
+    fun `task query cursor advances in frozen order and stops at the end`() {
+        val cursor = TaskQueryCursor(listOf("广东红木家具", "广东实木餐桌"))
+
+        assertEquals("广东红木家具", cursor.current)
+        assertTrue(cursor.hasNext)
+        val next = cursor.next()!!
+        assertEquals("广东实木餐桌", next.current)
+        assertFalse(next.hasNext)
+        assertEquals(null, next.next())
+    }
 }

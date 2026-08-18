@@ -34,6 +34,8 @@ sealed interface AutomationCommand {
     ) : AutomationCommand
     /** Explicitly sends one operator-provided message on the currently verified chat page. */
     data class SendMessage(val message: String) : AutomationCommand
+    /** Explicitly resumes the last private checkpoint after the operator reviews the screen. */
+    data object ResumeSavedTask : AutomationCommand
     data object Pause : AutomationCommand
     data object Resume : AutomationCommand
     data object Stop : AutomationCommand
@@ -92,6 +94,10 @@ data class AutomationUiState(
     val taskHandledUserCount: Int = 0,
     val taskDuplicateUserCount: Int = 0,
     val taskLastEvent: String? = null,
+    val savedTaskAvailable: Boolean = false,
+    val savedTaskName: String? = null,
+    val savedTaskQueryIndex: Int = 0,
+    val savedTaskQueryCount: Int = 0,
     val taskRecords: List<UserTaskRecord> = emptyList(),
     val diagnosticEntries: List<DiagnosticEntry> = emptyList(),
 )
@@ -111,6 +117,7 @@ object AutomationStore {
     private var recordPreferences: SharedPreferences? = null
     private var allTaskRecords: List<UserTaskRecord> = emptyList()
     private var currentTaskId: String? = null
+    private var savedCheckpoint: TaskCheckpoint? = null
 
     val commands: SharedFlow<AutomationCommand> = _commands.asSharedFlow()
     val uiState: StateFlow<AutomationUiState> = _uiState.asStateFlow()
@@ -132,27 +139,81 @@ object AutomationStore {
                 Context.MODE_PRIVATE,
             )
             allTaskRecords = decodeRecords(recordPreferences?.getString(TASK_RECORDS_KEY, null))
+            savedCheckpoint = decodeCheckpoint(recordPreferences?.getString(TASK_CHECKPOINT_KEY, null))
+            _uiState.update { current ->
+                current.copy(
+                    savedTaskAvailable = savedCheckpoint != null,
+                    savedTaskName = savedCheckpoint?.snapshot?.taskName,
+                    savedTaskQueryIndex = savedCheckpoint?.queryIndex ?: 0,
+                    savedTaskQueryCount = savedCheckpoint?.snapshot?.composedQueries?.size ?: 0,
+                )
+            }
         }
     }
+
+    fun getSavedCheckpoint(): TaskCheckpoint? = synchronized(recordLock) { savedCheckpoint }
+
+    fun getCurrentTaskId(): String? = synchronized(recordLock) { currentTaskId }
 
     /** Starts a new in-memory task and returns its stable id for later task publishing. */
     fun beginTask(keyword: String, snapshot: TaskSnapshot? = null): String {
         val taskId = UUID.randomUUID().toString()
+        beginTaskInternal(taskId, keyword, snapshot, queryIndex = 0, resetRecords = true)
+        return taskId
+    }
+
+    /** Rehydrates a reviewed checkpoint without creating a second task history. */
+    fun resumeTask(checkpoint: TaskCheckpoint): String {
+        beginTaskInternal(
+            taskId = checkpoint.taskId,
+            keyword = checkpoint.snapshot.composedQueries[checkpoint.queryIndex],
+            snapshot = checkpoint.snapshot,
+            queryIndex = checkpoint.queryIndex,
+            resetRecords = false,
+        )
+        return checkpoint.taskId
+    }
+
+    private fun beginTaskInternal(
+        taskId: String,
+        keyword: String,
+        snapshot: TaskSnapshot?,
+        queryIndex: Int,
+        resetRecords: Boolean,
+    ) {
         val now = System.currentTimeMillis()
-        synchronized(recordLock) { currentTaskId = taskId }
+        val existingRecords = synchronized(recordLock) {
+            currentTaskId = taskId
+            if (resetRecords) {
+                allTaskRecords = allTaskRecords.filterNot { it.taskId == taskId }
+            }
+            if (snapshot == null) {
+                savedCheckpoint = null
+                recordPreferences?.edit()?.remove(TASK_CHECKPOINT_KEY)?.apply()
+            }
+            allTaskRecords.filter { record -> record.taskId == taskId }
+        }
         _uiState.update {
             it.copy(
                 taskId = taskId,
                 taskName = snapshot?.taskName,
-                taskQueryIndex = 0,
+                taskQueryIndex = queryIndex,
                 taskQueryCount = snapshot?.composedQueries?.size ?: 1,
                 taskMaxUsers = snapshot?.maxUsers,
                 taskBlockedKeywordCount = snapshot?.normalizedBlockedKeywords?.size ?: 0,
                 taskStartedAtMillis = now,
-                taskHandledUserCount = 0,
-                taskDuplicateUserCount = 0,
                 taskLastEvent = "TASK_STARTED",
-                taskRecords = emptyList(),
+                taskRecords = existingRecords,
+                taskHandledUserCount = existingRecords.count { record ->
+                    record.outcome != UserTaskRecord.Outcome.DUPLICATE_SKIPPED
+                },
+                taskDuplicateUserCount = existingRecords.count { record ->
+                    record.outcome == UserTaskRecord.Outcome.DUPLICATE_SKIPPED
+                },
+                savedTaskAvailable = true,
+                savedTaskName = snapshot?.taskName,
+                savedTaskQueryIndex = queryIndex,
+                savedTaskQueryCount = snapshot?.composedQueries?.size ?: 1,
             )
         }
         logger.info(
@@ -160,6 +221,7 @@ object AutomationStore {
             attributes = buildMap {
                 put("task_id_hash", taskId.hashCode())
                 put("keyword_hash", keyword.hashCode())
+                put("query_index", queryIndex)
                 snapshot?.let {
                     put("query_count", it.composedQueries.size)
                     put("blocked_keyword_count", it.normalizedBlockedKeywords.size)
@@ -167,7 +229,50 @@ object AutomationStore {
                 }
             },
         )
-        return taskId
+        snapshot?.let {
+            saveTaskCheckpoint(
+                TaskCheckpoint(
+                    taskId = taskId,
+                    snapshot = it,
+                    queryIndex = queryIndex,
+                    updatedAtMillis = now,
+                ),
+            )
+        }
+    }
+
+    /** Persist only opaque identity hashes and the frozen task contract. */
+    fun saveTaskCheckpoint(checkpoint: TaskCheckpoint) {
+        synchronized(recordLock) {
+            savedCheckpoint = checkpoint
+            recordPreferences?.edit()
+                ?.putString(TASK_CHECKPOINT_KEY, encodeCheckpoint(checkpoint).toString())
+                ?.apply()
+        }
+        _uiState.update {
+            it.copy(
+                savedTaskAvailable = true,
+                savedTaskName = checkpoint.snapshot.taskName,
+                savedTaskQueryIndex = checkpoint.queryIndex,
+                savedTaskQueryCount = checkpoint.snapshot.composedQueries.size,
+                taskQueryIndex = checkpoint.queryIndex,
+            )
+        }
+    }
+
+    fun clearTaskCheckpoint() {
+        synchronized(recordLock) {
+            savedCheckpoint = null
+            recordPreferences?.edit()?.remove(TASK_CHECKPOINT_KEY)?.apply()
+        }
+        _uiState.update {
+            it.copy(
+                savedTaskAvailable = false,
+                savedTaskName = null,
+                savedTaskQueryIndex = 0,
+                savedTaskQueryCount = 0,
+            )
+        }
     }
 
     /** Create the durable per-user record when a unique row is first selected. */
@@ -301,6 +406,63 @@ object AutomationStore {
             JSONArray(allTaskRecords.map { it.toJson() }).toString(),
         )?.apply()
     }
+
+    private fun encodeCheckpoint(checkpoint: TaskCheckpoint): JSONObject = JSONObject().apply {
+        put("task_id", checkpoint.taskId)
+        put("query_index", checkpoint.queryIndex)
+        put("updated_at", checkpoint.updatedAtMillis)
+        put("processed_identity_hashes", JSONArray(checkpoint.processedIdentityHashes))
+        put("snapshot", checkpoint.snapshot.toJson())
+    }
+
+    private fun TaskSnapshot.toJson(): JSONObject = JSONObject().apply {
+        put("task_id", taskId)
+        put("task_name", taskName)
+        put("preset_version", presetVersion)
+        put("base_keywords", JSONArray(baseKeywords))
+        put("region", region)
+        put("composed_queries", JSONArray(composedQueries))
+        put("blocked_keywords", JSONArray(normalizedBlockedKeywords))
+        put("max_users", maxUsers)
+        put("message_template", messageTemplate ?: JSONObject.NULL)
+        put("execution_mode", executionMode.name)
+        put("created_at", createdAtMillis)
+    }
+
+    private fun decodeCheckpoint(raw: String?): TaskCheckpoint? = runCatching {
+        if (raw.isNullOrBlank()) return null
+        val root = JSONObject(raw)
+        val snapshotJson = root.getJSONObject("snapshot")
+        val snapshot = TaskSnapshot(
+            taskId = snapshotJson.getString("task_id"),
+            taskName = snapshotJson.getString("task_name"),
+            presetVersion = snapshotJson.getString("preset_version"),
+            baseKeywords = snapshotJson.getStringList("base_keywords"),
+            region = snapshotJson.getString("region"),
+            composedQueries = snapshotJson.getStringList("composed_queries").ifEmpty { return null },
+            normalizedBlockedKeywords = snapshotJson.getStringList("blocked_keywords"),
+            maxUsers = snapshotJson.getInt("max_users"),
+            messageTemplate = if (snapshotJson.isNull("message_template")) null else snapshotJson.getString("message_template"),
+            executionMode = TaskExecutionMode.valueOf(snapshotJson.getString("execution_mode")),
+            createdAtMillis = snapshotJson.getLong("created_at"),
+        )
+        val queryIndex = root.getInt("query_index")
+        if (queryIndex !in snapshot.composedQueries.indices) return null
+        TaskCheckpoint(
+            taskId = root.getString("task_id"),
+            snapshot = snapshot,
+            queryIndex = queryIndex,
+            processedIdentityHashes = root.optJSONArray("processed_identity_hashes")?.let { hashes ->
+                buildList(hashes.length()) { for (index in 0 until hashes.length()) add(hashes.getInt(index)) }
+            }.orEmpty(),
+            updatedAtMillis = root.getLong("updated_at"),
+        )
+    }.getOrNull()
+
+    private fun JSONObject.getStringList(key: String): List<String> =
+        optJSONArray(key)?.let { values ->
+            buildList(values.length()) { for (index in 0 until values.length()) add(values.getString(index)) }
+        }.orEmpty()
 
     private fun UserTaskRecord.toJson(): JSONObject = JSONObject().apply {
         put("record_id", recordId)
@@ -478,6 +640,7 @@ object AutomationStore {
     private fun AutomationCommand.name(): String = when (this) {
         is AutomationCommand.Start -> "start"
         is AutomationCommand.SendMessage -> "send_message"
+        AutomationCommand.ResumeSavedTask -> "resume_saved_task"
         AutomationCommand.Pause -> "pause"
         AutomationCommand.Resume -> "resume"
         AutomationCommand.Stop -> "stop"
@@ -488,5 +651,6 @@ object AutomationStore {
     private const val MAX_OCR_PREVIEW = 1_000
     private const val TASK_RECORDS_PREFERENCES = "automation_task_records"
     private const val TASK_RECORDS_KEY = "records"
+    private const val TASK_CHECKPOINT_KEY = "checkpoint"
     private const val MAX_TASK_RECORDS = 2_000
 }

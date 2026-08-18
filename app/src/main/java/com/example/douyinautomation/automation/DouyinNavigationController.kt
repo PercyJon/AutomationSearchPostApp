@@ -38,6 +38,9 @@ class DouyinNavigationController(
     @Volatile private var taskActive = false
     private var keyword: String? = null
     private var activeTaskSnapshot: TaskSnapshot? = null
+    private var taskQueryIndex: Int = 0
+    /** True when an await helper already advanced/finished the task and its caller must return. */
+    private var queryTransitionHandled = false
     private var pendingStartMessage: String = ""
     private var pendingSafetyProbe: Boolean = true
     private var pausedPhase: AutomationPhase? = null
@@ -55,6 +58,8 @@ class DouyinNavigationController(
     private var lastProcessedUserAnchorBottom: Float? = null
     /** Row identities already handled in this run; this survives small overlapping page swipes. */
     private val processedUserIdentities = LinkedHashSet<String>()
+    /** Opaque hashes restored from a durable checkpoint after the process is recreated. */
+    private val processedIdentityHashes = LinkedHashSet<Int>()
     /** Rich identity aliases are retained so OCR punctuation/spacing drift cannot reopen a row. */
     private val processedUserIdentityRecords = ArrayList<UserResultIdentity>()
     /** Hash of the currently selected row's identity, used to finish its task audit record. */
@@ -83,6 +88,7 @@ class DouyinNavigationController(
                 safetyProbe = command.safetyProbe,
                 taskSnapshot = command.taskSnapshot,
             )
+            AutomationCommand.ResumeSavedTask -> resumeSavedTask()
             is AutomationCommand.SendMessage -> sendMessageOnce(command.message)
             AutomationCommand.Pause -> pause("Paused by the operator")
             AutomationCommand.Resume -> resume()
@@ -196,6 +202,8 @@ class DouyinNavigationController(
         taskActive = true
         keyword = sanitizedKeyword
         activeTaskSnapshot = taskSnapshot
+        taskQueryIndex = 0
+        queryTransitionHandled = false
         pendingStartMessage = startMessage.trim()
         pendingSafetyProbe = safetyProbe
         pausedPhase = null
@@ -206,6 +214,7 @@ class DouyinNavigationController(
         lastProcessedUserAnchorBottom = null
         processedUserIdentities.clear()
         processedUserIdentityRecords.clear()
+        processedIdentityHashes.clear()
         currentUserIdentityHash = null
         cachedUserResultsViewportSignature = null
         cachedUserResultsOcrBlocks = emptyList()
@@ -239,6 +248,83 @@ class DouyinNavigationController(
             }
 
             is LaunchResult.Failed -> pause("Could not open Douyin: ${result.reason}")
+        }
+    }
+
+    private suspend fun resumeSavedTask() {
+        val checkpoint = AutomationStore.getSavedCheckpoint()
+        if (checkpoint == null) {
+            AutomationStore.publishFailure("没有可恢复的任务检查点")
+            logger.warn("saved_task_resume_rejected", message = "No private task checkpoint is available")
+            return
+        }
+        if (taskActive) {
+            logger.warn("saved_task_resume_ignored_active")
+            return
+        }
+        val query = checkpoint.snapshot.composedQueries.getOrNull(checkpoint.queryIndex)
+        if (query.isNullOrBlank()) {
+            AutomationStore.publishFailure("任务检查点中的搜索词无效")
+            AutomationStore.clearTaskCheckpoint()
+            return
+        }
+        logger.info(
+            "saved_task_resume_requested",
+            attributes = mapOf("query_index" to checkpoint.queryIndex, "query_count" to checkpoint.snapshot.composedQueries.size),
+        )
+        taskActive = true
+        keyword = query
+        activeTaskSnapshot = checkpoint.snapshot
+        taskQueryIndex = checkpoint.queryIndex
+        queryTransitionHandled = false
+        pendingStartMessage = checkpoint.snapshot.messageTemplate.orEmpty()
+        pendingSafetyProbe = checkpoint.snapshot.executionMode == TaskExecutionMode.SAFE_BLANK_PROBE
+        pausedPhase = null
+        initialOcrAttempts = 0
+        userTabRevealAttempts = 0
+        restrictedUserSkips = 0
+        timeoutRecoveryAttempts = 0
+        lastProcessedUserAnchorBottom = null
+        processedUserIdentities.clear()
+        processedUserIdentityRecords.clear()
+        processedIdentityHashes.clear()
+        processedIdentityHashes.addAll(checkpoint.processedIdentityHashes)
+        currentUserIdentityHash = null
+        cachedUserResultsViewportSignature = null
+        cachedUserResultsOcrBlocks = emptyList()
+        userResultsSignatureBeforeSwipe = null
+        messageEntryPostconditionJob?.cancel()
+        messageResultJob?.cancel()
+        profilePostconditionJob?.cancel()
+        initialObservationJob?.cancel()
+        phase = AutomationPhase.WAITING_FOR_HOME
+        AutomationStore.publishPhase(phase)
+        AutomationStore.resumeTask(checkpoint)
+        val existingContext = currentWindowContext()
+        val existingDetection = existingContext?.let(pageDetector::detect)
+        if (existingContext != null && existingDetection != null && existingDetection.kind in setOf(
+                PageKind.HOME,
+                PageKind.SEARCH_ENTRY,
+                PageKind.SEARCH_RESULTS,
+                PageKind.USER_RESULTS,
+            )
+        ) {
+            phase = when (existingDetection.kind) {
+                PageKind.USER_RESULTS -> AutomationPhase.WAITING_FOR_USER_RESULTS
+                PageKind.SEARCH_ENTRY -> AutomationPhase.WAITING_FOR_SEARCH_ENTRY
+                PageKind.SEARCH_RESULTS -> AutomationPhase.WAITING_FOR_SEARCH_RESULTS
+                else -> AutomationPhase.WAITING_FOR_HOME
+            }
+            AutomationStore.publishPhase(phase)
+            onScreenObserved(existingContext, existingDetection)
+            return
+        }
+        when (val result = TargetAppLauncher.launch(service)) {
+            LaunchResult.Started -> {
+                delay(INITIAL_SCREEN_SETTLE_DELAY_MS)
+                scheduleInitialObservation()
+            }
+            is LaunchResult.Failed -> pause("无法恢复抖音任务：${result.reason}")
         }
     }
 
@@ -572,6 +658,7 @@ class DouyinNavigationController(
         context: ScreenContext,
         minimumAnchorTop: Float? = null,
     ) {
+        queryTransitionHandled = false
         val maxUsers = activeTaskSnapshot?.maxUsers
         if (maxUsers != null && processedUserIdentityRecords.size >= maxUsers) {
             completeTaskAtUserLimit(maxUsers)
@@ -688,12 +775,16 @@ class DouyinNavigationController(
                     // viewport anchor continue after it instead of exposing it again.
                     processedUserIdentities.add(identity.key)
                     processedUserIdentityRecords += identity
+                    processedIdentityHashes.add(identityHash)
+                    persistTaskCheckpoint()
                     lastProcessedUserAnchorBottom = rowMatch!!.anchor.bounds.bottom.toFloat()
                     skipFilteredUser(rowContext, rowMatch!!)
                     return
                 }
                 processedUserIdentities.add(identity.key)
                 processedUserIdentityRecords += identity
+                processedIdentityHashes.add(identityHash)
+                persistTaskCheckpoint()
                 currentUserIdentityHash = identityHash
                 AutomationStore.recordUserTaskStarted(identityHash)
             } else {
@@ -770,7 +861,7 @@ class DouyinNavigationController(
      * display name.
      */
     private fun processedUserIdentityMatchReason(identity: UserResultIdentity): String? =
-        processedUserIdentityRecords.firstNotNullOfOrNull { previous ->
+        "checkpoint_hash".takeIf { identity.key.hashCode() in processedIdentityHashes } ?: processedUserIdentityRecords.firstNotNullOfOrNull { previous ->
             identityMatchReason(previous, identity)
         }
 
@@ -879,6 +970,19 @@ class DouyinNavigationController(
         .replace("·", "")
         .replace("。", "")
 
+    private fun persistTaskCheckpoint() {
+        val snapshot = activeTaskSnapshot ?: return
+        AutomationStore.saveTaskCheckpoint(
+            TaskCheckpoint(
+                taskId = AutomationStore.getCurrentTaskId() ?: snapshot.taskId,
+                snapshot = snapshot,
+                queryIndex = taskQueryIndex.coerceIn(0, snapshot.composedQueries.lastIndex),
+                processedIdentityHashes = processedIdentityHashes.toList(),
+                updatedAtMillis = System.currentTimeMillis(),
+            ),
+        )
+    }
+
     /** Poll the profile transition independently of accessibility callbacks, which OEM builds may drop. */
     private fun scheduleProfilePostconditionCheck() {
         profilePostconditionJob?.cancel()
@@ -932,6 +1036,7 @@ class DouyinNavigationController(
         }
         val nextContext = awaitUserResultsAfterScroll("duplicate_user_skip")
         if (nextContext == null) {
+            if (queryTransitionHandled) return
             pause("The next user result page was not detected after skipping an already processed user")
             return
         }
@@ -961,6 +1066,7 @@ class DouyinNavigationController(
         }
         val nextContext = awaitUserResultsAfterScroll("blocked_keyword_skip")
         if (nextContext == null) {
+            if (queryTransitionHandled) return
             pause("The next user result page was not detected after skipping a blocked-keyword user")
             return
         }
@@ -1005,6 +1111,7 @@ class DouyinNavigationController(
         }
         val nextContext = awaitUserResultsAfterScroll("follow_back_skip")
         if (nextContext == null) {
+            if (queryTransitionHandled) return
             pause("The next user result page was not detected after skipping a 回关 user")
             return
         }
@@ -1584,6 +1691,7 @@ class DouyinNavigationController(
         }
         val nextContext = awaitUserResultsAfterScroll("empty_message_probe")
         if (nextContext == null) {
+            if (queryTransitionHandled) return
             pause("The next user result page was not detected after the blank-message probe")
             return
         }
@@ -1658,7 +1766,70 @@ class DouyinNavigationController(
             attributes = mapOf("tag" to tag, "attempts" to USER_NEXT_RESULT_POSTCONDITION_ATTEMPTS),
         )
         userResultsSignatureBeforeSwipe = null
+        if (advanceToNextQueryIfAvailable(tag)) return null
         return null
+    }
+
+    /**
+     * A stable, unchanged viewport after the bounded network wait is the only condition that may
+     * advance a multi-query task.  If another query exists, return to Douyin's verified search
+     * entry and submit the frozen next query; otherwise finish the task without opening another
+     * profile.  Unknown or covered windows remain a manual handoff.
+     */
+    private suspend fun advanceToNextQueryIfAvailable(tag: String): Boolean {
+        val snapshot = activeTaskSnapshot ?: return false
+        val cursor = TaskQueryCursor(snapshot.composedQueries, taskQueryIndex)
+        val next = cursor.next()
+        queryTransitionHandled = true
+        if (next == null) {
+            completeTaskAtQueryEnd()
+            return true
+        }
+
+        taskQueryIndex = next.index
+        keyword = next.current
+        lastProcessedUserAnchorBottom = null
+        cachedUserResultsViewportSignature = null
+        cachedUserResultsOcrBlocks = emptyList()
+        userResultsSignatureBeforeSwipe = null
+        persistTaskCheckpoint()
+        phase = AutomationPhase.WAITING_FOR_SEARCH_ENTRY
+        AutomationStore.publishPhase(phase)
+        logger.info(
+            "task_query_advanced",
+            message = "The current result viewport was stable at its end; advancing to the next frozen query",
+            attributes = mapOf("tag" to tag, "query_index" to taskQueryIndex, "query_count" to snapshot.composedQueries.size),
+        )
+
+        var context = currentWindowContext()
+        repeat(MAX_BACK_ACTIONS_TO_SEARCH_ENTRY) { attempt ->
+            if (context != null && pageDetector.detect(context!!).kind == PageKind.SEARCH_ENTRY) return@repeat
+            if (context != null && pageDetector.detect(context!!).kind == PageKind.HOME) {
+                openSearch(context!!)
+                return true
+            }
+            if (!service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)) {
+                context = null
+                return@repeat
+            }
+            delay(USER_PROFILE_BACK_DELAY_MS)
+            context = currentWindowContext()
+            logger.info(
+                "task_query_search_entry_back_probe",
+                attributes = mapOf("attempt" to attempt + 1, "page" to (context?.let { pageDetector.detect(it).kind.name } ?: "NO_CONTEXT")),
+            )
+        }
+        context = currentWindowContext()
+        val detection = context?.let(pageDetector::detect)
+        when (detection?.kind) {
+            PageKind.SEARCH_ENTRY -> enterKeyword(context!!, preserveTimeoutRecoveryBudget = true)
+            PageKind.HOME -> openSearch(context!!)
+            else -> {
+                queryTransitionHandled = false
+                pause("下一组搜索词切换时未回到可确认的搜索页面")
+            }
+        }
+        return true
     }
 
     /**
@@ -1791,10 +1962,28 @@ class DouyinNavigationController(
         messageEntryPostconditionJob?.cancel()
         messageResultJob?.cancel()
         taskActive = false
+        AutomationStore.clearTaskCheckpoint()
         logger.info(
             "task_completed_user_limit",
             message = "The configured user limit was reached; no additional profile was opened",
             attributes = mapOf("max_users" to maxUsers),
+        )
+        phase = AutomationPhase.COMPLETED_TASK
+        AutomationStore.publishPhase(phase)
+    }
+
+    private fun completeTaskAtQueryEnd() {
+        timeoutJob?.cancel()
+        initialObservationJob?.cancel()
+        profilePostconditionJob?.cancel()
+        messageEntryPostconditionJob?.cancel()
+        messageResultJob?.cancel()
+        taskActive = false
+        AutomationStore.clearTaskCheckpoint()
+        logger.info(
+            "task_completed_query_end",
+            message = "All frozen search queries reached a stable end without opening another profile",
+            attributes = mapOf("query_count" to (activeTaskSnapshot?.composedQueries?.size ?: 1)),
         )
         phase = AutomationPhase.COMPLETED_TASK
         AutomationStore.publishPhase(phase)
@@ -1936,6 +2125,7 @@ class DouyinNavigationController(
         }
         val nextContext = awaitUserResultsAfterScroll("restricted_user_skip")
         if (nextContext == null) {
+            if (queryTransitionHandled) return
             pause("The next user result page was not detected")
             return
         }
@@ -2024,6 +2214,7 @@ class DouyinNavigationController(
         }
         val nextContext = awaitUserResultsAfterScroll("message_failure")
         if (nextContext == null) {
+            if (queryTransitionHandled) return
             pause("The next user result page was not detected after a message-send failure")
             return
         }
@@ -2597,6 +2788,7 @@ class DouyinNavigationController(
         const val PRIVATE_MESSAGE_ENTRY_ATTEMPTS = 3
         const val PRIVATE_MESSAGE_ENTRY_RETRY_INTERVAL_MS = 450L
         const val USER_PROFILE_BACK_DELAY_MS = 700L
+        const val MAX_BACK_ACTIONS_TO_SEARCH_ENTRY = 3
         const val PROFILE_POSTCONDITION_ATTEMPTS = 16
         const val PROFILE_POSTCONDITION_INITIAL_DELAY_MS = 450L
         const val PROFILE_POSTCONDITION_INTERVAL_MS = 400L
