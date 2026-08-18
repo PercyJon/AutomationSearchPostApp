@@ -41,6 +41,8 @@ import androidx.compose.ui.unit.dp
 import com.example.douyinautomation.automation.AutomationCommand
 import com.example.douyinautomation.automation.AutomationPhase
 import com.example.douyinautomation.automation.AutomationStore
+import com.example.douyinautomation.automation.AuthStore
+import com.example.douyinautomation.automation.LicenseStatus
 import com.example.douyinautomation.automation.LocalSearchPresetRepository
 import com.example.douyinautomation.automation.QueryComposer
 import com.example.douyinautomation.automation.SearchPreset
@@ -479,6 +481,7 @@ private fun SettingsPage(
     onOpenDiagnostics: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    val licenseState by AuthStore.uiState.collectAsState()
     Column(
         modifier = Modifier
             .padding(padding)
@@ -487,6 +490,25 @@ private fun SettingsPage(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("设置", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("授权与连接", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text("状态：${licenseStatusLabel(licenseState.status)}")
+                Text(
+                    licenseState.message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedButton(onClick = { AuthStore.verifyNow() }) {
+                    Text("立即验证 heartbeat")
+                }
+                Text(
+                    "授权配置使用 Android Keystore 加密保存；当前未绑定具体后端地址，不影响本地安全探测。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("设备与服务", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -509,6 +531,13 @@ private fun SettingsPage(
             }
         }
     }
+}
+
+private fun licenseStatusLabel(status: LicenseStatus): String = when (status) {
+    LicenseStatus.NOT_CONFIGURED -> "未配置"
+    LicenseStatus.VERIFIED -> "已验证"
+    LicenseStatus.REJECTED -> "授权拒绝"
+    LicenseStatus.TEMPORARILY_UNAVAILABLE -> "暂时不可用"
 }
 
 private fun phaseLabel(phase: AutomationPhase): String = when (phase) {

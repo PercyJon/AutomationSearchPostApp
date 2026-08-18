@@ -12,6 +12,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.ui.Modifier
 import com.example.douyinautomation.automation.AutomationStore
+import com.example.douyinautomation.automation.AuthStore
 import com.example.douyinautomation.ui.AppHomeScreen
 
 class MainActivity : ComponentActivity() {
@@ -21,6 +22,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        AuthStore.initialize(this)
 
         setContent {
             DouyinAutomationTheme {

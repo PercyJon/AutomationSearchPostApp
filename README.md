@@ -1,6 +1,6 @@
-# Douyin Automation POC — M2
+# Douyin Automation POC — M3
 
-当前开发版本：`0.2.0-m2`
+当前开发版本：`0.3.0-m3`
 
 M1 冻结版本仍保留在标签 `v0.1.0-m1`。
 
@@ -22,6 +22,9 @@ M1 冻结版本仍保留在标签 `v0.1.0-m1`。
 - 验证码、登录失效、风险控制和未知页面一律暂停并等待人工处理，不实施破解或绕过
 - M3-A/B 初步任务模型：地区+关键词组合、预设词、本地预设源和屏蔽关键词评估
 - 正常任务工作台首页：任务配置、最终搜索词预览、地区、屏蔽词和任务/记录/设置导航
+- 任务历史摘要：持久化任务状态、处理/跳过/屏蔽/重复计数；不保存用户名称、抖音号或 OCR 原文
+- 基础授权边界：Android Keystore 加密本地授权配置、heartbeat 请求/响应模型、周期验证状态
+- 预设词远程接口边界：远程优先、本地缓存和内置预设回退
 
 ## 构建与测试
 
@@ -65,3 +68,6 @@ scripts/ensure-accessibility.sh <adb-serial>
 
 M2.5 产品板块、任务模型、地区组合、预设词接口和关键词屏蔽规则见：
 [`docs/M2.5-product-and-task-design.md`](docs/M2.5-product-and-task-design.md)
+
+M3-D/E 记录、预设缓存和授权 heartbeat 边界见：
+[`docs/M3-D-records-and-preset-source.md`](docs/M3-D-records-and-preset-source.md)
