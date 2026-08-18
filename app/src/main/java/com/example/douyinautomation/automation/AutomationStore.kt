@@ -128,6 +128,7 @@ object AutomationStore {
     private var remoteTaskId: Long? = null
     private var remoteGateway: AutomationTaskGateway? = null
     private var remoteSyncQueue: RemoteTaskSyncQueue? = null
+    private var lastRemoteStatusSignature: String? = null
     private var remoteConfigFingerprint: Int? = null
     private val remoteUserKeys = mutableMapOf<Int, String>()
     private val remoteDisplayNames = mutableMapOf<Int, String>()
@@ -205,6 +206,7 @@ object AutomationStore {
         synchronized(recordLock) {
             currentTaskId = taskId
             remoteTaskId = snapshot?.taskId?.toLongOrNull()?.takeIf { it > 0L }
+            lastRemoteStatusSignature = null
             remoteUserKeys.clear()
             remoteDisplayNames.clear()
             if (resetRecords) {
@@ -289,7 +291,10 @@ object AutomationStore {
                 ),
             )
         }
-        remoteTaskId?.let(::claimRemoteTask)
+        remoteTaskId?.let { id ->
+            claimRemoteTask(id)
+            syncRemoteStatus(RemoteTaskStatus.RUNNING)
+        }
     }
 
     /** Rebuilds the gateway when the encrypted endpoint/token configuration changes. */
@@ -388,6 +393,27 @@ object AutomationStore {
             queue = remoteSyncQueue ?: return
         }
         queue.enqueueCheckpoint(taskId, request)
+    }
+
+    /** Non-blocking best-effort writeback of the local lifecycle to the remote task. */
+    fun syncRemoteStatus(status: Int, errorCode: String? = null, errorMessage: String? = null) {
+        val taskId: Long
+        val queue: RemoteTaskSyncQueue
+        val signature = "$status|${errorCode.orEmpty()}|${errorMessage.orEmpty()}"
+        synchronized(recordLock) {
+            if (signature == lastRemoteStatusSignature) return
+            taskId = remoteTaskId ?: return
+            queue = remoteSyncQueue ?: return
+            lastRemoteStatusSignature = signature
+        }
+        queue.enqueueStatus(
+            taskId,
+            RemoteTaskStatusRequest(
+                status = status,
+                errorCode = errorCode,
+                errorMessage = errorMessage?.take(512),
+            ),
+        )
     }
 
     /** Create the durable per-user record when a unique row is first selected. */
@@ -860,6 +886,20 @@ object AutomationStore {
                 taskHistory = historySnapshot,
             )
         }
+        phase.toRemoteTaskStatus()?.let { status ->
+            syncRemoteStatus(status, errorCode = if (phase == AutomationPhase.FAILED) "LOCAL_AUTOMATION_FAILED" else null, errorMessage = error)
+        }
+    }
+
+    private fun AutomationPhase.toRemoteTaskStatus(): Int? = when (this) {
+        AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF -> RemoteTaskStatus.PAUSED
+        AutomationPhase.STOPPED -> RemoteTaskStatus.CANCELLED
+        AutomationPhase.FAILED -> RemoteTaskStatus.FAILED
+        AutomationPhase.COMPLETED_TASK,
+        AutomationPhase.COMPLETED_EMPTY_MESSAGE_PROBE,
+        AutomationPhase.COMPLETED_MESSAGE_SENT,
+        -> RemoteTaskStatus.COMPLETED
+        else -> null
     }
 
     private fun AutomationPhase.toTaskRunStatus(): TaskRunStatus? = when (this) {
@@ -900,6 +940,7 @@ object AutomationStore {
                 awaitingManualHandoff = false,
             )
         }
+        syncRemoteStatus(RemoteTaskStatus.FAILED, errorCode = "LOCAL_AUTOMATION_FAILED", errorMessage = reason)
     }
 
     fun publishManualHandoff(reason: String) {
@@ -910,6 +951,7 @@ object AutomationStore {
                 awaitingManualHandoff = true,
             )
         }
+        syncRemoteStatus(RemoteTaskStatus.PAUSED, errorCode = "MANUAL_HANDOFF_REQUIRED", errorMessage = reason)
     }
 
     /** Surface remote-claim/resume failures without changing the local automation phase. */

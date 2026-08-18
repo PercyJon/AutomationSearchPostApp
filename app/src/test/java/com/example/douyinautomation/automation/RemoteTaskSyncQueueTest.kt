@@ -12,5 +12,13 @@ class RemoteTaskSyncQueueTest {
         assertEquals(RemoteTaskRecordStatus.SKIPPED, RemoteTaskRecordStatus.from(UserTaskRecord.Outcome.DUPLICATE_SKIPPED))
         assertEquals(RemoteTaskRecordStatus.FAILED, RemoteTaskRecordStatus.from(UserTaskRecord.Outcome.MESSAGE_SEND_FAILED))
     }
-}
 
+    @Test
+    fun `lifecycle statuses use the backend task contract`() {
+        assertEquals(2, RemoteTaskStatus.RUNNING)
+        assertEquals(3, RemoteTaskStatus.PAUSED)
+        assertEquals(4, RemoteTaskStatus.COMPLETED)
+        assertEquals(5, RemoteTaskStatus.FAILED)
+        assertEquals(6, RemoteTaskStatus.CANCELLED)
+    }
+}

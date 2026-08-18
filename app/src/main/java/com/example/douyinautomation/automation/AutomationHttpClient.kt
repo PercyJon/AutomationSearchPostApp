@@ -140,6 +140,20 @@ class AutomationHttpClient(
             .toRecordSyncResponse()
     }
 
+    override suspend fun updateTaskStatus(
+        taskId: Long,
+        request: RemoteTaskStatusRequest,
+    ): RemoteTask = withContext(Dispatchers.IO) {
+        val body = JSONObject().apply {
+            put("status", request.status)
+            request.errorCode?.let { put("error_code", it) }
+            request.errorMessage?.let { put("error_message", it) }
+        }
+        execute("/automation/mobile/tasks/$taskId/status", "POST", body)
+            .asObject()
+            .toRemoteTask()
+    }
+
     private fun execute(path: String, method: String, body: JSONObject? = null): Any {
         val connection = connectionFactory(URL(endpointUrl(path)))
         try {

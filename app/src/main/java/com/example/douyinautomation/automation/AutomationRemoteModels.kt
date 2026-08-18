@@ -151,10 +151,26 @@ data class RemoteRecordSyncResponse(
     val progress: RemoteTaskProgress,
 )
 
+data class RemoteTaskStatusRequest(
+    val status: Int,
+    val errorCode: String? = null,
+    val errorMessage: String? = null,
+)
+
+object RemoteTaskStatus {
+    const val READY = 1
+    const val RUNNING = 2
+    const val PAUSED = 3
+    const val COMPLETED = 4
+    const val FAILED = 5
+    const val CANCELLED = 6
+}
+
 interface AutomationTaskGateway {
     suspend fun listTasks(): List<RemoteTask>
     suspend fun claimTask(taskId: Long): RemoteTask
     suspend fun getTaskProgress(taskId: Long): RemoteTaskProgress
     suspend fun submitCheckpoint(taskId: Long, request: RemoteCheckpointRequest): RemoteCheckpointResponse
     suspend fun submitRecord(taskId: Long, request: RemoteRecordRequest): RemoteRecordSyncResponse
+    suspend fun updateTaskStatus(taskId: Long, request: RemoteTaskStatusRequest): RemoteTask
 }

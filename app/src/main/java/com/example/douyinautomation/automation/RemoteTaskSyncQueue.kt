@@ -35,6 +35,11 @@ class RemoteTaskSyncQueue(
             override val taskId: Long,
             val request: RemoteRecordRequest,
         ) : Work
+
+        data class Status(
+            override val taskId: Long,
+            val request: RemoteTaskStatusRequest,
+        ) : Work
     }
 
     private val queue = Channel<Work>(capacity = MAX_PENDING_WORK)
@@ -54,6 +59,10 @@ class RemoteTaskSyncQueue(
 
     fun enqueueRecord(taskId: Long, request: RemoteRecordRequest) {
         enqueue(Work.Record(taskId, request))
+    }
+
+    fun enqueueStatus(taskId: Long, request: RemoteTaskStatusRequest) {
+        enqueue(Work.Status(taskId, request))
     }
 
     fun close() {
@@ -84,6 +93,7 @@ class RemoteTaskSyncQueue(
                 when (work) {
                     is Work.Checkpoint -> gateway.submitCheckpoint(work.taskId, work.request)
                     is Work.Record -> gateway.submitRecord(work.taskId, work.request)
+                    is Work.Status -> gateway.updateTaskStatus(work.taskId, work.request)
                 }
                 logger.info(
                     "remote_sync_succeeded",
