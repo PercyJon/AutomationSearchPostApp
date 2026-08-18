@@ -75,6 +75,25 @@ data class RemoteTaskProgress(
     val checkpointVersion: Int,
 )
 
+/**
+ * In-memory continuation contract for a claimed remote task.  The raw anchor is deliberately
+ * not persisted in the local checkpoint; it is fetched again from the backend when an operator
+ * resumes a remote task.
+ */
+data class RemoteTaskResume(
+    val taskId: Long,
+    val progress: RemoteTaskProgress,
+)
+
+object RemoteTaskResumePolicy {
+    /** A processed remote task is safe to resume only when its last user anchor is available. */
+    fun canResumeExactly(progress: RemoteTaskProgress): Boolean =
+        progress.processedCount <= 0 || !progress.lastUserKey.isNullOrBlank()
+
+    fun requiresAnchor(progress: RemoteTaskProgress): Boolean =
+        progress.processedCount > 0 && !progress.lastUserKey.isNullOrBlank()
+}
+
 data class RemoteCheckpointRequest(
     val pageNumber: Int,
     val pageFingerprint: String,
@@ -137,4 +156,3 @@ interface AutomationTaskGateway {
     suspend fun submitCheckpoint(taskId: Long, request: RemoteCheckpointRequest): RemoteCheckpointResponse
     suspend fun submitRecord(taskId: Long, request: RemoteRecordRequest): RemoteRecordSyncResponse
 }
-

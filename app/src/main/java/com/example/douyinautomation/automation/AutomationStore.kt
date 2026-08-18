@@ -31,6 +31,8 @@ sealed interface AutomationCommand {
         val safetyProbe: Boolean = true,
         /** Optional M3 task snapshot; when absent the legacy single-keyword POC remains valid. */
         val taskSnapshot: TaskSnapshot? = null,
+        /** Optional backend progress fetched immediately before a remote task is resumed. */
+        val remoteResume: RemoteTaskResume? = null,
     ) : AutomationCommand
     /** Explicitly sends one operator-provided message on the currently verified chat page. */
     data class SendMessage(val message: String) : AutomationCommand
@@ -908,6 +910,11 @@ object AutomationStore {
                 awaitingManualHandoff = true,
             )
         }
+    }
+
+    /** Surface remote-claim/resume failures without changing the local automation phase. */
+    fun publishRemoteSyncError(reason: String) {
+        _uiState.update { it.copy(remoteSyncLastError = reason) }
     }
 
     private fun AutomationCommand.name(): String = when (this) {

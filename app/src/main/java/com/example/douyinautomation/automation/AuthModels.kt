@@ -228,4 +228,23 @@ object AuthStore {
         val config = secureStore?.read()?.takeIf(AuthConfig::isUsable) ?: return emptyList()
         return AutomationHttpClient(config).listTasks()
     }
+
+    /** Claim a task and fetch the authoritative progress in one resume transaction. */
+    suspend fun claimRemoteTask(
+        context: android.content.Context,
+        taskId: Long,
+    ): RemoteTaskSession {
+        initialize(context)
+        val config = secureStore?.read()?.takeIf(AuthConfig::isUsable)
+            ?: error("后端授权尚未配置")
+        val gateway = AutomationHttpClient(config)
+        val task = gateway.claimTask(taskId)
+        val progress = gateway.getTaskProgress(taskId)
+        return RemoteTaskSession(task = task, progress = progress)
+    }
 }
+
+data class RemoteTaskSession(
+    val task: RemoteTask,
+    val progress: RemoteTaskProgress,
+)

@@ -1,6 +1,6 @@
 # Douyin Automation POC — M3
 
-当前开发版本：`0.3.0-m3-g`
+当前开发版本：`0.3.0-m3-h`
 
 M1 冻结版本仍保留在标签 `v0.1.0-m1`。
 
@@ -26,6 +26,7 @@ M1 冻结版本仍保留在标签 `v0.1.0-m1`。
 - 基础授权边界：Android Keystore 加密本地授权配置、heartbeat 请求/响应模型、周期验证状态
 - Android HTTP Gateway：Bearer 授权、heartbeat、搜索预设/地区/屏蔽词目录、任务领取、进度、分页断点和用户结果同步契约
 - 远程任务工作台：读取后台待执行任务、绑定数字任务 ID、本地执行与异步断点/用户记录上报；网络失败不阻塞自动化
+- 远程断点续跑：领取任务时读取后台进度，按最后用户身份定位后从下一条继续；缺少锚点时安全暂停
 - 预设词远程接口：远程优先、本地缓存和内置预设回退；设置页可录入 HTTPS 后端与授权 Token
 - 设备摘要：heartbeat 只发送 Android ID 的 SHA-256 摘要，不发送原始设备标识
 
@@ -80,3 +81,6 @@ M3-F Android HTTP Gateway、后端 B2/B3 接口映射和测试策略见：
 
 M3-G 远程任务会话、异步断点/记录同步和安全边界见：
 [`docs/M3-G-remote-task-session.md`](docs/M3-G-remote-task-session.md)
+
+M3-H 远程任务断点定位和精确续跑见：
+[`docs/M3-H-remote-resume.md`](docs/M3-H-remote-resume.md)

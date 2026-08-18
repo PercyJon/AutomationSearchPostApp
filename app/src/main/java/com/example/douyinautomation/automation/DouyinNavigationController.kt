@@ -41,6 +41,11 @@ class DouyinNavigationController(
     private var taskQueryIndex: Int = 0
     /** Logical result-page number used only for the optional B3 remote checkpoint. */
     private var remotePageNumber: Int = 1
+    /** A remote task with existing progress must locate this anchor before selecting any row. */
+    private var remoteResumePending = false
+    private var remoteResumeAnchor: UserResultIdentity? = null
+    private var remoteResumeTargetPageNumber: Int? = null
+    private var remoteResumeMaxSwipes = 0
     /** True when an await helper already advanced/finished the task and its caller must return. */
     private var queryTransitionHandled = false
     private var pendingStartMessage: String = ""
@@ -89,6 +94,7 @@ class DouyinNavigationController(
                 startMessage = command.message,
                 safetyProbe = command.safetyProbe,
                 taskSnapshot = command.taskSnapshot,
+                remoteResume = command.remoteResume,
             )
             AutomationCommand.ResumeSavedTask -> resumeSavedTask()
             is AutomationCommand.SendMessage -> sendMessageOnce(command.message)
@@ -182,6 +188,7 @@ class DouyinNavigationController(
         startMessage: String,
         safetyProbe: Boolean,
         taskSnapshot: TaskSnapshot?,
+        remoteResume: RemoteTaskResume?,
     ) {
         val sanitizedKeyword = taskSnapshot?.composedQueries?.firstOrNull()?.trim()
             ?.takeIf { it.isNotEmpty() }
@@ -200,12 +207,37 @@ class DouyinNavigationController(
             logger.warn("start_ignored_active")
             return
         }
+        if (remoteResume != null && !RemoteTaskResumePolicy.canResumeExactly(remoteResume.progress)) {
+            AutomationStore.publishFailure("远程任务已有进度但缺少最后用户锚点，已停止以避免重复处理")
+            logger.error(
+                "remote_resume_rejected_missing_anchor",
+                message = "Remote progress cannot be resumed safely without the last user anchor",
+                attributes = mapOf("remote_task_id_hash" to remoteResume.taskId.hashCode()),
+            )
+            return
+        }
 
         taskActive = true
         keyword = sanitizedKeyword
         activeTaskSnapshot = taskSnapshot
         taskQueryIndex = 0
         remotePageNumber = 1
+        remoteResumePending = remoteResume?.progress?.let { progress ->
+            RemoteTaskResumePolicy.requiresAnchor(progress)
+        } == true
+        remoteResumeAnchor = remoteResume?.progress?.lastUserKey
+            ?.takeIf(String::isNotBlank)
+            ?.let { key ->
+                UserResultIdentity(
+                    key = key,
+                    source = UserResultIdentity.Source.ACCESSIBILITY,
+                    displayName = remoteResume.progress.lastUserName,
+                )
+            }
+        remoteResumeTargetPageNumber = remoteResume?.progress?.lastPageNumber?.coerceAtLeast(1)
+        remoteResumeMaxSwipes = (remoteResumeTargetPageNumber ?: 1)
+            .plus(REMOTE_RESUME_EXTRA_SWIPES)
+            .coerceAtMost(MAX_REMOTE_RESUME_SWIPES)
         queryTransitionHandled = false
         pendingStartMessage = startMessage.trim()
         pendingSafetyProbe = safetyProbe
@@ -218,6 +250,11 @@ class DouyinNavigationController(
         processedUserIdentities.clear()
         processedUserIdentityRecords.clear()
         processedIdentityHashes.clear()
+        remoteResumeAnchor?.let { anchor ->
+            processedUserIdentities += anchor.key
+            processedUserIdentityRecords += anchor
+            processedIdentityHashes += anchor.key.hashCode()
+        }
         currentUserIdentityHash = null
         cachedUserResultsViewportSignature = null
         cachedUserResultsOcrBlocks = emptyList()
@@ -280,6 +317,10 @@ class DouyinNavigationController(
         activeTaskSnapshot = checkpoint.snapshot
         taskQueryIndex = checkpoint.queryIndex
         remotePageNumber = 1
+        remoteResumePending = false
+        remoteResumeAnchor = null
+        remoteResumeTargetPageNumber = null
+        remoteResumeMaxSwipes = 0
         queryTransitionHandled = false
         pendingStartMessage = checkpoint.snapshot.messageTemplate.orEmpty()
         pendingSafetyProbe = checkpoint.snapshot.executionMode == TaskExecutionMode.SAFE_BLANK_PROBE
@@ -666,6 +707,13 @@ class DouyinNavigationController(
         val maxUsers = activeTaskSnapshot?.maxUsers
         if (maxUsers != null && processedUserIdentityRecords.size >= maxUsers) {
             completeTaskAtUserLimit(maxUsers)
+            return
+        }
+        // A remote task with existing progress must first locate the backend's last-user anchor.
+        // Starting at the first visible row would silently reprocess users when the process was
+        // recreated on a fresh Douyin result page, so no row is selected until the anchor is found.
+        if (remoteResumePending && minimumAnchorTop == null) {
+            resumeRemoteTaskFromAnchor(context)
             return
         }
         phase = AutomationPhase.SELECTING_USER_RESULT
@@ -1143,6 +1191,109 @@ class DouyinNavigationController(
      * it waits for the row text to settle instead of opening an unverified row. A genuinely full
      * page (no overlap identity at all) is allowed to start at its first stable row.
      */
+    private suspend fun resumeRemoteTaskFromAnchor(initialContext: ScreenContext) {
+        val anchor = remoteResumeAnchor
+        if (!remoteResumePending || anchor == null) {
+            remoteResumePending = false
+            return
+        }
+
+        var context = initialContext
+        val maxSwipes = remoteResumeMaxSwipes.coerceAtLeast(1)
+        repeat(maxSwipes + 1) { attempt ->
+            context = currentWindowContext() ?: context
+            if (pageDetector.detect(context).kind != PageKind.USER_RESULTS) {
+                delay(USER_ROW_POSTCONDITION_INTERVAL_MS)
+                return@repeat
+            }
+            val rows = visibleStructuralUserRows(context)
+            if (rows.isNotEmpty()) {
+                val needsViewportOcr = rows.any { row ->
+                    UserResultIdentityExtractor.extract(context, row) == null
+                }
+                val identityContext = enrichUserResultIdentityContext(
+                    context = context,
+                    match = rows.first(),
+                    forceOcr = needsViewportOcr,
+                    forceFreshOcr = needsViewportOcr && attempt > 0,
+                )
+                val identities = rows.map { row ->
+                    UserResultIdentityExtractor.extract(identityContext, row)
+                }
+                val candidates = identities.mapIndexedNotNull { index, identity ->
+                    identity?.let { viewportAnchorMatchReason(anchor, it)?.let { reason -> index to reason } }
+                }
+                val strong = candidates.filterNot { it.second == "anchor_display_name" }
+                val anchorIndex = when {
+                    strong.size == 1 -> strong.single().first
+                    strong.size > 1 -> -1
+                    candidates.size == 1 -> candidates.single().first
+                    else -> -1
+                }
+                logger.info(
+                    "remote_resume_anchor_probe",
+                    attributes = mapOf(
+                        "attempt" to attempt + 1,
+                        "row_count" to rows.size,
+                        "identity_count" to identities.count { it != null },
+                        "anchor_candidate_count" to candidates.size,
+                        "anchor_index" to anchorIndex,
+                        "target_page" to (remoteResumeTargetPageNumber ?: 1),
+                    ),
+                )
+                if (identities.any { it == null }) {
+                    logger.info(
+                        "remote_resume_anchor_waiting",
+                        message = "The visible rows do not yet have complete identities; waiting before paging",
+                        attributes = mapOf("attempt" to attempt + 1),
+                    )
+                    delay(USER_ROW_POSTCONDITION_INTERVAL_MS)
+                    return@repeat
+                }
+                if (anchorIndex >= 0 && identities.all { it != null }) {
+                    // The backend page number is authoritative once the physical anchor has been
+                    // found. From this point onward normal overlap handling resumes.
+                    remoteResumePending = false
+                    remotePageNumber = remoteResumeTargetPageNumber ?: remotePageNumber
+                    val anchorRow = rows[anchorIndex]
+                    phase = AutomationPhase.WAITING_FOR_USER_RESULTS
+                    AutomationStore.publishPhase(phase)
+                    selectVisibleUser(
+                        identityContext,
+                        minimumAnchorTop = anchorRow.anchor.bounds.bottom.toFloat(),
+                    )
+                    return
+                }
+            } else {
+                logger.info(
+                    "remote_resume_anchor_waiting",
+                    message = "The result rows are still loading; no resume swipe is issued",
+                    attributes = mapOf("attempt" to attempt + 1),
+                )
+                delay(USER_ROW_POSTCONDITION_INTERVAL_MS)
+                return@repeat
+            }
+
+            if (attempt >= maxSwipes) return@repeat
+            val scroll = swipeToNextUserPage("remote_resume_anchor")
+            if (!scroll.succeeded) {
+                pause("无法定位远程任务的上次用户，已暂停以避免重复处理")
+                return
+            }
+            val nextContext = awaitUserResultsAfterScroll("remote_resume_anchor")
+            if (nextContext == null) {
+                if (!queryTransitionHandled) {
+                    pause("远程任务断点用户未在结果中找到，已暂停等待人工确认")
+                }
+                return
+            }
+            context = nextContext
+        }
+
+        remoteResumePending = false
+        pause("远程任务断点用户未在限定页数内找到，已暂停以避免重复处理")
+    }
+
     private suspend fun selectAfterViewportAnchor(
         initialContext: ScreenContext,
         tag: String,
@@ -2767,6 +2918,10 @@ class DouyinNavigationController(
         pendingSafetyProbe = true
         lastProcessedUserAnchorBottom = null
         remotePageNumber = 1
+        remoteResumePending = false
+        remoteResumeAnchor = null
+        remoteResumeTargetPageNumber = null
+        remoteResumeMaxSwipes = 0
         processedUserIdentities.clear()
         cachedUserResultsViewportSignature = null
         cachedUserResultsOcrBlocks = emptyList()
@@ -2813,6 +2968,8 @@ class DouyinNavigationController(
         const val VIEWPORT_ANCHOR_PROBE_ATTEMPTS = 8
         const val VIEWPORT_ANCHOR_PROBE_INTERVAL_MS = 650L
         const val VIEWPORT_IDENTITY_STABLE_OBSERVATIONS = 2
+        const val REMOTE_RESUME_EXTRA_SWIPES = 8
+        const val MAX_REMOTE_RESUME_SWIPES = 30
         const val MAX_VISIBLE_USER_ROWS = 20
         const val MESSAGE_ENTRY_POSTCONDITION_DELAY_MS = 900L
         const val PRIVATE_MESSAGE_ENTRY_ATTEMPTS = 3

@@ -33,6 +33,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -48,6 +49,8 @@ import com.example.douyinautomation.automation.LicenseStatus
 import com.example.douyinautomation.automation.LocalSearchPresetRepository
 import com.example.douyinautomation.automation.QueryComposer
 import com.example.douyinautomation.automation.RemoteTask
+import com.example.douyinautomation.automation.RemoteTaskResume
+import com.example.douyinautomation.automation.RemoteTaskResumePolicy
 import com.example.douyinautomation.automation.SearchPreset
 import com.example.douyinautomation.automation.SearchPresetCatalog
 import com.example.douyinautomation.automation.TaskDraft
@@ -58,6 +61,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 
@@ -149,6 +153,7 @@ private fun TaskDashboard(
     val state by AutomationStore.uiState.collectAsState()
     val licenseState by AuthStore.uiState.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
     val builtInCatalog = remember {
         SearchPresetCatalog(
             version = LocalSearchPresetRepository.BUILT_IN_VERSION,
@@ -159,6 +164,7 @@ private fun TaskDashboard(
     }
     var presetCatalog by remember { mutableStateOf(builtInCatalog) }
     var remoteTasks by remember { mutableStateOf<List<RemoteTask>>(emptyList()) }
+    var remoteStartingTaskId by remember { mutableStateOf<Long?>(null) }
     LaunchedEffect(context) {
         presetCatalog = runCatching {
             withContext(Dispatchers.IO) { AuthStore.loadSearchPresets(context) }
@@ -219,17 +225,42 @@ private fun TaskDashboard(
             RemoteTaskCard(
                 tasks = remoteTasks,
                 serviceConnected = state.serviceConnected,
+                startingTaskId = remoteStartingTaskId,
                 onStart = { remoteTask ->
-                    AutomationStore.send(
-                        AutomationCommand.Start(
-                            keyword = remoteTask.keyword,
-                            // Remote "send" tasks remain in the M2 blank-message safety mode
-                            // until a separate, explicit confirmation flow is implemented.
-                            message = "",
-                            safetyProbe = true,
-                            taskSnapshot = remoteTask.toTaskSnapshot(),
-                        ),
-                    )
+                    scope.launch {
+                        remoteStartingTaskId = remoteTask.id
+                        val session = runCatching {
+                            withContext(Dispatchers.IO) {
+                                AuthStore.claimRemoteTask(context, remoteTask.id)
+                            }
+                        }.getOrElse { error ->
+                            AutomationStore.publishRemoteSyncError(
+                                "远程任务 #${remoteTask.id} 领取/读取进度失败：${error.message ?: "网络异常"}",
+                            )
+                            null
+                        }
+                        if (session != null) {
+                            val progress = session.progress
+                            if (!RemoteTaskResumePolicy.canResumeExactly(progress)) {
+                                AutomationStore.publishRemoteSyncError(
+                                    "远程任务 #${remoteTask.id} 已有 ${progress.processedCount} 条进度，但缺少最后用户锚点，已暂停以避免重复处理",
+                                )
+                            } else {
+                                AutomationStore.send(
+                                    AutomationCommand.Start(
+                                        keyword = session.task.keyword,
+                                        // Remote "send" tasks remain in the M2 blank-message safety
+                                        // mode until a separate, explicit confirmation flow exists.
+                                        message = "",
+                                        safetyProbe = true,
+                                        taskSnapshot = session.task.toTaskSnapshot(),
+                                        remoteResume = RemoteTaskResume(session.task.id, progress),
+                                    ),
+                                )
+                            }
+                        }
+                        remoteStartingTaskId = null
+                    }
                 },
             )
         }
@@ -345,6 +376,7 @@ private fun TaskDashboard(
 private fun RemoteTaskCard(
     tasks: List<RemoteTask>,
     serviceConnected: Boolean,
+    startingTaskId: Long?,
     onStart: (RemoteTask) -> Unit,
 ) {
     Card(
@@ -371,8 +403,8 @@ private fun RemoteTaskCard(
                     }
                     FilledTonalButton(
                         onClick = { onStart(task) },
-                        enabled = serviceConnected,
-                    ) { Text("领取") }
+                        enabled = serviceConnected && startingTaskId == null,
+                    ) { Text(if (startingTaskId == task.id) "读取中" else "领取") }
                 }
             }
         }
