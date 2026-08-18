@@ -47,6 +47,7 @@ import com.example.douyinautomation.automation.AuthStore
 import com.example.douyinautomation.automation.LicenseStatus
 import com.example.douyinautomation.automation.LocalSearchPresetRepository
 import com.example.douyinautomation.automation.QueryComposer
+import com.example.douyinautomation.automation.RemoteTask
 import com.example.douyinautomation.automation.SearchPreset
 import com.example.douyinautomation.automation.SearchPresetCatalog
 import com.example.douyinautomation.automation.TaskDraft
@@ -146,6 +147,7 @@ private fun TaskDashboard(
     initialKeyword: String,
 ) {
     val state by AutomationStore.uiState.collectAsState()
+    val licenseState by AuthStore.uiState.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
     val builtInCatalog = remember {
         SearchPresetCatalog(
@@ -156,10 +158,16 @@ private fun TaskDashboard(
         )
     }
     var presetCatalog by remember { mutableStateOf(builtInCatalog) }
+    var remoteTasks by remember { mutableStateOf<List<RemoteTask>>(emptyList()) }
     LaunchedEffect(context) {
         presetCatalog = runCatching {
             withContext(Dispatchers.IO) { AuthStore.loadSearchPresets(context) }
         }.getOrElse { builtInCatalog }
+    }
+    LaunchedEffect(context, licenseState.status) {
+        remoteTasks = runCatching {
+            withContext(Dispatchers.IO) { AuthStore.loadRemoteTasks(context) }
+        }.getOrDefault(emptyList())
     }
     val presets = presetCatalog.items
     var taskName by rememberSaveable { mutableStateOf("红木客户筛选") }
@@ -206,6 +214,25 @@ private fun TaskDashboard(
         )
 
         CurrentTaskCard(state = state)
+
+        if (remoteTasks.isNotEmpty()) {
+            RemoteTaskCard(
+                tasks = remoteTasks,
+                serviceConnected = state.serviceConnected,
+                onStart = { remoteTask ->
+                    AutomationStore.send(
+                        AutomationCommand.Start(
+                            keyword = remoteTask.keyword,
+                            // Remote "send" tasks remain in the M2 blank-message safety mode
+                            // until a separate, explicit confirmation flow is implemented.
+                            message = "",
+                            safetyProbe = true,
+                            taskSnapshot = remoteTask.toTaskSnapshot(),
+                        ),
+                    )
+                },
+            )
+        }
 
         Card(
             modifier = Modifier
@@ -315,6 +342,60 @@ private fun TaskDashboard(
 }
 
 @Composable
+private fun RemoteTaskCard(
+    tasks: List<RemoteTask>,
+    serviceConnected: Boolean,
+    onStart: (RemoteTask) -> Unit,
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("远程任务", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text(
+                "来自后台的待执行任务。领取后仍由本地无障碍状态机执行，网络同步在后台完成。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            tasks.take(5).forEach { task ->
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(task.name, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "#${task.id} · ${task.keyword} · 已处理 ${task.processedCount}/${task.maxUsers.takeIf { it > 0 } ?: "不限"}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    FilledTonalButton(
+                        onClick = { onStart(task) },
+                        enabled = serviceConnected,
+                    ) { Text("领取") }
+                }
+            }
+        }
+    }
+}
+
+private fun RemoteTask.toTaskSnapshot(): com.example.douyinautomation.automation.TaskSnapshot =
+    com.example.douyinautomation.automation.TaskSnapshot(
+        taskId = id.toString(),
+        taskName = name,
+        presetVersion = catalogVersion.toString(),
+        baseKeywords = listOf(keyword),
+        region = regionName.orEmpty(),
+        composedQueries = listOf(keyword),
+        normalizedBlockedKeywords = emptyList(),
+        maxUsers = maxUsers.takeIf { it > 0 } ?: TaskDraft.DEFAULT_MAX_USERS,
+        messageTemplate = message.takeIf { it.isNotBlank() },
+        // Never turn a server task into an automatic real-message send in this milestone.
+        executionMode = TaskExecutionMode.SAFE_BLANK_PROBE,
+        createdAtMillis = System.currentTimeMillis(),
+    )
+
+@Composable
 private fun PresetChips(
     presets: List<SearchPreset>,
     selectedIds: Set<String>,
@@ -388,6 +469,16 @@ private fun CurrentTaskCard(
             Text("当前任务", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             state.taskName?.takeIf(String::isNotBlank)?.let { Text(it, fontWeight = FontWeight.SemiBold) }
             Text(phaseLabel(state.phase), fontWeight = FontWeight.SemiBold)
+            state.remoteTaskId?.let { remoteId ->
+                Text(
+                    "远程任务 #$remoteId · 待同步 ${state.remoteSyncPendingCount}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            state.remoteSyncLastError?.takeIf(String::isNotBlank)?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
                 Text("已处理 ${state.taskHandledUserCount}")
                 Text("已跳过 ${state.taskDuplicateUserCount}")

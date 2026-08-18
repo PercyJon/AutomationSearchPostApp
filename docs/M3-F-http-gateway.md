@@ -32,7 +32,7 @@ Android 端现在可以通过一个受控的 HTTP 边界访问后端移动端接
 
 ## B3 断点与记录
 
-`AutomationHttpClient` 已实现任务领取、进度读取、分页断点提交和用户处理结果提交的数据模型与 JSON 映射。当前自动化控制器仍以本地检查点为实时执行主状态；下一步将把已确认的远程任务 ID 映射到本地任务会话，再启用断点/记录的异步上报。这样网络短暂不可用时不会阻塞抖音页面操作。
+首页已能读取后台待执行任务并将数字任务 ID 映射到本地任务快照。领取、分页断点和用户处理结果通过 `RemoteTaskSyncQueue` 异步提交，最多重试三次；网络故障不会阻塞抖音页面操作，本地检查点仍是实时执行主状态。远程任务在本阶段统一使用空白消息安全探测，即使后台标记为 `send` 也不会自动发送真实文案。
 
 ## 验证策略
 
@@ -40,4 +40,3 @@ Android 端现在可以通过一个受控的 HTTP 边界访问后端移动端接
 - 静态检查与 APK：`./gradlew :app:lintDebug :app:assembleDebug`
 - HTTP/Android JSON 契约测试已编译到 `androidTest`，因为 Android 平台的 `JSONObject` 在 JVM 桩环境不可运行。
 - 不在日常真机上运行 `connectedDebugAndroidTest`，避免 Gradle UTP 的卸载清理影响已安装应用。需要真机时使用显式 `adb install -r` 和经确认的 instrumentation 命令。
-

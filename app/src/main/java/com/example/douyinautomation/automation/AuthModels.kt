@@ -177,7 +177,7 @@ object AuthStore {
                     ?.let(::AutomationHttpClient)
                     ?: UnconfiguredHeartbeatGateway
             },
-            appVersion = "0.3.0-m3-f",
+            appVersion = "0.3.0-m3-g",
         )
         coordinator?.state?.let { state ->
             scope.launch { state.collect { _uiState.emit(it) } }
@@ -222,4 +222,10 @@ object AuthStore {
         context: android.content.Context,
         forceRefresh: Boolean = false,
     ): SearchPresetCatalog = searchPresetRepository(context).load(forceRefresh)
+
+    suspend fun loadRemoteTasks(context: android.content.Context): List<RemoteTask> {
+        initialize(context)
+        val config = secureStore?.read()?.takeIf(AuthConfig::isUsable) ?: return emptyList()
+        return AutomationHttpClient(config).listTasks()
+    }
 }

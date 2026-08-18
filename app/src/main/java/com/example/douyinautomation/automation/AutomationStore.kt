@@ -94,6 +94,9 @@ data class AutomationUiState(
     val taskHandledUserCount: Int = 0,
     val taskDuplicateUserCount: Int = 0,
     val taskLastEvent: String? = null,
+    val remoteTaskId: Long? = null,
+    val remoteSyncPendingCount: Int = 0,
+    val remoteSyncLastError: String? = null,
     val savedTaskAvailable: Boolean = false,
     val savedTaskName: String? = null,
     val savedTaskQueryIndex: Int = 0,
@@ -120,6 +123,12 @@ object AutomationStore {
     private var taskHistory: List<TaskHistoryEntry> = emptyList()
     private var currentTaskId: String? = null
     private var savedCheckpoint: TaskCheckpoint? = null
+    private var remoteTaskId: Long? = null
+    private var remoteGateway: AutomationTaskGateway? = null
+    private var remoteSyncQueue: RemoteTaskSyncQueue? = null
+    private var remoteConfigFingerprint: Int? = null
+    private val remoteUserKeys = mutableMapOf<Int, String>()
+    private val remoteDisplayNames = mutableMapOf<Int, String>()
 
     val commands: SharedFlow<AutomationCommand> = _commands.asSharedFlow()
     val uiState: StateFlow<AutomationUiState> = _uiState.asStateFlow()
@@ -134,25 +143,28 @@ object AutomationStore {
 
     /** Load the private task history once the Android service has a Context. */
     fun initialize(context: Context) {
+        AuthStore.initialize(context)
         synchronized(recordLock) {
-            if (recordPreferences != null) return
-            recordPreferences = context.applicationContext.getSharedPreferences(
-                TASK_RECORDS_PREFERENCES,
-                Context.MODE_PRIVATE,
-            )
-            allTaskRecords = decodeRecords(recordPreferences?.getString(TASK_RECORDS_KEY, null))
-            taskHistory = decodeTaskHistory(recordPreferences?.getString(TASK_HISTORY_KEY, null))
-            savedCheckpoint = decodeCheckpoint(recordPreferences?.getString(TASK_CHECKPOINT_KEY, null))
-            _uiState.update { current ->
-                current.copy(
-                    savedTaskAvailable = savedCheckpoint != null,
-                    savedTaskName = savedCheckpoint?.snapshot?.taskName,
-                    savedTaskQueryIndex = savedCheckpoint?.queryIndex ?: 0,
-                    savedTaskQueryCount = savedCheckpoint?.snapshot?.composedQueries?.size ?: 0,
-                    taskHistory = taskHistory,
+            if (recordPreferences == null) {
+                recordPreferences = context.applicationContext.getSharedPreferences(
+                    TASK_RECORDS_PREFERENCES,
+                    Context.MODE_PRIVATE,
                 )
+                allTaskRecords = decodeRecords(recordPreferences?.getString(TASK_RECORDS_KEY, null))
+                taskHistory = decodeTaskHistory(recordPreferences?.getString(TASK_HISTORY_KEY, null))
+                savedCheckpoint = decodeCheckpoint(recordPreferences?.getString(TASK_CHECKPOINT_KEY, null))
+                _uiState.update { current ->
+                    current.copy(
+                        savedTaskAvailable = savedCheckpoint != null,
+                        savedTaskName = savedCheckpoint?.snapshot?.taskName,
+                        savedTaskQueryIndex = savedCheckpoint?.queryIndex ?: 0,
+                        savedTaskQueryCount = savedCheckpoint?.snapshot?.composedQueries?.size ?: 0,
+                        taskHistory = taskHistory,
+                    )
+                }
             }
         }
+        refreshRemoteSync()
     }
 
     fun getSavedCheckpoint(): TaskCheckpoint? = synchronized(recordLock) { savedCheckpoint }
@@ -185,10 +197,14 @@ object AutomationStore {
         queryIndex: Int,
         resetRecords: Boolean,
     ) {
+        refreshRemoteSync()
         val now = System.currentTimeMillis()
         val existingRecords: List<UserTaskRecord>
         synchronized(recordLock) {
             currentTaskId = taskId
+            remoteTaskId = snapshot?.taskId?.toLongOrNull()?.takeIf { it > 0L }
+            remoteUserKeys.clear()
+            remoteDisplayNames.clear()
             if (resetRecords) {
                 allTaskRecords = allTaskRecords.filterNot { it.taskId == taskId }
             }
@@ -232,6 +248,8 @@ object AutomationStore {
                 taskBlockedKeywordCount = snapshot?.normalizedBlockedKeywords?.size ?: 0,
                 taskStartedAtMillis = now,
                 taskLastEvent = "TASK_STARTED",
+                remoteTaskId = remoteTaskId,
+                remoteSyncLastError = null,
                 taskRecords = existingRecords,
                 taskHandledUserCount = existingRecords.count { record ->
                     record.outcome != UserTaskRecord.Outcome.DUPLICATE_SKIPPED
@@ -269,6 +287,60 @@ object AutomationStore {
                 ),
             )
         }
+        remoteTaskId?.let(::claimRemoteTask)
+    }
+
+    /** Rebuilds the gateway when the encrypted endpoint/token configuration changes. */
+    private fun refreshRemoteSync() {
+        val config = AuthStore.currentConfig()?.takeIf(AuthConfig::isUsable)
+        val fingerprint = config?.let { 31 * it.endpoint.hashCode() + it.licenseToken.hashCode() }
+        synchronized(recordLock) {
+            if (fingerprint == remoteConfigFingerprint) return
+            remoteSyncQueue?.close()
+            remoteConfigFingerprint = fingerprint
+            remoteGateway = config?.let(::AutomationHttpClient)
+            remoteSyncQueue = remoteGateway?.let { gateway ->
+                RemoteTaskSyncQueue(
+                    scope = storeScope,
+                    gatewayProvider = { gateway },
+                    logger = logger,
+                    onFailure = { message ->
+                        _uiState.update { it.copy(remoteSyncLastError = message) }
+                    },
+                    onSuccess = {
+                        _uiState.update { it.copy(remoteSyncLastError = null) }
+                    },
+                )
+            }
+            remoteSyncQueue?.let { queue ->
+                storeScope.launch {
+                    queue.pendingCount.collect { count ->
+                        _uiState.update { it.copy(remoteSyncPendingCount = count) }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun claimRemoteTask(taskId: Long) {
+        val gateway = synchronized(recordLock) { remoteGateway } ?: return
+        storeScope.launch {
+            runCatching { gateway.claimTask(taskId) }
+                .onSuccess { task ->
+                    logger.info(
+                        "remote_task_claimed",
+                        attributes = mapOf("remote_task_id_hash" to task.id.hashCode(), "status" to task.status),
+                    )
+                }
+                .onFailure { error ->
+                    logger.warn(
+                        "remote_task_claim_failed",
+                        message = "Remote task claim failed; local execution remains available",
+                        attributes = mapOf("remote_task_id_hash" to taskId.hashCode()),
+                    )
+                    _uiState.update { it.copy(remoteSyncLastError = "远程任务领取失败，本地任务仍可继续") }
+                }
+        }
     }
 
     /** Persist only opaque identity hashes and the frozen task contract. */
@@ -305,9 +377,29 @@ object AutomationStore {
         }
     }
 
+    /** Submit an explicitly captured result viewport without blocking accessibility gestures. */
+    fun syncRemoteCheckpoint(request: RemoteCheckpointRequest) {
+        val taskId: Long
+        val queue: RemoteTaskSyncQueue
+        synchronized(recordLock) {
+            taskId = remoteTaskId ?: return
+            queue = remoteSyncQueue ?: return
+        }
+        queue.enqueueCheckpoint(taskId, request)
+    }
+
     /** Create the durable per-user record when a unique row is first selected. */
-    fun recordUserTaskStarted(identityHash: Int, page: PageKind? = PageKind.USER_RESULTS) {
+    fun recordUserTaskStarted(
+        identityHash: Int,
+        page: PageKind? = PageKind.USER_RESULTS,
+        remoteUserKey: String? = null,
+        displayName: String? = null,
+    ) {
         val taskId = synchronized(recordLock) { currentTaskId } ?: return
+        synchronized(recordLock) {
+            remoteUserKey?.takeIf(String::isNotBlank)?.let { remoteUserKeys[identityHash] = it }
+            displayName?.takeIf(String::isNotBlank)?.let { remoteDisplayNames[identityHash] = it }
+        }
         logger.info(
             "task_user_started",
             attributes = mapOf("task_id_hash" to taskId.hashCode(), "identity_hash" to identityHash),
@@ -322,6 +414,7 @@ object AutomationStore {
                 page = page,
             ),
         )
+        enqueueRemoteRecord(identityHash, UserTaskRecord.Outcome.IN_PROGRESS, null, page)
     }
 
     /** Finish the current user's record without creating a second row for the same attempt. */
@@ -330,8 +423,16 @@ object AutomationStore {
         outcome: UserTaskRecord.Outcome,
         reason: String? = null,
         page: PageKind? = null,
+        remoteUserKey: String? = null,
+        displayName: String? = null,
     ) {
         val taskId = synchronized(recordLock) { currentTaskId } ?: return
+        if (identityHash != null) {
+            synchronized(recordLock) {
+                remoteUserKey?.takeIf(String::isNotBlank)?.let { remoteUserKeys[identityHash] = it }
+                displayName?.takeIf(String::isNotBlank)?.let { remoteDisplayNames[identityHash] = it }
+            }
+        }
         logger.info(
             "task_user_finished",
             attributes = mapOf(
@@ -370,6 +471,7 @@ object AutomationStore {
                 )
             }
         }
+        enqueueRemoteRecord(identityHash, outcome, reason, page)
     }
 
     /** Record a row-level event such as a duplicate or follow-back skip. */
@@ -378,8 +480,16 @@ object AutomationStore {
         outcome: UserTaskRecord.Outcome,
         reason: String? = null,
         page: PageKind? = PageKind.USER_RESULTS,
+        remoteUserKey: String? = null,
+        displayName: String? = null,
     ) {
         val taskId = synchronized(recordLock) { currentTaskId } ?: return
+        if (identityHash != null) {
+            synchronized(recordLock) {
+                remoteUserKey?.takeIf(String::isNotBlank)?.let { remoteUserKeys[identityHash] = it }
+                displayName?.takeIf(String::isNotBlank)?.let { remoteDisplayNames[identityHash] = it }
+            }
+        }
         logger.info(
             "task_user_event",
             attributes = mapOf(
@@ -399,6 +509,37 @@ object AutomationStore {
                 finishedAtMillis = now,
                 page = page,
                 reason = reason,
+            ),
+        )
+        enqueueRemoteRecord(identityHash, outcome, reason, page)
+    }
+
+    private fun enqueueRemoteRecord(
+        identityHash: Int?,
+        outcome: UserTaskRecord.Outcome,
+        reason: String?,
+        page: PageKind?,
+    ) {
+        if (identityHash == null) return
+        val remoteId: Long
+        val queue: RemoteTaskSyncQueue
+        val userKey: String
+        val displayName: String?
+        synchronized(recordLock) {
+            remoteId = remoteTaskId ?: return
+            queue = remoteSyncQueue ?: return
+            userKey = remoteUserKeys[identityHash] ?: return
+            displayName = remoteDisplayNames[identityHash]
+        }
+        queue.enqueueRecord(
+            remoteId,
+            RemoteRecordRequest(
+                userKey = userKey,
+                displayName = displayName,
+                status = RemoteTaskRecordStatus.from(outcome),
+                lastAction = page?.name ?: outcome.name,
+                failureCode = reason?.takeIf { outcome != UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED }?.let { outcome.name },
+                failureMessage = reason?.takeIf { outcome != UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED }?.take(512),
             ),
         )
     }

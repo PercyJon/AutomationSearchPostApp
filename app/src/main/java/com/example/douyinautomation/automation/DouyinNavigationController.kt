@@ -39,6 +39,8 @@ class DouyinNavigationController(
     private var keyword: String? = null
     private var activeTaskSnapshot: TaskSnapshot? = null
     private var taskQueryIndex: Int = 0
+    /** Logical result-page number used only for the optional B3 remote checkpoint. */
+    private var remotePageNumber: Int = 1
     /** True when an await helper already advanced/finished the task and its caller must return. */
     private var queryTransitionHandled = false
     private var pendingStartMessage: String = ""
@@ -203,6 +205,7 @@ class DouyinNavigationController(
         keyword = sanitizedKeyword
         activeTaskSnapshot = taskSnapshot
         taskQueryIndex = 0
+        remotePageNumber = 1
         queryTransitionHandled = false
         pendingStartMessage = startMessage.trim()
         pendingSafetyProbe = safetyProbe
@@ -276,6 +279,7 @@ class DouyinNavigationController(
         keyword = query
         activeTaskSnapshot = checkpoint.snapshot
         taskQueryIndex = checkpoint.queryIndex
+        remotePageNumber = 1
         queryTransitionHandled = false
         pendingStartMessage = checkpoint.snapshot.messageTemplate.orEmpty()
         pendingSafetyProbe = checkpoint.snapshot.executionMode == TaskExecutionMode.SAFE_BLANK_PROBE
@@ -741,6 +745,8 @@ class DouyinNavigationController(
                         identityHash = identityHash,
                         outcome = UserTaskRecord.Outcome.DUPLICATE_SKIPPED,
                         reason = "The overlapping viewport exposed an already processed user",
+                        remoteUserKey = identity.key,
+                        displayName = identity.displayName,
                     )
                     lastProcessedUserAnchorBottom = rowMatch!!.anchor.bounds.bottom.toFloat()
                     skipDuplicateUser(rowContext, rowMatch!!)
@@ -770,6 +776,8 @@ class DouyinNavigationController(
                         identityHash = identityHash,
                         outcome = UserTaskRecord.Outcome.FILTERED_BY_KEYWORD,
                         reason = "Blocked keywords matched: ${blockedEvaluation.matchedKeywords.joinToString()}",
+                        remoteUserKey = identity.key,
+                        displayName = identity.displayName,
                     )
                     // A filtered row is handled too. Retaining its identity makes the next
                     // viewport anchor continue after it instead of exposing it again.
@@ -786,7 +794,11 @@ class DouyinNavigationController(
                 processedIdentityHashes.add(identityHash)
                 persistTaskCheckpoint()
                 currentUserIdentityHash = identityHash
-                AutomationStore.recordUserTaskStarted(identityHash)
+                AutomationStore.recordUserTaskStarted(
+                    identityHash = identityHash,
+                    remoteUserKey = identity.key,
+                    displayName = identity.displayName,
+                )
             } else {
                 currentUserIdentityHash = null
                 logger.warn(
@@ -1146,6 +1158,7 @@ class DouyinNavigationController(
         var context = initialContext
         var lastIdentitySignature: String? = null
         var stableIdentityObservations = 0
+        var remoteCheckpointSubmitted = false
         repeat(VIEWPORT_ANCHOR_PROBE_ATTEMPTS) { attempt ->
             if (attempt > 0) delay(VIEWPORT_ANCHOR_PROBE_INTERVAL_MS)
             context = currentWindowContext() ?: context
@@ -1185,6 +1198,20 @@ class DouyinNavigationController(
             }
             val identitiesStable = identities.all { it != null } &&
                 stableIdentityObservations >= VIEWPORT_IDENTITY_STABLE_OBSERVATIONS
+            if (identitiesStable && !remoteCheckpointSubmitted) {
+                val visibleKeys = identities.mapNotNull { it?.key }
+                val fingerprint = (identitySignature + visibleKeys.joinToString("|")).hashCode().toString(16)
+                AutomationStore.syncRemoteCheckpoint(
+                    RemoteCheckpointRequest(
+                        pageNumber = remotePageNumber,
+                        pageFingerprint = fingerprint,
+                        lastUserKey = previousIdentity.key,
+                        lastUserName = previousIdentity.displayName,
+                        visibleUserKeys = visibleKeys,
+                    ),
+                )
+                remoteCheckpointSubmitted = true
+            }
             val anchorCandidates = identities.mapIndexedNotNull { index, identity ->
                 identity?.let { candidate ->
                     viewportAnchorMatchReason(previousIdentity, candidate)?.let { reason ->
@@ -2392,7 +2419,7 @@ class DouyinNavigationController(
                 "travel" to (USER_PAGE_SWIPE_START_Y - USER_PAGE_SWIPE_END_Y),
             ),
         )
-        return swipeNormalizedGuarded(
+        val outcome = swipeNormalizedGuarded(
             startX = 0.50f,
             startY = USER_PAGE_SWIPE_START_Y,
             endX = 0.50f,
@@ -2400,6 +2427,8 @@ class DouyinNavigationController(
             durationMs = USER_PAGE_SWIPE_DURATION_MS,
             tag = tag,
         )
+        if (outcome.succeeded) remotePageNumber = (remotePageNumber + 1).coerceAtMost(10_000)
+        return outcome
     }
 
     private suspend fun swipeNormalizedGuarded(
@@ -2737,6 +2766,7 @@ class DouyinNavigationController(
         pendingStartMessage = ""
         pendingSafetyProbe = true
         lastProcessedUserAnchorBottom = null
+        remotePageNumber = 1
         processedUserIdentities.clear()
         cachedUserResultsViewportSignature = null
         cachedUserResultsOcrBlocks = emptyList()
