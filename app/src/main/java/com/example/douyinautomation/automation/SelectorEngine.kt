@@ -222,6 +222,20 @@ object DouyinSelectors {
         minimumScore = 0.30f,
     )
 
+    /**
+     * Structural fallback for builds that render the home magnifying glass as an unlabeled
+     * clickable ImageView. It still requires a semantic view class, clickability, visibility,
+     * and the upper-right home region; it is not a raw coordinate tap.
+     */
+    val searchEntryStructural = SelectorRequest(
+        name = "search-entry-structural",
+        classNameTokens = listOf("ImageView", "Button", "ImageButton"),
+        requireClassNameToken = true,
+        requireClickable = true,
+        preferredRegion = NormalizedRect(0.76f, 0f, 1f, 0.20f),
+        minimumScore = 0.30f,
+    )
+
     val searchInput = SelectorRequest(
         name = "search-input",
         labels = DouyinLabels.search,

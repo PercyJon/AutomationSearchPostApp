@@ -44,10 +44,24 @@ class PageDetector {
         val messageHeader = matchingSignals(context, DIRECT_MESSAGE_HEADERS)
         val sendButton = matchingSignals(context, DouyinLabels.send)
         val composerNodes = editableNodes.filter { nodeMatches(it, DouyinLabels.messageInput) }
+        // Some profiles use a custom-rendered composer with no hint, text, or content
+        // description. Its stable semantic shape is an editable field in the bottom band next
+        // to a right-side “发送” action. This is distinct from the top search field and avoids
+        // treating an otherwise valid fourth user chat as UNKNOWN.
+        val bottomComposerNodes = editableNodes.filter { node ->
+            node.bounds.height > 0 &&
+                node.bounds.top >= (context.screenSize.height * BOTTOM_COMPOSER_TOP_RATIO).toInt()
+        }
+        val hasBottomSendAction = context.nodes.any { node ->
+            node.bounds.height > 0 &&
+                node.bounds.top >= (context.screenSize.height * BOTTOM_COMPOSER_TOP_RATIO).toInt() &&
+                nodeMatches(node, DouyinLabels.send)
+        }
+        val hasStructuralComposer = bottomComposerNodes.isNotEmpty() && hasBottomSendAction
         // A search field can coexist with incidental "私信"/"发送" text in a result card or OCR
         // overlay. Require an actual message composer, or both the chat header and send action,
         // before classifying the page as an open conversation.
-        val isDirectMessage = composerNodes.isNotEmpty() ||
+        val isDirectMessage = composerNodes.isNotEmpty() || hasStructuralComposer ||
             (editableNodes.isNotEmpty() && messageHeader.isNotEmpty() && sendButton.isNotEmpty())
 
         // A profile can expose a follow gate after the paper-plane action is pressed. This is a
@@ -55,7 +69,18 @@ class PageDetector {
         // wording appears beside a real conversation composer, however, it is the post-send
         // delivery failure and must be handled as such.
         val privateMessageRestrictionSignals = matchingSignals(context, DouyinLabels.privateMessageRestriction)
+        val emptyMessageRejectionSignals = matchingEmptyMessageRejectionSignals(context)
         val messageSendFailureSignals = matchingMessageSendFailureSignals(context)
+        // The safety probe intentionally submits one space.  Douyin keeps the conversation page
+        // visible while showing a transient “不能发送空白消息” notice, so this result must win
+        // over the ordinary DIRECT_MESSAGE classification.
+        if (emptyMessageRejectionSignals.isNotEmpty()) {
+            return PageDetection(
+                kind = PageKind.MESSAGE_EMPTY_REJECTED,
+                confidence = confidence(emptyMessageRejectionSignals, base = 0.96f),
+                reasons = reasonsFor("Blank-message probe rejection", emptyMessageRejectionSignals),
+            )
+        }
         if (isDirectMessage && (privateMessageRestrictionSignals.isNotEmpty() || messageSendFailureSignals.isNotEmpty())) {
             val signals = privateMessageRestrictionSignals + messageSendFailureSignals
             return PageDetection(
@@ -86,14 +111,21 @@ class PageDetector {
         }
         if (isDirectMessage) {
             val composerReason = composerNodes.firstOrNull()?.let { "Editable message composer at ${it.stableId}" }
+            val structuralComposerReason = if (hasStructuralComposer) {
+                "Bottom composer structure with send action"
+            } else {
+                null
+            }
             return PageDetection(
                 kind = PageKind.DIRECT_MESSAGE,
                 confidence = when {
                     composerNodes.isNotEmpty() && sendButton.isNotEmpty() -> 0.96f
+                    hasStructuralComposer -> 0.93f
                     composerNodes.isNotEmpty() || (messageHeader.isNotEmpty() && sendButton.isNotEmpty()) -> 0.89f
                     else -> 0.78f
                 },
-                reasons = listOfNotNull(composerReason) + reasonsFor("Message page label", messageHeader + sendButton),
+                reasons = listOfNotNull(composerReason, structuralComposerReason) +
+                    reasonsFor("Message page label", messageHeader + sendButton),
             )
         }
 
@@ -167,15 +199,30 @@ class PageDetector {
         // classify a profile. User-results and search-results were checked above because their
         // rows also contain profile-like text such as “抖音号” and “粉丝”. Only classify a profile
         // after those stronger result-page postconditions have been ruled out.
+        val accessibilityProfileSignals = matchingAccessibilitySignals(context, PROFILE_IDENTITY_LABELS)
+        val accessibilityProfileEntry = matchingAccessibilitySignals(context, PROFILE_MESSAGE_ENTRY)
+        val accessibilityFollowSignals = matchingAccessibilitySignals(context, FOLLOW_ACTIONS)
         val profileSignals = matchingSignals(context, PROFILE_IDENTITY_LABELS)
         val profileMessageEntry = matchingSignals(context, PROFILE_MESSAGE_ENTRY)
-        if (profileSignals.isNotEmpty() ||
-            (profileMessageEntry.isNotEmpty() && matchingSignals(context, FOLLOW_ACTIONS).isNotEmpty())
-        ) {
+        val profileFollowSignals = matchingSignals(context, FOLLOW_ACTIONS)
+        // Feed captions and OCR overlays often contain isolated words such as “获赞” or “粉丝”.
+        // Those weak OCR-only signals must not turn the home feed into a profile and leave the
+        // controller waiting for a profile action that is not actually present. Accessibility
+        // identity/action structure is authoritative; OCR is accepted only when it provides the
+        // paired message-entry and follow controls.
+        val hasAccessibilityProfileStructure = accessibilityProfileSignals.size >= 2 ||
+            (accessibilityProfileSignals.isNotEmpty() && accessibilityProfileEntry.isNotEmpty())
+        val hasOcrProfileStructure = profileMessageEntry.isNotEmpty() && profileFollowSignals.isNotEmpty()
+        if (hasAccessibilityProfileStructure || hasOcrProfileStructure) {
+            val reasons = if (hasAccessibilityProfileStructure) {
+                accessibilityProfileSignals + accessibilityProfileEntry
+            } else {
+                profileSignals + profileMessageEntry + accessibilityFollowSignals
+            }
             return PageDetection(
                 kind = PageKind.USER_PROFILE,
-                confidence = confidence(profileSignals + profileMessageEntry, base = 0.75f),
-                reasons = reasonsFor("Profile label", profileSignals + profileMessageEntry),
+                confidence = confidence(reasons, base = 0.75f),
+                reasons = reasonsFor("Profile label", reasons),
             )
         }
 
@@ -256,6 +303,32 @@ class PageDetector {
         return (accessibilitySignals + ocrSignals).distinct()
     }
 
+    private fun matchingEmptyMessageRejectionSignals(context: ScreenContext): List<Signal> {
+        val accessibilitySignals = context.nodeText().flatMap { value ->
+            if (EmptyMessageRejectionMatcher.matches(value)) {
+                listOf(Signal(term = "blank-message-rejection", sourceName = "accessibility", fromAccessibility = true))
+            } else {
+                emptyList()
+            }
+        }
+        val ocrSignals = context.ocrText().flatMap { value ->
+            if (EmptyMessageRejectionMatcher.matches(value)) {
+                listOf(Signal(term = "blank-message-rejection", sourceName = "OCR", fromAccessibility = false))
+            } else {
+                emptyList()
+            }
+        }
+        val splitOcrText = context.ocrText().joinToString(separator = "")
+        val combinedOcrSignal = if (splitOcrText.isNotBlank() &&
+            EmptyMessageRejectionMatcher.matches(splitOcrText)
+        ) {
+            listOf(Signal(term = "blank-message-rejection", sourceName = "OCR-combined", fromAccessibility = false))
+        } else {
+            emptyList()
+        }
+        return (accessibilitySignals + ocrSignals + combinedOcrSignal).distinct()
+    }
+
     private fun matchingVisibleUserTabSignals(context: ScreenContext): List<Signal> =
         context.nodes.asSequence()
             // Douyin exposes the tab label as a non-clickable Button child while its clickable
@@ -312,10 +385,24 @@ class PageDetector {
 
     private companion object {
         const val MAX_REASONS = 4
+        const val BOTTOM_COMPOSER_TOP_RATIO = 0.72f
         val TARGET_PACKAGE_MARKERS = listOf("com.ss.android.ugc.aweme", "douyin", "aweme")
         val DIRECT_MESSAGE_HEADERS = listOf("私信", "聊天", "messages", "direct message", "chat")
-        val PROFILE_MESSAGE_ENTRY = listOf("发私信", "message")
-        val PROFILE_IDENTITY_LABELS = listOf("抖音号", "ip属地", "获赞", "douyin id", "likes")
+        // Merchant profiles may expose only “联系客服” (with a content description of “私信”)
+        // instead of the normal “发私信” button. They are still user profiles, but the
+        // navigation controller must treat the missing direct-message route as unavailable and
+        // return to the result list rather than classifying the screen as HOME.
+        val PROFILE_MESSAGE_ENTRY = listOf("发私信", "私信", "联系客服", "message")
+        val PROFILE_IDENTITY_LABELS = listOf(
+            "抖音号",
+            "ip属地",
+            "获赞",
+            "粉丝",
+            "店铺账号",
+            "商家认证账号",
+            "douyin id",
+            "likes",
+        )
         val FOLLOW_ACTIONS = listOf("关注", "follow", "已关注", "following")
         val SEARCH_RESULT_TABS = listOf("综合", "视频", "用户", "all", "videos", "users", "accounts")
         val USER_ROW_HINTS = listOf("粉丝", "followers", "共同关注", "followed by")

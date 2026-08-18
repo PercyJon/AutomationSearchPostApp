@@ -44,6 +44,7 @@ class DouyinAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        AutomationStore.initialize(this)
         val logger = AutomationStore.logger
         DebugToast.install(this)
         // Keep service binding independent from optional ML Kit model availability. Some OEMs
@@ -164,7 +165,10 @@ class DouyinAccessibilityService : AccessibilityService() {
      */
     private suspend fun augmentUnknownPageWithOcr(context: ScreenContext): ScreenContext {
         if (!::controller.isInitialized || !controller.shouldUseOcrFallback()) return context
-        if (detector.detect(context).kind != PageKind.UNKNOWN) return context
+        val detectedKind = detector.detect(context).kind
+        val probeToastMayBeVisible = controller.shouldProbeEmptyMessageWithOcr() &&
+            detectedKind == PageKind.DIRECT_MESSAGE
+        if (detectedKind != PageKind.UNKNOWN && !probeToastMayBeVisible) return context
 
         val engine = ocr ?: return context
         val now = SystemClock.uptimeMillis()

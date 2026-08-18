@@ -123,6 +123,34 @@ class SelectorEngineTest {
     }
 
     @Test
+    fun `unlabeled home search icon is selected by clickable class and region`() {
+        val result = engine.select(
+            ScreenContext(
+                screenSize = ScreenSize(1080, 2412),
+                nodes = listOf(
+                    NodeSnapshot(
+                        hierarchyPath = listOf(0),
+                        className = "android.widget.ImageView",
+                        bounds = ScreenBounds(944, 96, 1032, 210),
+                        isClickable = true,
+                    ),
+                    NodeSnapshot(
+                        hierarchyPath = listOf(1),
+                        className = "android.widget.ImageView",
+                        bounds = ScreenBounds(40, 2100, 160, 2220),
+                        isClickable = true,
+                    ),
+                ),
+            ),
+            DouyinSelectors.searchEntryStructural,
+        )
+
+        assertTrue(result.found)
+        assertEquals(listOf(0), result.node?.hierarchyPath)
+        assertTrue(result.reasons.any { it.contains("preferred normalised region") })
+    }
+
+    @Test
     fun `visible Chinese user tab is selected after horizontal reveal`() {
         val result = engine.select(
             ScreenContext(

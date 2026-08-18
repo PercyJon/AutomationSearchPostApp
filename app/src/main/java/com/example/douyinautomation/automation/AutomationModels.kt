@@ -171,6 +171,8 @@ enum class PageKind {
     /** The profile explicitly says messaging is gated until the account is followed. */
     PRIVATE_MESSAGE_RESTRICTED,
     DIRECT_MESSAGE,
+    /** The M2 safety probe was rejected as blank; no real message was delivered. */
+    MESSAGE_EMPTY_REJECTED,
     /** A message was attempted in an open conversation but Douyin rejected delivery. */
     MESSAGE_SEND_FAILED,
     /** Captcha, risk controls, or another state where the task must stop for a person. */
@@ -241,6 +243,12 @@ object AutomationResumePolicy {
             phase = null,
             allowed = false,
             reason = "The last message was rejected by the recipient's messaging settings",
+        )
+
+        PageKind.MESSAGE_EMPTY_REJECTED -> ResumeDecision(
+            phase = null,
+            allowed = false,
+            reason = "The blank-message safety probe has completed; start a new task to continue",
         )
 
         PageKind.PRIVATE_MESSAGE_RESTRICTED -> ResumeDecision(

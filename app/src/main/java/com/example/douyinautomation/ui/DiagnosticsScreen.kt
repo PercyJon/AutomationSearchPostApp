@@ -43,7 +43,6 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.douyinautomation.automation.AutomationCommand
-import com.example.douyinautomation.automation.AutomationPhase
 import com.example.douyinautomation.automation.AutomationStore
 
 /**
@@ -61,7 +60,6 @@ fun DiagnosticsScreen(
     val state by AutomationStore.uiState.collectAsState()
     val context = LocalContext.current
     var keyword by rememberSaveable(initialKeyword) { mutableStateOf(initialKeyword) }
-    var message by rememberSaveable { mutableStateOf("") }
 
     LazyColumn(
         modifier = modifier,
@@ -74,7 +72,7 @@ fun DiagnosticsScreen(
                     Column {
                         Text("Douyin Automation POC")
                         Text(
-                            text = "M1 diagnostics and controlled message test",
+                            text = "M2 blank-message safety probe",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -93,7 +91,7 @@ fun DiagnosticsScreen(
 
         if (state.awaitingManualHandoff) {
             item {
-                ManualHandoffCard()
+                ManualHandoffCard(reason = state.lastError)
             }
         }
 
@@ -101,8 +99,6 @@ fun DiagnosticsScreen(
             TaskControlCard(
                 keyword = keyword,
                 onKeywordChange = { keyword = it },
-                message = message,
-                onMessageChange = { message = it },
                 keywordPresets = DEFAULT_TEST_KEYWORDS,
                 onStart = {
                     val normalizedKeyword = keyword.trim()
@@ -110,7 +106,10 @@ fun DiagnosticsScreen(
                         AutomationStore.send(
                             AutomationCommand.Start(
                                 keyword = normalizedKeyword,
-                                message = message.trim(),
+                                // M2 is a non-delivery safety probe: the service submits one
+                                // space and expects Douyin's “不能发送空白消息” notice.
+                                message = "",
+                                safetyProbe = true,
                             ),
                         )
                     }
@@ -118,13 +117,6 @@ fun DiagnosticsScreen(
                 onPause = { AutomationStore.send(AutomationCommand.Pause) },
                 onResume = { AutomationStore.send(AutomationCommand.Resume) },
                 onStop = { AutomationStore.send(AutomationCommand.Stop) },
-                canSendMessage = state.phase == AutomationPhase.COMPLETED_AT_MESSAGE_PAGE,
-                onSendMessage = {
-                    val normalizedMessage = message.trim()
-                    if (normalizedMessage.isNotEmpty()) {
-                        AutomationStore.send(AutomationCommand.SendMessage(normalizedMessage))
-                    }
-                },
             )
         }
 
@@ -143,6 +135,10 @@ fun DiagnosticsScreen(
                 lastScreenshotPath = state.lastScreenshotPath,
                 lastOcrText = state.lastOcrText,
                 lastError = state.lastError,
+                taskId = state.taskId,
+                taskHandledUserCount = state.taskHandledUserCount,
+                taskDuplicateUserCount = state.taskDuplicateUserCount,
+                taskLastEvent = state.taskLastEvent,
             )
         }
 
@@ -225,7 +221,7 @@ private fun ServiceStatusCard(
 }
 
 @Composable
-private fun ManualHandoffCard() {
+private fun ManualHandoffCard(reason: String?) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -241,6 +237,11 @@ private fun ManualHandoffCard() {
         ) {
             Text("Manual action required", fontWeight = FontWeight.Bold)
             Text(
+                text = "暂停原因：${reason.orEmpty().ifBlank { "未提供" }}",
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.error,
+            )
+            Text(
                 "The automation has paused for a verification, risk notice, or other ambiguous state. Complete or dismiss it manually, then review diagnostics before resuming.",
                 style = MaterialTheme.typography.bodyMedium,
             )
@@ -252,15 +253,11 @@ private fun ManualHandoffCard() {
 private fun TaskControlCard(
     keyword: String,
     onKeywordChange: (String) -> Unit,
-    message: String,
-    onMessageChange: (String) -> Unit,
     keywordPresets: List<String>,
     onStart: () -> Unit,
     onPause: () -> Unit,
     onResume: () -> Unit,
     onStop: () -> Unit,
-    canSendMessage: Boolean,
-    onSendMessage: () -> Unit,
 ) {
     Card(
         modifier = Modifier
@@ -273,7 +270,7 @@ private fun TaskControlCard(
         ) {
             Text("Guided POC flow", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(
-                "Leave the message blank to verify the private-message page only. If a message is supplied, one send is attempted automatically after the page is verified.",
+                "M2 安全探测模式：不会发送真实文案。进入私信页后只提交一个空格；检测到“不能发送空白消息”后，视为当前用户验证成功并继续下一位。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -284,16 +281,6 @@ private fun TaskControlCard(
                 label = { Text("Search keyword") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-            )
-            OutlinedTextField(
-                value = message,
-                onValueChange = onMessageChange,
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("Message to send once (optional)") },
-                placeholder = { Text("Leave blank to verify the private-message page only") },
-                minLines = 2,
-                maxLines = 4,
-                supportingText = { Text("The send button is enabled only after a private-message page is verified.") },
             )
             Text(
                 text = "Test keyword presets",
@@ -320,15 +307,6 @@ private fun TaskControlCard(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text("Start test")
-                }
-            }
-            Row(modifier = Modifier.fillMaxWidth()) {
-                OutlinedButton(
-                    onClick = onSendMessage,
-                    enabled = canSendMessage && message.isNotBlank(),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text("Send once on verified chat")
                 }
             }
             Row(modifier = Modifier.fillMaxWidth()) {
@@ -402,6 +380,10 @@ private fun StateCard(
     lastScreenshotPath: Any?,
     lastOcrText: Any?,
     lastError: Any?,
+    taskId: Any?,
+    taskHandledUserCount: Any?,
+    taskDuplicateUserCount: Any?,
+    taskLastEvent: Any?,
 ) {
     Card(
         modifier = Modifier
@@ -413,6 +395,10 @@ private fun StateCard(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text("Latest state", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            DetailRow("Task ID", taskId)
+            DetailRow("Handled users", taskHandledUserCount)
+            DetailRow("Duplicates skipped", taskDuplicateUserCount)
+            DetailRow("Last task event", taskLastEvent)
             DetailRow("Phase", phase)
             DetailRow("Detected page", lastPage)
             DetailRow("Node dump", lastNodeDumpPath)

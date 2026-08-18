@@ -129,6 +129,20 @@ class PageDetectorTest {
     }
 
     @Test
+    fun `merchant profile with customer service action is still a user profile`() {
+        val context = contextOf(
+            NodeSnapshot(text = "优质红木家具", contentDescription = "优质红木家具，复制名字和修改备注"),
+            NodeSnapshot(text = "店铺账号", contentDescription = "抖音组织认证：店铺账号"),
+            NodeSnapshot(text = "获赞"),
+            NodeSnapshot(text = "粉丝"),
+            NodeSnapshot(text = "关注", isClickable = true),
+            NodeSnapshot(text = "联系客服", contentDescription = "私信", isClickable = true),
+        )
+
+        assertEquals(PageKind.USER_PROFILE, detector.detect(context).kind)
+    }
+
+    @Test
     fun `incidental message label beside a search field is not direct message page`() {
         val context = contextOf(
             NodeSnapshot(text = "红木沙发", hintText = "搜索", isEditable = true),
@@ -195,6 +209,49 @@ class PageDetectorTest {
     }
 
     @Test
+    fun `unlabeled bottom composer with send action is direct message page`() {
+        val context = ScreenContext(
+            packageName = "com.ss.android.ugc.aweme",
+            screenSize = ScreenSize(1080, 2412),
+            nodes = listOf(
+                NodeSnapshot(
+                    className = "android.widget.EditText",
+                    isEditable = true,
+                    bounds = ScreenBounds(143, 2263, 766, 2384),
+                ),
+                NodeSnapshot(
+                    className = "android.widget.ImageView",
+                    contentDescription = "发送",
+                    isClickable = true,
+                    bounds = ScreenBounds(887, 2263, 1058, 2384),
+                ),
+            ),
+        )
+
+        val detection = detector.detect(context)
+
+        assertEquals(PageKind.DIRECT_MESSAGE, detection.kind)
+        assertTrue(detection.reasons.any { it.contains("Bottom composer structure") })
+    }
+
+    @Test
+    fun `isolated profile words in feed OCR do not become a user profile`() {
+        val context = ScreenContext(
+            screenSize = ScreenSize(1080, 2412),
+            nodes = listOf(
+                NodeSnapshot(text = "推荐", bounds = ScreenBounds(0, 90, 160, 180)),
+                NodeSnapshot(text = "首页", bounds = ScreenBounds(0, 2260, 160, 2380)),
+            ),
+            ocrBlocks = listOf(
+                OcrTextBlock("获赞 4758"),
+                OcrTextBlock("粉丝互动"),
+            ),
+        )
+
+        assertTrue(detector.detect(context).kind != PageKind.USER_PROFILE)
+    }
+
+    @Test
     fun `follow gate is a restricted profile rather than a risk screen`() {
         val context = contextOf(
             NodeSnapshot(text = "关注后才能发送私信", isVisibleToUser = true),
@@ -231,6 +288,30 @@ class PageDetectorTest {
 
         assertEquals(PageKind.MESSAGE_SEND_FAILED, detection.kind)
         assertTrue(detection.reasons.any { it.contains("Message-send failure") })
+    }
+
+    @Test
+    fun `blank-message rejection takes precedence over the open composer`() {
+        val context = contextOf(
+            NodeSnapshot(text = "发消息或按住说话...", isEditable = true),
+            NodeSnapshot(text = "不能发送空白消息", isVisibleToUser = true),
+        )
+
+        val detection = detector.detect(context)
+
+        assertEquals(PageKind.MESSAGE_EMPTY_REJECTED, detection.kind)
+        assertTrue(detection.reasons.any { it.contains("Blank-message probe rejection") })
+    }
+
+    @Test
+    fun `ocr blank-message rejection is recognized while chat remains open`() {
+        val context = ScreenContext(
+            packageName = "com.ss.android.ugc.aweme",
+            nodes = listOf(NodeSnapshot(text = "输入你的问题", isEditable = true)),
+            ocrBlocks = listOf(OcrTextBlock("不能发送"), OcrTextBlock("空白消息")),
+        )
+
+        assertEquals(PageKind.MESSAGE_EMPTY_REJECTED, detector.detect(context).kind)
     }
 
     @Test

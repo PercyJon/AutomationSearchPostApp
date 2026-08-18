@@ -6,6 +6,33 @@ import org.junit.Test
 
 class MessageSendFailureMatcherTest {
     @Test
+    fun `matches blank message rejection wording variants`() {
+        val variants = listOf(
+            "不能发送空白消息",
+            "无法发送空白消息",
+            "不能发送 空白 消息",
+            "Cannot send a blank message",
+        )
+
+        variants.forEach { value ->
+            assertTrue("Expected blank-message match for: $value", EmptyMessageRejectionMatcher.matches(value))
+        }
+    }
+
+    @Test
+    fun `does not classify generic empty or send text as blank rejection`() {
+        val nonFailures = listOf(
+            "不能发送消息",
+            "发送成功",
+            "空白区域",
+        )
+
+        nonFailures.forEach { value ->
+            assertFalse("Unexpected blank-message match for: $value", EmptyMessageRejectionMatcher.matches(value))
+        }
+    }
+
+    @Test
     fun `matches recipient-specific permission wording variants`() {
         val variants = listOf(
             "对方设置了仅他关注的人可以发送消息",

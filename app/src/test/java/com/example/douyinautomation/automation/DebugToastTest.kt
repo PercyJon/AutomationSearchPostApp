@@ -52,6 +52,10 @@ class DebugToastTest {
             DebugToast.messageFor("private_message_send_failed"),
         )
         assertEquals(
+            "调试提示：空白消息提示已确认，正在处理下一位",
+            DebugToast.messageFor("empty_message_probe_verified"),
+        )
+        assertEquals(
             "调试提示：私信页面打开超时，正在尝试下一位",
             DebugToast.messageFor("private_message_entry_timeout"),
         )
