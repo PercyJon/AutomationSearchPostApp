@@ -22,6 +22,7 @@ class RemoteTaskSyncQueue(
     private val logger: DiagnosticLogger,
     private val onFailure: (String) -> Unit = {},
     private val onSuccess: () -> Unit = {},
+    private val onStatusSuccess: (RemoteTask) -> Unit = {},
 ) {
     private sealed interface Work {
         val taskId: Long
@@ -90,10 +91,13 @@ class RemoteTaskSyncQueue(
         var lastError: Throwable? = null
         for (attempt in 0 until MAX_ATTEMPTS) {
             try {
-                when (work) {
+                val response = when (work) {
                     is Work.Checkpoint -> gateway.submitCheckpoint(work.taskId, work.request)
                     is Work.Record -> gateway.submitRecord(work.taskId, work.request)
                     is Work.Status -> gateway.updateTaskStatus(work.taskId, work.request)
+                }
+                if (work is Work.Status && response is RemoteTask) {
+                    onStatusSuccess(response)
                 }
                 logger.info(
                     "remote_sync_succeeded",

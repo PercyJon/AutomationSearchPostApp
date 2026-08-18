@@ -19,6 +19,7 @@ class ProfileMessageEntryFallbackTest {
                 NodeSnapshot(
                     className = "android.widget.Button",
                     isClickable = true,
+                    contentDescription = "发私信",
                     bounds = ScreenBounds(900, 975, 1014, 1082),
                 ),
             ),
@@ -28,6 +29,21 @@ class ProfileMessageEntryFallbackTest {
 
         assertNotNull(node)
         assertEquals(ScreenBounds(900, 975, 1014, 1082), node?.bounds)
+    }
+
+    @Test
+    fun `does not select unlabeled compact action that could be customer service`() {
+        val context = ScreenContext(
+            screenSize = ScreenSize(1080, 2412),
+            nodes = listOf(
+                NodeSnapshot(
+                    className = "android.widget.Button",
+                    isClickable = true,
+                    bounds = ScreenBounds(900, 975, 1014, 1082),
+                ),
+            ),
+        )
+        assertNull(ProfileMessageEntryFallback.iconNode(context))
     }
 
     @Test

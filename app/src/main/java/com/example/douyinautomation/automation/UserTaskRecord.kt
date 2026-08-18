@@ -3,15 +3,17 @@ package com.example.douyinautomation.automation
 /**
  * A private, app-local audit record for one search-result row in a task.
  *
- * The raw account name is intentionally not persisted. [identityHash] is derived from the
- * short-lived identity key used by the controller; it is enough to de-duplicate one run while
- * avoiding account text in diagnostics and preferences. The record model is deliberately small so
- * it can later be moved to Room when task publishing is introduced.
+ * The record is deliberately app-private. It keeps the operator-visible account label and action
+ * content so a completed task can be audited from the Records tab; diagnostic logs still use
+ * hashes and never emit these fields.
  */
 data class UserTaskRecord(
     val recordId: String,
     val taskId: String,
     val identityHash: Int?,
+    val displayName: String? = null,
+    val userKey: String? = null,
+    val messageContent: String? = null,
     val outcome: Outcome,
     val startedAtMillis: Long,
     val finishedAtMillis: Long? = null,

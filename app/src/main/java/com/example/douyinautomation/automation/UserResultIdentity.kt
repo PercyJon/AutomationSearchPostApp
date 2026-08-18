@@ -43,8 +43,6 @@ object UserResultIdentityExtractor {
             .map(::normalizeCandidate)
             .filter(::isUsefulCandidate)
             .toList()
-        if (nodeValues.isNotEmpty()) return buildIdentity(nodeValues, UserResultIdentity.Source.ACCESSIBILITY)
-
         val ocrValues = context.ocrBlocks.asSequence()
             .filter { block -> block.bounds.width > 0 && block.bounds.height > 0 }
             .filter { block -> isInsideRow(block.bounds, row) }
@@ -52,8 +50,21 @@ object UserResultIdentityExtractor {
             .map(::normalizeCandidate)
             .filter(::isUsefulCandidate)
             .toList()
-        if (ocrValues.isEmpty()) return null
-        return buildIdentity(ocrValues, UserResultIdentity.Source.OCR)
+        // Keep semantic values first, but merge row-local OCR when it is available.  A custom
+        // Douyin row can expose the display name through Accessibility while rendering the
+        // company/metadata line only as pixels; filtering only nodeValues would then miss a
+        // blocked keyword such as “厂”.  The row bounds keep this merge local to the selected
+        // account and prevent neighboring rows from affecting the identity.
+        val mergedValues = (nodeValues + ocrValues).distinct()
+        if (mergedValues.isEmpty()) return null
+        return buildIdentity(
+            values = mergedValues,
+            source = if (nodeValues.isNotEmpty()) {
+                UserResultIdentity.Source.ACCESSIBILITY
+            } else {
+                UserResultIdentity.Source.OCR
+            },
+        )
     }
 
     /**

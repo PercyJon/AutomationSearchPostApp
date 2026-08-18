@@ -86,6 +86,20 @@ class PageDetectorTest {
     }
 
     @Test
+    fun `account help separator remains a user results page when rows are present`() {
+        val context = contextOf(
+            NodeSnapshot(text = "用户", isSelected = true, bounds = ScreenBounds(300, 180, 460, 260)),
+            NodeSnapshot(text = "关注", isClickable = true, bounds = ScreenBounds(780, 500, 1000, 580)),
+            NodeSnapshot(text = "找不到想要的账号？告诉我们"),
+        )
+
+        val detection = detector.detect(context)
+
+        assertEquals(PageKind.USER_RESULTS, detection.kind)
+        assertTrue(detection.reasons.any { it.contains("找不到想找的账号") })
+    }
+
+    @Test
     fun `user results win over profile-like row metadata`() {
         val rowPath = listOf(0, 1)
         val context = contextOf(
@@ -232,6 +246,26 @@ class PageDetectorTest {
 
         assertEquals(PageKind.DIRECT_MESSAGE, detection.kind)
         assertTrue(detection.reasons.any { it.contains("Bottom composer structure") })
+    }
+
+    @Test
+    fun `ocr quick-question composer identifies custom chat without editable nodes`() {
+        val context = ScreenContext(
+            packageName = "com.ss.android.ugc.aweme",
+            screenSize = ScreenSize(1080, 2412),
+            nodes = listOf(
+                NodeSnapshot(text = "抖音号：designer_demo"),
+                NodeSnapshot(text = "发私信", isClickable = true),
+            ),
+            ocrBlocks = listOf(
+                OcrTextBlock("点击发送以下常见问题", ScreenBounds(150, 1780, 900, 1880)),
+            ),
+        )
+
+        val detection = detector.detect(context)
+
+        assertEquals(PageKind.DIRECT_MESSAGE, detection.kind)
+        assertTrue(detection.reasons.any { it.contains("OCR conversation composer") })
     }
 
     @Test

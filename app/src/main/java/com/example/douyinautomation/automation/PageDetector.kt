@@ -58,10 +58,22 @@ class PageDetector {
                 nodeMatches(node, DouyinLabels.send)
         }
         val hasStructuralComposer = bottomComposerNodes.isNotEmpty() && hasBottomSendAction
+        // A few Douyin profile chats render the composer entirely in a custom surface: no
+        // editable node and no labelled send node are exposed, but OCR still sees the quick
+        // question/composer text in the lower band. This is strong chat evidence when it is
+        // constrained to the bottom of the screen and avoids treating a profile's “发私信”
+        // action as an open conversation.
+        val ocrComposerSignals = context.ocrBlocks.filter { block ->
+            val normalized = TextNormalizer.normalize(block.text)
+            val inBottomBand = block.bounds == ScreenBounds.EMPTY ||
+                block.bounds.top >= (context.screenSize.height * OCR_COMPOSER_TOP_RATIO).toInt()
+            inBottomBand && OCR_CONVERSATION_COMPOSER_MARKERS.any(normalized::contains)
+        }
+        val hasOcrComposer = ocrComposerSignals.isNotEmpty()
         // A search field can coexist with incidental "私信"/"发送" text in a result card or OCR
         // overlay. Require an actual message composer, or both the chat header and send action,
         // before classifying the page as an open conversation.
-        val isDirectMessage = composerNodes.isNotEmpty() || hasStructuralComposer ||
+        val isDirectMessage = composerNodes.isNotEmpty() || hasStructuralComposer || hasOcrComposer ||
             (editableNodes.isNotEmpty() && messageHeader.isNotEmpty() && sendButton.isNotEmpty())
 
         // A profile can expose a follow gate after the paper-plane action is pressed. This is a
@@ -121,10 +133,12 @@ class PageDetector {
                 confidence = when {
                     composerNodes.isNotEmpty() && sendButton.isNotEmpty() -> 0.96f
                     hasStructuralComposer -> 0.93f
+                    hasOcrComposer -> 0.90f
                     composerNodes.isNotEmpty() || (messageHeader.isNotEmpty() && sendButton.isNotEmpty()) -> 0.89f
                     else -> 0.78f
                 },
                 reasons = listOfNotNull(composerReason, structuralComposerReason) +
+                    (if (hasOcrComposer) listOf("OCR conversation composer in bottom band") else emptyList()) +
                     reasonsFor("Message page label", messageHeader + sendButton),
             )
         }
@@ -163,23 +177,29 @@ class PageDetector {
         } else {
             emptyList()
         }
+        val accountHelpSignals = if (UserResultMarkers.hasAccountHelp(context)) {
+            listOf(Signal(term = "找不到想找的账号", sourceName = "account-help-marker", fromAccessibility = false))
+        } else {
+            emptyList()
+        }
         // Seeing the word “用户” in the tab strip is not enough: on the 综合 page that tab is
         // often already visible but not selected. A user-results page must either expose an
         // explicitly selected User tab, semantic row hints, or the stable row-level follow-button
         // anchors used by current custom-rendered Douyin builds.
         val hasUserResultsPostcondition = selectedUserTabSignals.isNotEmpty() ||
             userRowSignals.isNotEmpty() ||
-            structuralUserRowSignals.isNotEmpty()
+            structuralUserRowSignals.isNotEmpty() ||
+            accountHelpSignals.isNotEmpty()
         if (userTabSignals.isNotEmpty() && hasUserResultsPostcondition) {
             return PageDetection(
                 kind = PageKind.USER_RESULTS,
                 confidence = confidence(
-                    userTabSignals + selectedUserTabSignals + userRowSignals + structuralUserRowSignals,
+                    userTabSignals + selectedUserTabSignals + userRowSignals + structuralUserRowSignals + accountHelpSignals,
                     base = 0.82f,
                 ),
                 reasons = reasonsFor(
                     "User-result label",
-                    userTabSignals + selectedUserTabSignals + userRowSignals + structuralUserRowSignals,
+                    userTabSignals + selectedUserTabSignals + userRowSignals + structuralUserRowSignals + accountHelpSignals,
                 ),
             )
         }
@@ -386,8 +406,18 @@ class PageDetector {
     private companion object {
         const val MAX_REASONS = 4
         const val BOTTOM_COMPOSER_TOP_RATIO = 0.72f
+        const val OCR_COMPOSER_TOP_RATIO = 0.65f
         val TARGET_PACKAGE_MARKERS = listOf("com.ss.android.ugc.aweme", "douyin", "aweme")
         val DIRECT_MESSAGE_HEADERS = listOf("私信", "聊天", "messages", "direct message", "chat")
+        val OCR_CONVERSATION_COMPOSER_MARKERS = listOf(
+            "点击发送",
+            "常见问题",
+            "输入消息",
+            "输入你的问题",
+            "说点什么",
+            "发消息或按住说话",
+            "type a message",
+        )
         // Merchant profiles may expose only “联系客服” (with a content description of “私信”)
         // instead of the normal “发私信” button. They are still user profiles, but the
         // navigation controller must treat the missing direct-message route as unavailable and

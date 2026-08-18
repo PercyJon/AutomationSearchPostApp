@@ -36,11 +36,15 @@ class DouyinAccessibilityService : AccessibilityService() {
     private lateinit var controller: DouyinNavigationController
     private var commandJob: Job? = null
     private var ocrInitializationJob: Job? = null
+    private var rebindResumeJob: Job? = null
     private var lastSignature: String? = null
     private val inspectionInFlight = AtomicBoolean(false)
     private val inspectionMutex = Mutex()
     private val ocrProbeInFlight = AtomicBoolean(false)
     private val lastOcrProbeAtMillis = AtomicLong(0L)
+    private var cachedOcrContextSignature: String? = null
+    private var cachedOcrBlocks: List<OcrTextBlock> = emptyList()
+    private var cachedOcrAtMillis: Long = 0L
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -70,6 +74,7 @@ class DouyinAccessibilityService : AccessibilityService() {
                 controller.handle(command)
             }
         }
+        scheduleCheckpointResumeAfterRebind()
         ocrInitializationJob?.cancel()
         ocrInitializationJob = serviceScope.launch(Dispatchers.IO) {
             logger.info("ocr_initialization_started")
@@ -96,6 +101,23 @@ class DouyinAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (!::controller.isInitialized || event == null) return
         if (event.packageName?.toString() != TargetAppLauncher.DOUYIN_PACKAGE) return
+
+        // Douyin normally exposes the blank-message rejection as a transient toast.  That toast
+        // is delivered as TYPE_NOTIFICATION_STATE_CHANGED rather than as a content-change event,
+        // so the old filter discarded the only reliable signal before OCR had a chance to run.
+        // Copy the text while the event is live and hand it to the state machine without walking
+        // the (usually huge) active window tree.
+        if (controller.shouldProbeEmptyMessageResult()) {
+            val transientText = buildList {
+                event.text?.forEach { value -> value?.toString()?.trim()?.takeIf(String::isNotBlank)?.let(::add) }
+                event.contentDescription?.toString()?.trim()?.takeIf(String::isNotBlank)?.let(::add)
+            }.distinct()
+            if (transientText.isNotEmpty()) {
+                serviceScope.launch {
+                    controller.onTransientAccessibilityText(transientText)
+                }
+            }
+        }
         if (!event.isWindowOrContentChange()) return
 
         // Accessibility callbacks run on the service main thread. A Douyin transition can expose
@@ -168,10 +190,28 @@ class DouyinAccessibilityService : AccessibilityService() {
         val detectedKind = detector.detect(context).kind
         val probeToastMayBeVisible = controller.shouldProbeEmptyMessageWithOcr() &&
             detectedKind == PageKind.DIRECT_MESSAGE
-        if (detectedKind != PageKind.UNKNOWN && !probeToastMayBeVisible) return context
+        val privateMessageEntryMayBeIncomplete = controller.shouldProbePrivateMessageEntryWithOcr()
+        if (detectedKind != PageKind.UNKNOWN &&
+            !probeToastMayBeVisible &&
+            !privateMessageEntryMayBeIncomplete
+        ) return context
 
         val engine = ocr ?: return context
         val now = SystemClock.uptimeMillis()
+        val contextSignature = buildString {
+            append(detectedKind.name).append('|')
+            context.nodes.asSequence()
+                .filter { it.bounds.width > 0 && it.bounds.height > 0 }
+                .take(80)
+                .forEach { node ->
+                    append(node.bounds.left).append(',').append(node.bounds.top).append(',')
+                        .append(node.bounds.right).append(',').append(node.bounds.bottom).append('|')
+                        .append(node.text.orEmpty()).append('|').append(node.contentDescription.orEmpty()).append(';')
+                }
+        }.hashCode().toString()
+        if (contextSignature == cachedOcrContextSignature && now - cachedOcrAtMillis < OCR_CACHE_TTL_MS) {
+            return if (cachedOcrBlocks.isEmpty()) context else context.copy(ocrBlocks = cachedOcrBlocks)
+        }
         val previous = lastOcrProbeAtMillis.get()
         if (now - previous < OCR_PROBE_INTERVAL_MS ||
             !lastOcrProbeAtMillis.compareAndSet(previous, now) ||
@@ -185,8 +225,18 @@ class DouyinAccessibilityService : AccessibilityService() {
             val bitmap = withContext(Dispatchers.IO) { BitmapFactory.decodeFile(artifact.path) }
                 ?: return context
             try {
-                val result = engine.recognize(bitmap)
-                if (result.isEmpty) context else context.copy(ocrBlocks = result.toOcrTextBlocks())
+                val region = when {
+                    probeToastMayBeVisible -> OcrRegion.TOAST
+                    privateMessageEntryMayBeIncomplete -> OcrRegion.PROFILE_ACTION
+                    detectedKind == PageKind.USER_RESULTS -> OcrRegion.USER_RESULTS
+                    else -> OcrRegion.FULL
+                }
+                val result = engine.recognize(bitmap, region)
+                val blocks = result.toOcrTextBlocks()
+                cachedOcrContextSignature = contextSignature
+                cachedOcrBlocks = blocks
+                cachedOcrAtMillis = now
+                if (result.isEmpty) context else context.copy(ocrBlocks = blocks)
             } finally {
                 bitmap.recycle()
             }
@@ -232,6 +282,7 @@ class DouyinAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         commandJob?.cancel()
+        rebindResumeJob?.cancel()
         ocrInitializationJob?.cancel()
         ocr?.close()
         AutomationStore.markServiceDisconnected()
@@ -252,7 +303,46 @@ class DouyinAccessibilityService : AccessibilityService() {
         else -> false
     }
 
+    /**
+     * Recreate the controller's in-memory state after a transient service rebind.  This is kept
+     * separate from the normal operator Resume command: a running task was already authorized,
+     * and the durable checkpoint contains the frozen query/filter contract.  The short delay lets
+     * Android finish binding the new service and lets Douyin settle before we inspect its window.
+     */
+    private fun scheduleCheckpointResumeAfterRebind() {
+        val checkpoint = AutomationStore.getCheckpointForServiceRebind() ?: return
+        val now = SystemClock.uptimeMillis()
+        if (checkpoint.taskId == lastRebindResumeTaskId &&
+            now - lastRebindResumeAtMillis < REBIND_RESUME_THROTTLE_MS
+        ) {
+            AutomationStore.logger.info(
+                "service_rebind_resume_throttled",
+                attributes = mapOf("task_id_hash" to checkpoint.taskId.hashCode()),
+            )
+            return
+        }
+        lastRebindResumeTaskId = checkpoint.taskId
+        lastRebindResumeAtMillis = now
+        rebindResumeJob?.cancel()
+        rebindResumeJob = serviceScope.launch {
+            kotlinx.coroutines.delay(REBIND_RESUME_DELAY_MS)
+            if (!::controller.isInitialized) return@launch
+            val stillRunning = AutomationStore.getCheckpointForServiceRebind()
+            if (stillRunning?.taskId != checkpoint.taskId) return@launch
+            AutomationStore.logger.info(
+                "service_rebind_resume_started",
+                attributes = mapOf("task_id_hash" to checkpoint.taskId.hashCode()),
+            )
+            controller.handle(AutomationCommand.ResumeSavedTask)
+        }
+    }
+
     private companion object {
         const val OCR_PROBE_INTERVAL_MS = 1_500L
+        const val OCR_CACHE_TTL_MS = 4_000L
+        const val REBIND_RESUME_DELAY_MS = 700L
+        const val REBIND_RESUME_THROTTLE_MS = 15_000L
+        var lastRebindResumeTaskId: String? = null
+        var lastRebindResumeAtMillis: Long = 0L
     }
 }

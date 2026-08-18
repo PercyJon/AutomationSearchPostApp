@@ -18,20 +18,33 @@ import com.example.douyinautomation.ui.AppHomeScreen
 class MainActivity : ComponentActivity() {
     private val statusHandler = Handler(Looper.getMainLooper())
     private val statusRefresh = Runnable { AutomationStore.refreshServiceStatus(this) }
+    private var openRecordsTab: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        openRecordsTab = intent.getBooleanExtra(EXTRA_OPEN_RECORDS, false)
         AuthStore.initialize(this)
+        AutomationStore.initialize(this)
 
         setContent {
             DouyinAutomationTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     AppHomeScreen(
                         initialKeyword = intent.getStringExtra(EXTRA_PREFILL_KEYWORD).orEmpty(),
+                        initialSection = if (openRecordsTab) "RECORDS" else null,
                     )
                 }
             }
+        }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_OPEN_RECORDS, false)) {
+            openRecordsTab = true
+            recreate()
         }
     }
 
@@ -51,6 +64,7 @@ class MainActivity : ComponentActivity() {
     companion object {
         /** Debug-device convenience for Unicode test data; production flow remains operator-driven. */
         const val EXTRA_PREFILL_KEYWORD = "com.example.douyinautomation.PREFILL_KEYWORD"
+        const val EXTRA_OPEN_RECORDS = "com.example.douyinautomation.OPEN_RECORDS"
     }
 }
 

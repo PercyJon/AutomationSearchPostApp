@@ -47,6 +47,9 @@ object DebugToast {
         "search_submit_route_noop",
         "search_submit_keyboard_dismiss",
         -> "调试提示：搜索结果未出现，正在重新提交"
+        "search_results_surface_reused" -> "调试提示：抖音恢复了旧搜索页，正在替换关键词"
+        "search_results_query_field_missing" -> "调试提示：旧搜索页没有可编辑输入框，正在执行页面兜底"
+        "startup_ad_timeout_recovery_wait" -> "调试提示：检测到开屏广告，继续等待后再操作"
         "system_overlay_detected" -> "调试提示：系统提示暂时遮挡，正在等待后重试"
         "transient_live_overlay_detected" -> "调试提示：直播提示暂时遮挡，等待消失后重试"
         "target_window_unavailable" -> "调试提示：抖音窗口暂不可用，正在等待恢复"
@@ -67,6 +70,9 @@ object DebugToast {
         "message_send_rejected" -> "调试提示：消息发送未执行，请检查私信输入和发送按钮"
         "private_message_entry_timeout" -> "调试提示：私信页面打开超时，正在尝试下一位"
         "private_message_entry_retry" -> "调试提示：私信入口未响应，正在刷新后重试"
+        "private_message_entry_postcondition_retry" -> "调试提示：私信页面尚未确认，正在重新检测"
+        "private_message_entry_ocr_failed" -> "调试提示：私信页面 OCR 检测异常"
+        "task_end_not_confirmed" -> "调试提示：未确认到列表末尾，流程已暂停"
         "user_result_duplicate_skipped" -> "调试提示：检测到重复用户，已跳过并继续"
         "user_result_identity_unavailable" -> "调试提示：用户身份暂不可识别，使用翻页兜底"
         "user_result_next_timeout" -> "调试提示：下一页用户加载超时，流程已暂停"

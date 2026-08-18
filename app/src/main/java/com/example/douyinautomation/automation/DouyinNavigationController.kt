@@ -75,6 +75,9 @@ class DouyinNavigationController(
     private var cachedUserResultsOcrBlocks: List<OcrTextBlock> = emptyList()
     /** Signature captured before the latest vertical swipe; used to reject a stale first tree. */
     private var userResultsSignatureBeforeSwipe: String? = null
+    /** OCR-backed page transitions require two matching observations before an action is allowed. */
+    private var lastOcrPageSignature: String? = null
+    private var ocrPageStableObservations: Int = 0
 
     fun installOcrEngine(engine: MlKitOcrEngine?) {
         ocr = engine
@@ -83,9 +86,49 @@ class DouyinNavigationController(
     /** True only while an explicitly started POC run is waiting for or performing a step. */
     fun shouldUseOcrFallback(): Boolean = taskActive && ocr != null
 
+    /** True while the M2 blank-message result is still being awaited, regardless of OCR state. */
+    fun shouldProbeEmptyMessageResult(): Boolean =
+        taskActive && phase == AutomationPhase.WAITING_FOR_EMPTY_MESSAGE_RESULT
+
+    /**
+     * Some profile chats expose no editable Accessibility node.  During the bounded entry
+     * post-condition, allow the service to take a throttled OCR sample so the chat is not
+     * mistaken for the still-visible profile.
+     */
+    fun shouldProbePrivateMessageEntryWithOcr(): Boolean =
+        taskActive && phase == AutomationPhase.WAITING_FOR_DIRECT_MESSAGE && ocr != null
+
     /** M2 also needs OCR while a transient blank-message toast overlays a valid chat page. */
     fun shouldProbeEmptyMessageWithOcr(): Boolean =
-        taskActive && phase == AutomationPhase.WAITING_FOR_EMPTY_MESSAGE_RESULT && ocr != null
+        shouldProbeEmptyMessageResult() && ocr != null
+
+    /**
+     * Handles text carried by a transient Accessibility notification (usually Douyin's toast).
+     * Toasts do not necessarily change the node tree, so this path must be independent of the
+     * normal window inspection loop. The text is kept in-memory only and is never written to the
+     * diagnostic log.
+     */
+    suspend fun onTransientAccessibilityText(values: List<String>) = mutex.withLock {
+        if (!taskActive || phase != AutomationPhase.WAITING_FOR_EMPTY_MESSAGE_RESULT || values.isEmpty()) return@withLock
+        val base = latestContext ?: currentWindowContext() ?: return@withLock
+        val transientContext = base.copy(
+            ocrBlocks = values.map { value -> OcrTextBlock(text = value) },
+            capturedAtMillis = System.currentTimeMillis(),
+        )
+        val detection = pageDetector.detect(transientContext)
+        logger.info(
+            "empty_message_probe_accessibility_event",
+            attributes = mapOf("page" to detection.kind.name, "signals" to values.size),
+        )
+        when (detection.kind) {
+            PageKind.MESSAGE_EMPTY_REJECTED -> completeEmptyMessageProbe()
+            PageKind.HUMAN_INTERVENTION -> pause("A verification or risk screen appeared during the blank-message probe; manual handoff required")
+            PageKind.MESSAGE_SEND_FAILED -> skipMessageSendFailure(
+                "The blank-message probe was rejected by the recipient's messaging settings",
+            )
+            else -> Unit
+        }
+    }
 
     suspend fun handle(command: AutomationCommand) = mutex.withLock {
         when (command) {
@@ -122,16 +165,33 @@ class DouyinNavigationController(
             pause("Douyin login is required; complete it manually before retrying")
             return
         }
+        if (!confirmOcrBackedPage(context, detection)) return
 
         when (phase) {
             AutomationPhase.WAITING_FOR_HOME -> when (detection.kind) {
                 PageKind.HOME -> openSearch(context)
                 PageKind.SEARCH_ENTRY -> enterKeyword(context)
+                // Starting Douyin does not always create a fresh activity. If the previous
+                // operator run left the app on a result page, the launch intent can restore that
+                // page (including its old query) instead of showing the home feed. The result
+                // page still exposes the real editable query field, so reuse that verified field
+                // rather than submitting the stale query or waiting for a search-entry event that
+                // will never arrive.
+                PageKind.SEARCH_RESULTS -> reuseSearchResultsQueryField(context, "initial_observation")
+                PageKind.USER_RESULTS,
+                PageKind.USER_PROFILE,
+                PageKind.DIRECT_MESSAGE
+                -> recoverInitialSurface(context)
                 else -> Unit
             }
 
             AutomationPhase.WAITING_FOR_SEARCH_ENTRY -> when (detection.kind) {
                 PageKind.SEARCH_ENTRY -> enterKeyword(context)
+                // Some Douyin builds transition straight from the restored search surface to
+                // results while keeping the editable query field at the top. Treat this as an
+                // actionable search surface only when that node is present; never accept a
+                // visually similar result label as proof that the requested query was entered.
+                PageKind.SEARCH_RESULTS -> reuseSearchResultsQueryField(context, "search_entry_wait")
                 else -> Unit
             }
 
@@ -227,13 +287,7 @@ class DouyinNavigationController(
         } == true
         remoteResumeAnchor = remoteResume?.progress?.lastUserKey
             ?.takeIf(String::isNotBlank)
-            ?.let { key ->
-                UserResultIdentity(
-                    key = key,
-                    source = UserResultIdentity.Source.ACCESSIBILITY,
-                    displayName = remoteResume.progress.lastUserName,
-                )
-            }
+            ?.let { key -> remoteAnchorIdentity(key, remoteResume.progress.lastUserName) }
         remoteResumeTargetPageNumber = remoteResume?.progress?.lastPageNumber?.coerceAtLeast(1)
         remoteResumeMaxSwipes = (remoteResumeTargetPageNumber ?: 1)
             .plus(REMOTE_RESUME_EXTRA_SWIPES)
@@ -460,7 +514,94 @@ class DouyinNavigationController(
                 enterKeyword(postSearchContext)
                 return
             }
+            if (postSearchDetection.kind == PageKind.SEARCH_RESULTS &&
+                selector.select(postSearchContext, DouyinSelectors.searchInput).node != null
+            ) {
+                // The top bar in a restored result page is an editable search field (the node
+                // dump captured during the failure showed text="国乒现状"). It is safe to replace
+                // that text and press the same top-right Search control; no suggestion row is
+                // clicked and the requested keyword is verified before submission.
+                logger.warn(
+                    "search_results_surface_reused",
+                    message = "Douyin restored a previous result page; reusing its editable query field",
+                    attributes = mapOf("source" to "open_search_postcondition"),
+                )
+                latestContext = postSearchContext
+                AutomationStore.publishObservation(postSearchDetection)
+                reuseSearchResultsQueryField(postSearchContext, "open_search_postcondition")
+                return
+            }
         }
+    }
+
+    /**
+     * A result page can be a valid search surface: the query EditText remains at the top even
+     * though the page detector intentionally classifies the page as SEARCH_RESULTS because its
+     * tab strip is present. Re-enter the requested keyword only through that editable node.
+     */
+    private suspend fun reuseSearchResultsQueryField(context: ScreenContext, source: String) {
+        val selection = selector.select(context, DouyinSelectors.searchInput)
+        if (selection.node == null) {
+            logger.warn(
+                "search_results_query_field_missing",
+                message = "A restored result page did not expose an editable query field",
+                attributes = mapOf("source" to source),
+            )
+            recoverInitialSurface(context)
+            return
+        }
+        logger.info(
+            "search_results_query_field_ready",
+            message = "Replacing the restored result-page query after node verification",
+            attributes = mapOf("source" to source),
+        )
+        enterKeyword(context)
+    }
+
+    /**
+     * Bring a task back to a known Douyin surface when a launcher restores a profile, user list,
+     * chat, or a transient feed/video page. This is a bounded back-navigation recovery; it never
+     * taps an unrelated control or relies on a coordinate to guess the current page.
+     */
+    private suspend fun recoverInitialSurface(initialContext: ScreenContext) {
+        var context: ScreenContext? = initialContext
+        repeat(MAX_BACK_ACTIONS_TO_SEARCH_ENTRY + 2) { attempt ->
+            val current = context ?: currentWindowContext()
+            if (current == null) {
+                delay(USER_PROFILE_BACK_DELAY_MS)
+                context = currentWindowContext()
+                return@repeat
+            }
+            val detection = pageDetector.detect(current)
+            logger.info(
+                "initial_surface_recovery_probe",
+                attributes = mapOf("attempt" to attempt + 1, "page" to detection.kind.name),
+            )
+            when (detection.kind) {
+                PageKind.HOME -> {
+                    openSearch(current)
+                    return
+                }
+                PageKind.SEARCH_ENTRY -> {
+                    enterKeyword(current)
+                    return
+                }
+                PageKind.SEARCH_RESULTS -> {
+                    if (selector.select(current, DouyinSelectors.searchInput).node != null) {
+                        reuseSearchResultsQueryField(current, "initial_surface_recovery")
+                        return
+                    }
+                }
+                else -> Unit
+            }
+            if (!service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)) {
+                pause("无法从抖音当前页面返回到可搜索页面")
+                return
+            }
+            delay(USER_PROFILE_BACK_DELAY_MS)
+            context = currentWindowContext()
+        }
+        pause("抖音未能在限定时间内回到可搜索页面")
     }
 
     private suspend fun enterKeyword(
@@ -476,14 +617,31 @@ class DouyinNavigationController(
         phase = AutomationPhase.ENTERING_KEYWORD
         AutomationStore.publishPhase(phase)
         val selection = selector.select(context, DouyinSelectors.searchInput)
-        val selected = selection.node
+        var selected = selection.node
         if (selected == null) {
             pause("Could not find an editable search field")
             return
         }
 
-        val setTextResult = withLiveNode(selected) { liveNode ->
+        var setTextResult = withLiveNode(selected) { liveNode ->
             gestures.setText(liveNode, activeKeyword)
+        }
+        if (!setTextResult.succeeded) {
+            // The search surface can be rebuilt immediately after a restored-result transition.
+            // Re-select the current editable node once before treating the action as failed; the
+            // old immutable hierarchy path is not safe to reuse across that transition.
+            val refreshedTarget = currentWindowContext()
+                ?.let { selector.select(it, DouyinSelectors.searchInput).node }
+            if (refreshedTarget != null) {
+                logger.warn(
+                    "search_input_stale_retry",
+                    message = "The selected search field was replaced; reselecting the live field",
+                )
+                selected = refreshedTarget
+                setTextResult = withLiveNode(selected) { liveNode ->
+                    gestures.setText(liveNode, activeKeyword)
+                }
+            }
         }
         if (!setTextResult.succeeded) {
             pause("Could not enter the search keyword: ${setTextResult.reason}")
@@ -646,7 +804,19 @@ class DouyinNavigationController(
             bounds.width > 0 &&
             bounds.height > 0
         val insideVisibleTabStrip = bounds.left >= viewportLeft && bounds.right <= viewportRight
-        return (directLabel || ancestorLabel) && fullyOnScreen && insideVisibleTabStrip
+        // A transient result/video surface can expose a descendant labelled “用户” inside a
+        // large clickable content container. It may satisfy the semantic label match but is not a
+        // category tab; accepting it can open a video detail page. Category tabs are always in
+        // the upper strip, have a compact height, and never occupy a substantial portion of the
+        // screen. Keep the geometry check as a guard in addition to semantic matching.
+        val topBandBottom = (context.screenSize.height * 0.36f).toInt()
+        val compactTabHeight = bounds.height <= (context.screenSize.height * 0.14f).toInt()
+        val inTopTabBand = bounds.top <= topBandBottom && bounds.bottom <= topBandBottom
+        return (directLabel || ancestorLabel) &&
+            fullyOnScreen &&
+            insideVisibleTabStrip &&
+            compactTabHeight &&
+            inTopTabBand
     }
 
     private suspend fun revealUserTab(context: ScreenContext): ActionOutcome {
@@ -714,6 +884,15 @@ class DouyinNavigationController(
         // recreated on a fresh Douyin result page, so no row is selected until the anchor is found.
         if (remoteResumePending && minimumAnchorTop == null) {
             resumeRemoteTaskFromAnchor(context)
+            return
+        }
+        if (minimumAnchorTop == null && UserResultMarkers.accountHelpOnly(context)) {
+            logger.info(
+                "user_results_account_help_marker",
+                message = "Douyin rendered the account-help row without another selectable result; treating it as a bounded end-of-results signal",
+            )
+            if (advanceToNextQueryIfAvailable("account_help_marker")) return
+            completeTaskAtQueryEnd()
             return
         }
         phase = AutomationPhase.SELECTING_USER_RESULT
@@ -846,6 +1025,7 @@ class DouyinNavigationController(
                     identityHash = identityHash,
                     remoteUserKey = identity.key,
                     displayName = identity.displayName,
+                    messageContent = currentTaskMessageContent(),
                 )
             } else {
                 currentUserIdentityHash = null
@@ -893,6 +1073,12 @@ class DouyinNavigationController(
             )
             tapUserRowContent(rowMatch!!.row, rowContext)
         } else {
+            if (UserResultMarkers.accountHelpOnly(rowContext)) {
+                logger.info("user_results_account_help_marker_only")
+                if (advanceToNextQueryIfAvailable("account_help_marker")) return
+                completeTaskAtQueryEnd()
+                return
+            }
             logger.warn(
                 "user_result_row_match_failed",
                 message = "No wide user-result row matched the follow-button anchor; semantic name selection will be attempted",
@@ -924,6 +1110,42 @@ class DouyinNavigationController(
         "checkpoint_hash".takeIf { identity.key.hashCode() in processedIdentityHashes } ?: processedUserIdentityRecords.firstNotNullOfOrNull { previous ->
             identityMatchReason(previous, identity)
         }
+
+    /**
+     * Rebuild a comparable identity from the backend checkpoint. Older mobile records may have
+     * been written with a fallback key such as "|佛山市南海正明堂家具店" when the OCR row name
+     * was clipped. Treat each key segment as searchable metadata instead of treating the leading
+     * pipe value as the literal display name. This lets the current row match through its company
+     * line even when its visible display name is "佛山正明堂中高档二手...".
+     */
+    private fun remoteAnchorIdentity(key: String, savedName: String?): UserResultIdentity {
+        val segments = key.split('|')
+            .map { it.trim() }
+            .filter(String::isNotBlank)
+            .map(::normalizeIdentityText)
+            .filter(String::isNotBlank)
+            .distinct()
+        val normalizedSavedName = savedName
+            ?.trim()
+            ?.takeIf { it.isNotBlank() && !it.trimStart().startsWith('|') }
+            ?.let(::normalizeIdentityText)
+        val handle = segments.firstOrNull { it.startsWith("handle:") }
+            ?.removePrefix("handle:")
+            ?.takeIf(String::isNotBlank)
+        val metadata = segments
+            .filterNot { normalizedSavedName != null && it == normalizedSavedName }
+            .filterNot { it.startsWith("handle:") }
+            .toSet()
+        val visibleTokens = (segments + listOfNotNull(normalizedSavedName)).toSet()
+        return UserResultIdentity(
+            key = key,
+            source = UserResultIdentity.Source.ACCESSIBILITY,
+            displayName = normalizedSavedName,
+            accountHandle = handle,
+            stableMetadata = metadata,
+            visibleTokens = visibleTokens,
+        )
+    }
 
     private fun identityMatchReason(
         previous: UserResultIdentity,
@@ -1432,13 +1654,43 @@ class DouyinNavigationController(
                 return@repeat
             }
 
-            // If every visible row has a stable identity and none matches the processed set, the
-            // swipe reached a genuinely new page rather than a partially moved overlap. Start at
-            // its first row. If identities are incomplete, continue waiting; do not click blind.
+            // If every visible row has a stable identity, continue from the earliest identity not
+            // present in the processed ledger. The previous anchor can be clipped out when a
+            // network-backed list appends only half a page; in that case the first one or two
+            // rows may still be duplicates even though the anchor itself is no longer visible.
+            // Choosing the first unprocessed identity avoids guessing from scroll distance.
             val allIdentitiesStable = identitiesStable && identities.size == rows.size
             if (allIdentitiesStable && firstUnprocessedIndex >= 0) {
                 val knownDuplicate = identities.any { identity ->
                     identity != null && processedUserIdentityMatchReason(identity) != null
+                }
+                val prefixIsProcessed = identities
+                    .take(firstUnprocessedIndex)
+                    .all { identity ->
+                        identity != null && processedUserIdentityMatchReason(identity) != null
+                    }
+                if (prefixIsProcessed) {
+                    val minimumTop = if (firstUnprocessedIndex == 0) {
+                        null
+                    } else {
+                        rows[firstUnprocessedIndex - 1].anchor.bounds.bottom.toFloat()
+                    }
+                    logger.info(
+                        "user_result_first_unprocessed_resolved",
+                        message = "The previous anchor is clipped; continuing at the earliest stable identity not in the processed ledger",
+                        attributes = mapOf(
+                            "tag" to tag,
+                            "first_unprocessed_index" to firstUnprocessedIndex,
+                            "processed_prefix_count" to firstUnprocessedIndex,
+                            "row_count" to rows.size,
+                            "minimum_anchor_top" to minimumTop,
+                            "known_duplicate" to knownDuplicate,
+                        ),
+                    )
+                    phase = AutomationPhase.WAITING_FOR_USER_RESULTS
+                    AutomationStore.publishPhase(phase)
+                    selectVisibleUser(identityContext, minimumAnchorTop = minimumTop)
+                    return
                 }
                 if (!knownDuplicate) {
                     logger.info(
@@ -1548,15 +1800,24 @@ class DouyinNavigationController(
         var outcome = ActionOutcome.failure("No private-message entry route was available")
         for (attempt in 1..PRIVATE_MESSAGE_ENTRY_ATTEMPTS) {
             val liveContext = currentWindowContext() ?: context
-            val semanticOutcome = clickSelector(liveContext, DouyinSelectors.privateMessageEntry)
+            val semanticSelection = selectSafePrivateMessageEntry(liveContext)
+            val semanticOutcome = if (semanticSelection.node == null) {
+                ActionOutcome.failure(semanticSelection.reasons.joinToString("; "))
+            } else {
+                clickSelection(liveContext, semanticSelection)
+            }
             outcome = if (semanticOutcome.succeeded) {
                 semanticOutcome
             } else {
+                // OCR may confirm that a label exists, but it must never be used as a direct
+                // click target. Prefer a live semantic node; the icon fallback is also accepted
+                // only when its content description/view id identifies a paper-plane/message
+                // control. If neither is available, retry and then skip safely.
                 val iconNode = ProfileMessageEntryFallback.iconNode(liveContext)
                 if (iconNode != null) {
                     logger.warn(
                         "private_message_icon_fallback",
-                        message = "Profile exposes a compact unlabeled message icon; tapping the right-side profile action",
+                        message = "Profile exposes a semantic paper-plane/message icon; tapping the verified profile action",
                         attributes = mapOf(
                             "route" to "profile_action_icon_node",
                             "bounds" to iconNode.bounds,
@@ -1565,22 +1826,49 @@ class DouyinNavigationController(
                     )
                     withLiveNode(iconNode) { liveNode -> gestures.click(liveNode, iconNode.bounds) }
                 } else {
-                    val follow = selector.select(liveContext, DouyinSelectors.profileFollowAction).node
-                    val point = ProfileMessageEntryFallback.normalizedPoint(liveContext.screenSize, follow?.bounds)
-                    logger.warn(
-                        "private_message_normalized_fallback",
-                        message = "Profile message label and icon node are unavailable; using the constrained profile action region",
-                        attributes = mapOf(
-                            "x" to point.x,
-                            "y" to point.y,
-                            "follow_present" to (follow != null),
-                            "attempt" to attempt,
-                        ),
-                    )
-                    tapNormalizedGuarded(point, "private_message_fallback")
+                    ActionOutcome.failure("No semantic paper-plane private-message control")
                 }
             }
-            if (outcome.succeeded) break
+            if (outcome.succeeded) {
+                logger.info(
+                    "private_message_entry_action_submitted",
+                    attributes = mapOf("route" to outcome.route, "attempt" to attempt),
+                )
+                timeoutJob?.cancel()
+                await(
+                    nextPhase = AutomationPhase.WAITING_FOR_DIRECT_MESSAGE,
+                    timeoutDescription = "The direct-message page was not detected after opening the entry",
+                )
+                when (awaitPrivateMessageEntryPostcondition(liveContext, attempt)) {
+                    PageKind.DIRECT_MESSAGE,
+                    PageKind.MESSAGE_EMPTY_REJECTED,
+                    -> {
+                        completeAtMessagePage()
+                        return
+                    }
+                    PageKind.PRIVATE_MESSAGE_RESTRICTED -> {
+                        skipRestrictedUser("Douyin requires following before private messaging")
+                        return
+                    }
+                    PageKind.MESSAGE_SEND_FAILED -> {
+                        skipMessageSendFailure(
+                            "Douyin rejected the message because of the recipient's messaging settings",
+                        )
+                        return
+                    }
+                    PageKind.HUMAN_INTERVENTION -> {
+                        pause("A verification or risk screen appeared while opening private messages; manual handoff required")
+                        return
+                    }
+                    else -> {
+                        logger.warn(
+                            "private_message_entry_postcondition_retry",
+                            message = "The profile remained visible after the entry action; retrying the same semantic/action-band route",
+                            attributes = mapOf("attempt" to attempt, "page" to PageKind.USER_PROFILE.name),
+                        )
+                    }
+                }
+            }
             logger.warn(
                 "private_message_entry_retry",
                 message = "Private-message entry action was not accepted; refreshing the profile before retrying",
@@ -1597,15 +1885,143 @@ class DouyinNavigationController(
             }
             return
         }
-        logger.info("private_message_entry_opened", attributes = mapOf("route" to outcome.route))
-        await(
-            nextPhase = AutomationPhase.WAITING_FOR_DIRECT_MESSAGE,
-            timeoutDescription = "The direct-message page was not detected after opening the entry",
+        logger.warn(
+            "private_message_entry_exhausted",
+            message = "The private-message entry did not reach a verified conversation after bounded retries",
+            attributes = mapOf("attempts" to PRIVATE_MESSAGE_ENTRY_ATTEMPTS),
         )
-        // If the tap opens a follow-gate toast/dialog without emitting a semantic page-change
-        // event, inspect the profile again shortly after the action. Any still-visible profile is
-        // treated as unavailable and skipped rather than blocking the whole user pipeline.
-        scheduleMessageEntryPostconditionCheck()
+    }
+
+    /** OCR is diagnostic-only for this action; direct OCR taps are intentionally disabled. */
+    private suspend fun tapOcrPrivateMessageEntry(context: ScreenContext): ActionOutcome {
+        logger.info("private_message_ocr_diagnostic_only")
+        return ActionOutcome.failure("OCR cannot be used as a private-message click target")
+    }
+
+    private fun selectSafePrivateMessageEntry(context: ScreenContext): SelectionResult {
+        val selection = selector.select(context, DouyinSelectors.privateMessageEntry)
+        val node = selection.node ?: return selection
+        val searchable = (node.searchableText() + selection.reasons).joinToString(" ").lowercase()
+        val unsafe = listOf("客服", "咨询", "购物车", "商品").any(searchable::contains)
+        val semanticMessage = listOf("发私信", "私信", "message", "direct message", "paper", "plane")
+            .any(searchable::contains)
+        if (unsafe || !semanticMessage) {
+            return selection.copy(
+                node = null,
+                score = 0f,
+                reasons = listOf("Rejected unsafe or non-paper-plane private-message candidate"),
+            )
+        }
+        return selection
+    }
+
+    private fun currentTaskMessageContent(): String =
+        if (pendingSafetyProbe || activeTaskSnapshot?.executionMode == TaskExecutionMode.SAFE_BLANK_PROBE) {
+            "空消息模拟（空格）"
+        } else {
+            pendingStartMessage.ifBlank { activeTaskSnapshot?.messageTemplate.orEmpty() }
+                .ifBlank { "未设置" }
+        }
+
+    private fun confirmOcrBackedPage(context: ScreenContext, detection: PageDetection): Boolean {
+        // A home feed is dynamic by design, so full-screen OCR text changes between frames even
+        // when the actionable surface is stable.  The upper-right search node plus absence of a
+        // startup overlay is a stronger post-condition than matching changing feed captions;
+        // allow the node-first route immediately in that case.
+        if (detection.kind == PageKind.HOME &&
+            TransientOverlayDetector.find(context) == null &&
+            hasInitialSearchSelectorCandidate(context)
+        ) {
+            lastOcrPageSignature = null
+            ocrPageStableObservations = 0
+            return true
+        }
+        val ocrBacked = detection.reasons.any { reason ->
+            reason.contains("OCR", ignoreCase = true)
+        }
+        if (!ocrBacked) {
+            lastOcrPageSignature = null
+            ocrPageStableObservations = 0
+            return true
+        }
+        val signature = "${detection.kind}|${detection.reasons.sorted().joinToString(";")}".hashCode().toString()
+        if (signature == lastOcrPageSignature) {
+            ocrPageStableObservations++
+        } else {
+            lastOcrPageSignature = signature
+            ocrPageStableObservations = 1
+        }
+        if (ocrPageStableObservations < OCR_PAGE_STABLE_OBSERVATIONS) {
+            logger.info(
+                "ocr_page_waiting_stable",
+                message = "Waiting for a second matching OCR-backed page observation before acting",
+                attributes = mapOf("page" to detection.kind.name, "stable_observations" to ocrPageStableObservations),
+            )
+            return false
+        }
+        return true
+    }
+
+    /**
+     * Verify the result of a profile action independently of accessibility callbacks.  A chat
+     * may first expose only the profile tree, so one OCR sample is taken before the action is
+     * classified as unavailable.  Returning USER_PROFILE/UNKNOWN tells the caller to retry.
+     */
+    private suspend fun awaitPrivateMessageEntryPostcondition(
+        initialContext: ScreenContext,
+        actionAttempt: Int,
+    ): PageKind {
+        var lastKind = PageKind.UNKNOWN
+        repeat(PRIVATE_MESSAGE_ENTRY_POSTCONDITION_ATTEMPTS) { probeAttempt ->
+            delay(
+                if (probeAttempt == 0) {
+                    PRIVATE_MESSAGE_ENTRY_POSTCONDITION_INITIAL_DELAY_MS
+                } else {
+                    PRIVATE_MESSAGE_ENTRY_POSTCONDITION_INTERVAL_MS
+                },
+            )
+            var context = currentWindowContext() ?: initialContext
+            var detection = pageDetector.detect(context)
+            if (detection.kind in setOf(
+                    PageKind.DIRECT_MESSAGE,
+                    PageKind.MESSAGE_EMPTY_REJECTED,
+                    PageKind.MESSAGE_SEND_FAILED,
+                    PageKind.PRIVATE_MESSAGE_RESTRICTED,
+                    PageKind.HUMAN_INTERVENTION,
+                )
+            ) {
+                lastKind = detection.kind
+                return lastKind
+            }
+            // The most common missing signal is the bottom composer. Let the service's
+            // throttled OCR path enrich the next accessibility snapshot; use an explicit sample
+            // here as a final bounded fallback so a real chat is not backed out of prematurely.
+            if (probeAttempt == PRIVATE_MESSAGE_ENTRY_OCR_PROBE_ATTEMPT && ocr != null) {
+                context = captureContextWithOcr(context, "private_message_entry_probe") ?: context
+                detection = pageDetector.detect(context)
+                if (detection.kind != PageKind.UNKNOWN) lastKind = detection.kind
+                if (detection.kind in setOf(
+                        PageKind.DIRECT_MESSAGE,
+                        PageKind.MESSAGE_EMPTY_REJECTED,
+                        PageKind.MESSAGE_SEND_FAILED,
+                        PageKind.PRIVATE_MESSAGE_RESTRICTED,
+                        PageKind.HUMAN_INTERVENTION,
+                    )
+                ) {
+                    return detection.kind
+                }
+            }
+            logger.info(
+                "private_message_entry_postcondition_probe",
+                attributes = mapOf(
+                    "action_attempt" to actionAttempt,
+                    "probe_attempt" to probeAttempt + 1,
+                    "page" to detection.kind.name,
+                    "confidence" to detection.confidence,
+                ),
+            )
+        }
+        return lastKind
     }
 
     /**
@@ -1775,10 +2191,18 @@ class DouyinNavigationController(
         messageResultJob?.cancel()
         messageResultJob = scope.launch {
             repeat(EMPTY_MESSAGE_PROBE_ATTEMPTS) { attempt ->
-                delay(EMPTY_MESSAGE_PROBE_INTERVAL_MS)
+                delay(if (attempt == 0) EMPTY_MESSAGE_PROBE_INITIAL_DELAY_MS else EMPTY_MESSAGE_PROBE_INTERVAL_MS)
                 mutex.withLock {
                     if (!taskActive || phase != AutomationPhase.WAITING_FOR_EMPTY_MESSAGE_RESULT) return@withLock
-                    val context = currentWindowContext() ?: return@withLock
+                    // Node inspection catches a toast exposed as text. On custom-rendered chat
+                    // surfaces, take a bounded OCR probe at roughly 1.4s intervals as well. The
+                    // screenshot helper rate-limits the actual capture, preventing a tight loop
+                    // from flooding the device while still covering a short-lived toast.
+                    val context = if (attempt % EMPTY_MESSAGE_OCR_EVERY_ATTEMPTS == 0) {
+                        captureEmptyMessageProbeContext() ?: currentWindowContext()
+                    } else {
+                        currentWindowContext()
+                    } ?: return@withLock
                     val detection = pageDetector.detect(context)
                     logger.info(
                         "empty_message_probe_postcondition",
@@ -1806,6 +2230,65 @@ class DouyinNavigationController(
                 }
             }
         }
+    }
+
+    /** Capture one screenshot/OCR sample without exposing recognized text in logs or UI. */
+    private suspend fun captureContextWithOcr(
+        base: ScreenContext,
+        tag: String,
+    ): ScreenContext? {
+        val engine = ocr ?: return base
+        return runCatching {
+            val artifact = screenshotCapture.capture(tag)
+            val bitmap = withContext(Dispatchers.IO) { BitmapFactory.decodeFile(artifact.path) }
+                ?: return@runCatching base
+            try {
+                val result = engine.recognize(bitmap, OcrRegion.PROFILE_ACTION)
+                base.copy(
+                    ocrBlocks = result.toOcrTextBlocks(),
+                    capturedAtMillis = System.currentTimeMillis(),
+                ).also { latestContext = it }
+            } finally {
+                bitmap.recycle()
+            }
+        }.onFailure { error ->
+            logger.warn(
+                "private_message_entry_ocr_failed",
+                message = "Private-message entry OCR probe failed; continuing with semantic checks",
+                attributes = mapOf("cause" to (error::class.java.simpleName ?: "Throwable")),
+            )
+        }.getOrNull()
+    }
+
+    private suspend fun captureEmptyMessageProbeContext(): ScreenContext? {
+        val base = currentWindowContext() ?: latestContext ?: return null
+        val engine = ocr ?: return base
+        return runCatching {
+            val artifact = screenshotCapture.capture("empty_message_probe")
+            val bitmap = withContext(Dispatchers.IO) { BitmapFactory.decodeFile(artifact.path) }
+                ?: return@runCatching base
+            try {
+                val result = engine.recognize(bitmap, OcrRegion.MESSAGE_COMPOSER)
+                val enriched = base.copy(
+                    ocrBlocks = result.toOcrTextBlocks(),
+                    capturedAtMillis = System.currentTimeMillis(),
+                )
+                latestContext = enriched
+                logger.info(
+                    "empty_message_probe_ocr_ready",
+                    attributes = mapOf("blocks" to result.blocks.size),
+                )
+                enriched
+            } finally {
+                bitmap.recycle()
+            }
+        }.onFailure { error ->
+            logger.warn(
+                "empty_message_probe_ocr_failed",
+                message = "Blank-message OCR probe failed; accessibility events remain authoritative",
+                attributes = mapOf("cause" to (error::class.java.simpleName ?: "Throwable")),
+            )
+        }.getOrDefault(base)
     }
 
     /** Returns to user results after a verified blank-message rejection, then selects the next row. */
@@ -1960,7 +2443,21 @@ class DouyinNavigationController(
         val next = cursor.next()
         queryTransitionHandled = true
         if (next == null) {
-            completeTaskAtQueryEnd()
+            val endContext = currentWindowContext()
+            if (endContext != null && hasConfirmedUserResultsEnd(endContext)) {
+                completeTaskAtQueryEnd()
+            } else {
+                // A slow/half-loaded RecyclerView is not proof that the query is exhausted. Do
+                // not publish COMPLETED here: the mobile client may still have queued records,
+                // and the backend would then reject them with 409. Preserve the checkpoint and
+                // pause with a visible reason so the operator can resume after the list settles.
+                logger.warn(
+                    "task_end_not_confirmed",
+                    message = "The result list did not expose an explicit end marker after the bounded wait; pausing instead of completing",
+                    attributes = mapOf("tag" to tag),
+                )
+                pause("用户结果分页等待超时，未确认已到末尾；已暂停等待页面加载或人工确认")
+            }
             return true
         }
 
@@ -2008,6 +2505,22 @@ class DouyinNavigationController(
             }
         }
         return true
+    }
+
+    /** Only an explicit Douyin end-of-list label may complete the last frozen query. */
+    private fun hasConfirmedUserResultsEnd(context: ScreenContext): Boolean {
+        val endMarkers = listOf(
+            "没有更多",
+            "没有更多了",
+            "已加载全部",
+            "到底了",
+            "no more",
+            "end of results",
+        )
+        return (context.nodeText() + context.ocrText()).any { value ->
+            val normalized = TextNormalizer.normalize(value)
+            endMarkers.any { marker -> normalized.contains(TextNormalizer.normalize(marker)) }
+        } || UserResultMarkers.accountHelpOnly(context)
     }
 
     /**
@@ -2107,7 +2620,18 @@ class DouyinNavigationController(
                 "empty_message_probe_requested",
                 message = "M2 safety mode will submit one space and require the blank-message notice; no real message will be sent",
             )
-            probeEmptyMessageOnce()
+            // Do not run the probe inline from onScreenObserved(). That callback is invoked while
+            // the service holds its inspection lock; reading the active window again and
+            // submitting text from inside that lock can stall the accessibility event loop on
+            // some Douyin chat surfaces. Start it after the current observation returns and take
+            // the controller mutex in the normal command path.
+            scope.launch {
+                mutex.withLock {
+                    if (taskActive && phase == AutomationPhase.COMPLETED_AT_MESSAGE_PAGE) {
+                        probeEmptyMessageOnce()
+                    }
+                }
+            }
         } else if (message.isBlank()) {
             taskActive = false
             logger.info("poc_completed", message = "Direct-message page verified; no message was created or sent")
@@ -2117,7 +2641,13 @@ class DouyinNavigationController(
                 message = "A non-empty Start message was supplied; sending one message after page verification",
                 attributes = mapOf("message_length" to message.length),
             )
-            sendMessageOnce(message)
+            scope.launch {
+                mutex.withLock {
+                    if (taskActive && phase == AutomationPhase.COMPLETED_AT_MESSAGE_PAGE) {
+                        sendMessageOnce(message)
+                    }
+                }
+            }
         }
     }
 
@@ -2223,7 +2753,10 @@ class DouyinNavigationController(
                     PageKind.MESSAGE_SEND_FAILED -> skipMessageSendFailure(
                         "Douyin rejected the message because of the recipient's messaging settings",
                     )
-                    PageKind.USER_PROFILE -> skipRestrictedUser("Profile remained open after the message action; treating this user as unavailable")
+                    // A delayed profile callback does not prove that the tap failed. Re-enter the
+                    // bounded action/post-condition loop once more before deciding that the
+                    // account is unavailable.
+                    PageKind.USER_PROFILE -> openPrivateMessage(context)
                     else -> Unit
                 }
             }
@@ -2412,7 +2945,11 @@ class DouyinNavigationController(
         forceOcr: Boolean = false,
         forceFreshOcr: Boolean = false,
     ): ScreenContext {
-        if (!forceOcr && UserResultIdentityExtractor.extract(context, match)?.source == UserResultIdentity.Source.ACCESSIBILITY) {
+        val blockedKeywordAuditRequired = activeTaskSnapshot?.normalizedBlockedKeywords?.isNotEmpty() == true
+        if (!forceOcr &&
+            !blockedKeywordAuditRequired &&
+            UserResultIdentityExtractor.extract(context, match)?.source == UserResultIdentity.Source.ACCESSIBILITY
+        ) {
             return context
         }
         if (context.ocrBlocks.isNotEmpty()) return context
@@ -2430,7 +2967,7 @@ class DouyinNavigationController(
             val bitmap = withContext(Dispatchers.IO) { BitmapFactory.decodeFile(artifact.path) }
                 ?: return context
             try {
-                val result = ocrEngine.recognize(bitmap)
+                val result = ocrEngine.recognize(bitmap, OcrRegion.USER_RESULTS)
                 val blocks = result.toOcrTextBlocks()
                 cachedUserResultsViewportSignature = viewportSignature
                 cachedUserResultsOcrBlocks = blocks
@@ -2473,6 +3010,11 @@ class DouyinNavigationController(
     private suspend fun clickSelector(context: ScreenContext, request: SelectorRequest): ActionOutcome {
         val liveContext = waitForTargetWindow("click_${request.name}") ?: context
         val selection = selector.select(liveContext, request)
+        val target = selection.node ?: return ActionOutcome.failure(selection.reasons.joinToString())
+        return withLiveNode(target) { liveNode -> gestures.click(liveNode, target.bounds) }
+    }
+
+    private suspend fun clickSelection(context: ScreenContext, selection: SelectionResult): ActionOutcome {
         val target = selection.node ?: return ActionOutcome.failure(selection.reasons.joinToString())
         return withLiveNode(target) { liveNode -> gestures.click(liveNode, target.bounds) }
     }
@@ -2550,6 +3092,13 @@ class DouyinNavigationController(
             return ActionOutcome.failure("Douyin window is temporarily covered or unavailable")
         }
         return gestures.tapNormalized(point)
+    }
+
+    private suspend fun tapBoundsGuarded(bounds: ScreenBounds, tag: String): ActionOutcome {
+        if (waitForTargetWindow(tag) == null) {
+            return ActionOutcome.failure("Douyin window is temporarily covered or unavailable")
+        }
+        return gestures.tapBounds(bounds)
     }
 
     /**
@@ -2742,6 +3291,28 @@ class DouyinNavigationController(
             ),
         )
 
+        // A startup ad can leave the underlying HOME node tree visible. Re-check the overlay
+        // before the phase-specific HOME recovery so a timeout can never turn into a tap through
+        // the ad banner.
+        if (timedOutPhase == AutomationPhase.WAITING_FOR_HOME &&
+            context != null &&
+            TransientOverlayDetector.findStartupAd(context) != null
+        ) {
+            val startupAd = TransientOverlayDetector.findStartupAd(requireNotNull(context))
+            logger.info(
+                "startup_ad_timeout_recovery_wait",
+                message = "The startup advertisement is still visible; extending the bounded wait",
+                attributes = mapOf("marker" to (startupAd?.marker ?: "unknown")),
+            )
+            await(
+                nextPhase = AutomationPhase.WAITING_FOR_HOME,
+                timeoutDescription = timeoutDescription,
+                resetRecoveryBudget = false,
+            )
+            scheduleInitialObservation()
+            return
+        }
+
         when (timedOutPhase) {
             AutomationPhase.WAITING_FOR_SEARCH_RESULTS -> when {
                 context != null && detection?.kind == PageKind.SEARCH_ENTRY -> {
@@ -2756,7 +3327,36 @@ class DouyinNavigationController(
 
             AutomationPhase.WAITING_FOR_SEARCH_ENTRY -> when (detection?.kind) {
                 PageKind.SEARCH_ENTRY -> enterKeyword(context!!)
+                PageKind.SEARCH_RESULTS -> reuseSearchResultsQueryField(requireNotNull(context), "search_entry_timeout_recovery")
                 PageKind.HOME -> openSearch(context!!)
+                else -> pause(timeoutDescription)
+            }
+
+            AutomationPhase.WAITING_FOR_HOME -> when (detection?.kind) {
+                PageKind.HOME -> openSearch(requireNotNull(context))
+                PageKind.SEARCH_ENTRY -> enterKeyword(requireNotNull(context))
+                PageKind.SEARCH_RESULTS -> reuseSearchResultsQueryField(requireNotNull(context), "home_timeout_recovery")
+                PageKind.USER_RESULTS,
+                PageKind.USER_PROFILE,
+                PageKind.DIRECT_MESSAGE -> recoverInitialSurface(requireNotNull(context))
+                PageKind.UNKNOWN -> {
+                    val startupAd = context?.let(TransientOverlayDetector::findStartupAd)
+                    if (startupAd != null) {
+                        logger.info(
+                            "startup_ad_timeout_recovery_wait",
+                            message = "The startup advertisement is still visible; extending the bounded wait",
+                            attributes = mapOf("marker" to startupAd.marker),
+                        )
+                        await(
+                            nextPhase = AutomationPhase.WAITING_FOR_HOME,
+                            timeoutDescription = timeoutDescription,
+                            resetRecoveryBudget = false,
+                        )
+                        scheduleInitialObservation()
+                    } else {
+                        pause(timeoutDescription)
+                    }
+                }
                 else -> pause(timeoutDescription)
             }
 
@@ -2949,6 +3549,7 @@ class DouyinNavigationController(
         const val INITIAL_OBSERVATION_INTERVAL_MS = 350L
         const val INITIAL_OCR_RETRY_EVERY_OBSERVATIONS = 2
         const val INITIAL_OCR_MAX_ATTEMPTS = 6
+        const val OCR_PAGE_STABLE_OBSERVATIONS = 2
         const val INITIAL_SCREEN_SETTLE_DELAY_MS = 5_000L
         const val INITIAL_READY_STABLE_OBSERVATIONS = 2
         val INITIAL_READY_PAGE_KINDS = setOf(
@@ -2974,6 +3575,10 @@ class DouyinNavigationController(
         const val MESSAGE_ENTRY_POSTCONDITION_DELAY_MS = 900L
         const val PRIVATE_MESSAGE_ENTRY_ATTEMPTS = 3
         const val PRIVATE_MESSAGE_ENTRY_RETRY_INTERVAL_MS = 450L
+        const val PRIVATE_MESSAGE_ENTRY_POSTCONDITION_ATTEMPTS = 7
+        const val PRIVATE_MESSAGE_ENTRY_POSTCONDITION_INITIAL_DELAY_MS = 500L
+        const val PRIVATE_MESSAGE_ENTRY_POSTCONDITION_INTERVAL_MS = 450L
+        const val PRIVATE_MESSAGE_ENTRY_OCR_PROBE_ATTEMPT = 2
         const val USER_PROFILE_BACK_DELAY_MS = 700L
         const val MAX_BACK_ACTIONS_TO_SEARCH_ENTRY = 3
         const val PROFILE_POSTCONDITION_ATTEMPTS = 16
@@ -2992,8 +3597,13 @@ class DouyinNavigationController(
         const val MESSAGE_INPUT_SETTLE_DELAY_MS = 250L
         const val MESSAGE_RESULT_ATTEMPTS = 8
         const val MESSAGE_RESULT_INTERVAL_MS = 600L
-        const val EMPTY_MESSAGE_PROBE_ATTEMPTS = 8
-        const val EMPTY_MESSAGE_PROBE_INTERVAL_MS = 600L
+        // The rejection toast is transient. Start quickly, then sample for roughly six seconds
+        // while also listening for Accessibility notification events. This replaces the old
+        // 4.8-second/600ms cadence that routinely missed the toast on the real device.
+        const val EMPTY_MESSAGE_PROBE_ATTEMPTS = 18
+        const val EMPTY_MESSAGE_PROBE_INITIAL_DELAY_MS = 120L
+        const val EMPTY_MESSAGE_PROBE_INTERVAL_MS = 350L
+        const val EMPTY_MESSAGE_OCR_EVERY_ATTEMPTS = 4
         const val MAX_TIMEOUT_RECOVERY_ATTEMPTS = 1
         const val SEARCH_ENTRY_POSTCONDITION_ATTEMPTS = 8
         const val SEARCH_ENTRY_POSTCONDITION_INTERVAL_MS = 350L
@@ -3052,6 +3662,23 @@ class DouyinNavigationController(
                 val context = currentWindowContext() ?: return@repeat
                 val augmentedContext = augmentInitialUnknownWithOcr(context, observationAttempt)
                 val detected = pageDetector.detect(augmentedContext)
+                // Check the launch overlay before trusting the page classifier. An ad can leave
+                // the home navigation tree visible underneath it, so HOME alone is not proof that
+                // the search icon is safe to tap.
+                val startupAd = TransientOverlayDetector.findStartupAd(augmentedContext)
+                if (startupAd != null) {
+                    // Startup ads are wait-only. Never press a skip/download/ad control because
+                    // it is not part of the Douyin automation contract and can launch an
+                    // unrelated surface while the app is still starting.
+                    logger.info(
+                        "startup_ad_waiting",
+                        message = "A possible Douyin startup advertisement is visible; waiting without a gesture",
+                        attributes = mapOf("marker" to startupAd.marker, "attempt" to observationAttempt + 1),
+                    )
+                    lastReadyKind = null
+                    readyObservations = 0
+                    return@repeat
+                }
                 // Some Douyin home builds expose only the upper-right magnifying-glass node and
                 // no pair of bottom-nav labels. Treat that semantic search candidate as a home
                 // post-condition only after the ad/overlay has cleared; this avoids relying on a

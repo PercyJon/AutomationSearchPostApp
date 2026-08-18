@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.horizontalScroll
@@ -59,12 +60,15 @@ import com.example.douyinautomation.automation.TaskDraft
 import com.example.douyinautomation.automation.TaskExecutionMode
 import com.example.douyinautomation.automation.TaskHistoryEntry
 import com.example.douyinautomation.automation.TaskRunStatus
+import com.example.douyinautomation.automation.UserTaskRecord
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.delay
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 
 private enum class HomeSection {
@@ -78,9 +82,26 @@ private enum class HomeSection {
 @Composable
 fun AppHomeScreen(
     initialKeyword: String = "",
+    initialSection: String? = null,
 ) {
-    var section by rememberSaveable { mutableStateOf(HomeSection.TASKS.name) }
+    var section by rememberSaveable(initialSection) { mutableStateOf(initialSection ?: HomeSection.TASKS.name) }
+    var detailTaskId by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(initialSection) {
+        initialSection?.let { section = it }
+    }
     val selectedSection = HomeSection.valueOf(section)
+
+    detailTaskId?.let { taskId ->
+        TaskRecordDetailScreen(
+            taskId = taskId,
+            onBack = { detailTaskId = null },
+            onReuse = {
+                detailTaskId = null
+                section = HomeSection.TASKS.name
+            },
+        )
+        return
+    }
 
     if (selectedSection == HomeSection.DIAGNOSTICS) {
         DiagnosticsScreen(onBack = { section = HomeSection.SETTINGS.name })
@@ -136,7 +157,10 @@ fun AppHomeScreen(
                 initialKeyword = initialKeyword,
             )
 
-            HomeSection.RECORDS -> TaskRecordsPage(padding)
+            HomeSection.RECORDS -> TaskRecordsPage(
+                padding = padding,
+                onOpenTask = { taskId -> detailTaskId = taskId },
+            )
             HomeSection.SETTINGS -> SettingsPage(
                 padding = padding,
                 onOpenDiagnostics = { section = HomeSection.DIAGNOSTICS.name },
@@ -181,9 +205,19 @@ private fun TaskDashboard(
         }.getOrDefault(blockKeywordCatalog)
     }
     LaunchedEffect(context, licenseState.status) {
-        remoteTasks = runCatching {
-            withContext(Dispatchers.IO) { AuthStore.loadRemoteTasks(context) }
-        }.getOrDefault(emptyList())
+        while (true) {
+            runCatching {
+                withContext(Dispatchers.IO) { AuthStore.loadRemoteTasks(context) }
+            }.onSuccess { tasks ->
+                remoteTasks = tasks
+            }.onFailure { error ->
+                if (error is CancellationException) return@onFailure
+                AutomationStore.publishRemoteSyncError(
+                    "远程任务刷新失败：${error.message ?: "网络异常"}",
+                )
+            }
+            delay(10_000L)
+        }
     }
     val presets = presetCatalog.items
     var taskName by rememberSaveable { mutableStateOf("红木客户筛选") }
@@ -192,6 +226,40 @@ private fun TaskDashboard(
     var blockedKeywords by rememberSaveable { mutableStateOf("") }
     var maxUsers by rememberSaveable { mutableStateOf(TaskDraft.DEFAULT_MAX_USERS.toString()) }
     var selectedPresetIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var draftHydrated by remember { mutableStateOf(false) }
+    var draftMessage by rememberSaveable { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(context, initialKeyword) {
+        val savedDraft = withContext(Dispatchers.IO) { AutomationStore.loadTaskDraft() }
+        if (savedDraft != null && initialKeyword.isBlank()) {
+            taskName = savedDraft.name
+            keyword = savedDraft.customKeywords.firstOrNull().orEmpty()
+            region = savedDraft.region.orEmpty()
+            blockedKeywords = savedDraft.blockedKeywords.joinToString(",")
+            maxUsers = savedDraft.maxUsers.toString()
+            selectedPresetIds = savedDraft.presetIds.toSet()
+        }
+        draftHydrated = true
+    }
+
+    LaunchedEffect(taskName, keyword, region, blockedKeywords, maxUsers, selectedPresetIds, draftHydrated) {
+        if (draftHydrated) {
+            withContext(Dispatchers.IO) {
+                AutomationStore.saveTaskDraft(
+                    TaskDraft(
+                        id = "draft",
+                        name = taskName,
+                        presetIds = selectedPresetIds.toList(),
+                        customKeywords = listOf(keyword),
+                        region = region,
+                        blockedKeywords = blockedKeywords.split(',', '，', '\n'),
+                        maxUsers = maxUsers.toIntOrNull() ?: TaskDraft.DEFAULT_MAX_USERS,
+                        executionMode = TaskExecutionMode.SAFE_BLANK_PROBE,
+                    ),
+                )
+            }
+        }
+    }
 
     val selectedPresetKeywords = presets
         .filter { it.id in selectedPresetIds }
@@ -406,6 +474,31 @@ private fun TaskDashboard(
                     Text(if (state.phase == AutomationPhase.IDLE) "开始任务" else "启动新的任务")
                 }
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            AutomationStore.saveTaskDraft(draft)
+                            draftMessage = "任务配置已保存，下次打开仍会保留"
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("保存配置") }
+                    OutlinedButton(
+                        onClick = {
+                            AutomationStore.clearTaskDraft()
+                            taskName = "红木客户筛选"
+                            keyword = initialKeyword
+                            region = ""
+                            blockedKeywords = ""
+                            maxUsers = TaskDraft.DEFAULT_MAX_USERS.toString()
+                            selectedPresetIds = emptySet()
+                            draftMessage = "已清除本地配置"
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("清除配置") }
+                }
+                draftMessage?.let {
+                    Text(it, color = MaterialTheme.colorScheme.primary)
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilledTonalButton(
                         onClick = { AutomationStore.send(AutomationCommand.Pause) },
                         modifier = Modifier.weight(1f),
@@ -558,7 +651,7 @@ private fun CurrentTaskCard(
             Text(phaseLabel(state.phase), fontWeight = FontWeight.SemiBold)
             state.remoteTaskId?.let { remoteId ->
                 Text(
-                    "远程任务 #$remoteId · 待同步 ${state.remoteSyncPendingCount}",
+                    "远程任务 #$remoteId · ${remoteStatusLabel(state.remoteTaskStatus)} · 待同步 ${state.remoteSyncPendingCount}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -601,8 +694,15 @@ private fun CurrentTaskCard(
 }
 
 @Composable
-private fun TaskRecordsPage(padding: PaddingValues) {
+private fun TaskRecordsPage(
+    padding: PaddingValues,
+    onOpenTask: (String) -> Unit,
+) {
     val state by AutomationStore.uiState.collectAsState()
+    var statusFilter by rememberSaveable { mutableStateOf("ALL") }
+    val visibleHistory = state.taskHistory.asReversed().filter { history ->
+        statusFilter == "ALL" || history.status.name == statusFilter
+    }
     Column(
         modifier = Modifier
             .padding(padding)
@@ -611,30 +711,35 @@ private fun TaskRecordsPage(padding: PaddingValues) {
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Text("处理记录", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        if (state.taskHistory.isEmpty() && state.taskRecords.isEmpty()) {
+        Text(
+            "点击任务查看完整结果和用户处理明细",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            listOf("ALL" to "全部", "RUNNING" to "执行中", "COMPLETED" to "已完成", "FAILED" to "失败", "PAUSED" to "暂停", "STOPPED" to "已停止").forEach { (value, label) ->
+                FilterChip(
+                    selected = statusFilter == value,
+                    onClick = { statusFilter = value },
+                    label = { Text(label) },
+                )
+            }
+        }
+        if (visibleHistory.isEmpty()) {
             Text("暂无任务记录", color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
-            state.taskHistory.asReversed().forEach { history ->
-                TaskHistoryCard(history)
-            }
-            if (state.taskRecords.isNotEmpty()) {
-                Text("当前任务明细", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            }
-            state.taskRecords.asReversed().take(50).forEach { record ->
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text(record.outcome.name, fontWeight = FontWeight.SemiBold)
-                        Text(record.reason.orEmpty().ifBlank { "未记录原因" })
-                    }
-                }
+            visibleHistory.forEach { history ->
+                TaskHistoryCard(history, onClick = { onOpenTask(history.taskId) })
             }
         }
     }
 }
 
 @Composable
-private fun TaskHistoryCard(history: TaskHistoryEntry) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+private fun TaskHistoryCard(history: TaskHistoryEntry, onClick: () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(history.taskName, fontWeight = FontWeight.SemiBold)
             Text(
@@ -653,6 +758,151 @@ private fun TaskHistoryCard(history: TaskHistoryEntry) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TaskRecordDetailScreen(
+    taskId: String,
+    onBack: () -> Unit,
+    onReuse: () -> Unit,
+) {
+    val state by AutomationStore.uiState.collectAsState()
+    val history = state.taskHistory.firstOrNull { it.taskId == taskId }
+    val records = state.recordEntries
+        .filter { it.taskId == taskId }
+        .sortedByDescending { it.startedAtMillis }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(history?.taskName ?: "任务结果") },
+                navigationIcon = {
+                    TextButton(onClick = onBack) { Text("返回") }
+                },
+            )
+        },
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            if (history == null) {
+                Text("任务记录不存在或已被清理", color = MaterialTheme.colorScheme.error)
+                return@Column
+            }
+
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text("任务概览", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text("状态：${taskStatusLabel(history.status)}")
+                    history.errorMessage?.takeIf(String::isNotBlank)?.let {
+                        Text("原因：$it", color = MaterialTheme.colorScheme.error)
+                    }
+                    Text("开始：${formatTaskTime(history.startedAtMillis)}")
+                    Text("更新：${formatTaskTime(history.updatedAtMillis)}")
+                    Text("搜索词组：${history.queryCount} · 用户上限：${history.maxUsers}")
+                    if (history.searchQueries.isNotEmpty()) {
+                        Text("实际搜索词：${history.searchQueries.joinToString("、")}")
+                    }
+                    history.region?.takeIf(String::isNotBlank)?.let { Text("地区前缀：$it") }
+                    if (history.blockedKeywords.isNotEmpty()) {
+                        Text("屏蔽词：${history.blockedKeywords.joinToString("、")}")
+                    }
+                    Text("执行模式：${executionModeLabel(history.executionMode)}")
+                    Text("已处理：${history.handledCount} · 已跳过：${history.skippedCount}")
+                    Text("命中屏蔽词：${history.filteredCount} · 重复用户：${history.duplicateCount}")
+                    FilledTonalButton(
+                        onClick = {
+                            AutomationStore.saveTaskDraft(history.toReusableDraft())
+                            onReuse()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("复用此任务配置") }
+                }
+            }
+
+            Text(
+                "任务结果（${records.size}）",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+            )
+            if (records.isEmpty()) {
+                Text("当前任务还没有用户处理记录", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                records.forEach { record ->
+                    UserTaskResultCard(record)
+                }
+            }
+        }
+    }
+}
+
+private fun TaskHistoryEntry.toReusableDraft(): TaskDraft = TaskDraft(
+    id = "draft",
+    name = "$taskName（复用）",
+    customKeywords = searchQueries.ifEmpty { listOf(taskName) },
+    region = region,
+    blockedKeywords = blockedKeywords,
+    maxUsers = maxUsers,
+    messageTemplate = messageTemplate,
+    executionMode = executionMode,
+)
+
+@Composable
+private fun UserTaskResultCard(record: UserTaskRecord) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    record.displayName ?: record.userKey ?: "未识别用户",
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    recordOutcomeLabel(record.outcome),
+                    color = if (record.outcome == UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.error
+                    },
+                )
+            }
+            record.userKey?.takeIf(String::isNotBlank)?.let { Text("账号：$it") }
+            Text("时间：${formatTaskTime(record.startedAtMillis)}")
+            record.finishedAtMillis?.let { Text("结束：${formatTaskTime(it)}") }
+            Text("内容：${record.messageContent.orEmpty().ifBlank { "未设置" }}")
+            Text("页面：${record.page?.name ?: "未知"}")
+            record.reason?.takeIf(String::isNotBlank)?.let {
+                Text("说明：$it", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+private fun recordOutcomeLabel(outcome: UserTaskRecord.Outcome): String = when (outcome) {
+    UserTaskRecord.Outcome.IN_PROGRESS -> "处理中"
+    UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED -> "模拟发送成功"
+    UserTaskRecord.Outcome.PRIVATE_MESSAGE_UNAVAILABLE -> "私信入口不可用"
+    UserTaskRecord.Outcome.MESSAGE_SEND_FAILED -> "发送失败"
+    UserTaskRecord.Outcome.FOLLOW_BACK_SKIPPED -> "回关用户已跳过"
+    UserTaskRecord.Outcome.FILTERED_BY_KEYWORD -> "命中屏蔽词"
+    UserTaskRecord.Outcome.DUPLICATE_SKIPPED -> "重复用户已跳过"
+    UserTaskRecord.Outcome.IDENTITY_UNAVAILABLE -> "无法识别用户"
+    UserTaskRecord.Outcome.PAUSED -> "已暂停"
+    UserTaskRecord.Outcome.STOPPED -> "已停止"
+}
+
 private fun taskStatusLabel(status: TaskRunStatus): String = when (status) {
     TaskRunStatus.RUNNING -> "执行中"
     TaskRunStatus.PAUSED -> "已暂停"
@@ -661,8 +911,25 @@ private fun taskStatusLabel(status: TaskRunStatus): String = when (status) {
     TaskRunStatus.FAILED -> "执行失败"
 }
 
+private fun remoteStatusLabel(status: Int?): String = when (status) {
+    null -> "未同步"
+    0 -> "草稿"
+    1 -> "待执行"
+    2 -> "执行中"
+    3 -> "已暂停"
+    4 -> "已完成"
+    5 -> "执行失败"
+    6 -> "已取消"
+    else -> "状态 $status"
+}
+
+private fun executionModeLabel(mode: TaskExecutionMode): String = when (mode) {
+    TaskExecutionMode.SAFE_BLANK_PROBE -> "空白消息安全探测"
+    TaskExecutionMode.REAL_SEND_REQUIRES_CONFIRMATION -> "真实发送（需确认）"
+}
+
 private fun formatTaskTime(timestamp: Long): String =
-    SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(timestamp))
+    SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()).format(Date(timestamp))
 
 @Composable
 private fun SettingsPage(

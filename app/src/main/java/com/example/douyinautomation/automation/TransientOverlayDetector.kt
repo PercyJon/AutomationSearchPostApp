@@ -17,6 +17,31 @@ object TransientOverlayDetector {
         "点击进入直播间",
     )
 
+    private val startupAdMarkers = listOf(
+        "跳过",
+        "广告",
+        "开屏广告",
+        "广告剩余",
+        "立即下载",
+        "立即打开",
+        "打开应用",
+        "下载并打开",
+        "sponsored",
+        "skip",
+    )
+
+    private val startupAdStrongMarkers = setOf(
+        "跳过",
+        "开屏广告",
+        "广告剩余",
+        "立即下载",
+        "立即打开",
+        "打开应用",
+        "下载并打开",
+        "sponsored",
+        "skip",
+    )
+
     fun find(context: ScreenContext): OverlayMatch? {
         val topLimit = (context.screenSize.height * TOP_REGION_RATIO).toInt()
         val candidates = context.nodes.asSequence()
@@ -46,6 +71,37 @@ object TransientOverlayDetector {
 
     fun isBlocking(context: ScreenContext): Boolean = find(context) != null
 
+    /**
+     * Detects common startup-ad labels. This is a wait-only signal: the controller must not
+     * click a skip/download/ad control while the launch surface is changing.
+     */
+    fun findStartupAd(context: ScreenContext): OverlayMatch? {
+        val topLimit = (context.screenSize.height * STARTUP_AD_TOP_REGION_RATIO).toInt()
+        val nodeMatches = context.nodes.asSequence()
+            .filter { it.isVisibleToUser && it.bounds.width > 0 && it.bounds.height > 0 }
+            .filter { it.bounds.top <= topLimit }
+            .flatMap { node ->
+                node.searchableText().asSequence().flatMap { value ->
+                    TextNormalizer.matchingTerms(value, startupAdMarkers).asSequence()
+                        .map { marker -> OverlayMatch(marker, node.bounds) }
+                }
+            }
+        val ocrMatches = context.ocrBlocks.asSequence()
+            .filter { it.bounds == ScreenBounds.EMPTY || it.bounds.top <= topLimit }
+            .flatMap { block ->
+                TextNormalizer.matchingTerms(block.text, startupAdMarkers).asSequence()
+                    .map { marker -> OverlayMatch(marker, block.bounds) }
+            }
+        return (nodeMatches + ocrMatches).firstOrNull { match ->
+            // “广告” alone can occur in a normal feed card. Require a stronger skip/download
+            // marker for a small node; a wide OCR block is enough for a full-screen ad.
+            val strongMarker = match.marker in startupAdStrongMarkers
+            val wide = match.bounds == ScreenBounds.EMPTY ||
+                match.bounds.width >= (context.screenSize.width * STARTUP_AD_MIN_WIDTH_RATIO).toInt()
+            strongMarker || wide
+        }
+    }
+
     data class OverlayMatch(
         val marker: String,
         val bounds: ScreenBounds,
@@ -56,4 +112,6 @@ object TransientOverlayDetector {
     // banner, by contrast, spans almost the whole viewport (possibly with a small side margin).
     private const val MIN_OVERLAY_WIDTH_RATIO = 0.75f
     private const val MAX_OVERLAY_SIDE_MARGIN_RATIO = 0.12f
+    private const val STARTUP_AD_TOP_REGION_RATIO = 0.55f
+    private const val STARTUP_AD_MIN_WIDTH_RATIO = 0.60f
 }

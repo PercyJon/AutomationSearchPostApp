@@ -2,6 +2,7 @@ package com.example.douyinautomation.automation
 
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
@@ -97,6 +98,8 @@ data class AutomationUiState(
     val taskDuplicateUserCount: Int = 0,
     val taskLastEvent: String? = null,
     val remoteTaskId: Long? = null,
+    val remoteTaskStatus: Int? = null,
+    val remoteTaskStatusUpdatedAtMillis: Long? = null,
     val remoteSyncPendingCount: Int = 0,
     val remoteSyncLastError: String? = null,
     val savedTaskAvailable: Boolean = false,
@@ -104,6 +107,8 @@ data class AutomationUiState(
     val savedTaskQueryIndex: Int = 0,
     val savedTaskQueryCount: Int = 0,
     val taskRecords: List<UserTaskRecord> = emptyList(),
+    /** All persisted per-user records, used by the Records tab across historical tasks. */
+    val recordEntries: List<UserTaskRecord> = emptyList(),
     val taskHistory: List<TaskHistoryEntry> = emptyList(),
     val diagnosticEntries: List<DiagnosticEntry> = emptyList(),
 )
@@ -120,6 +125,8 @@ object AutomationStore {
     private val _commands = MutableSharedFlow<AutomationCommand>(extraBufferCapacity = 16)
     private val _uiState = MutableStateFlow(AutomationUiState())
     private val recordLock = Any()
+    private var applicationContext: Context? = null
+    private var lastRecordsOpenAtMillis: Long = 0L
     private var recordPreferences: SharedPreferences? = null
     private var allTaskRecords: List<UserTaskRecord> = emptyList()
     private var taskHistory: List<TaskHistoryEntry> = emptyList()
@@ -146,6 +153,7 @@ object AutomationStore {
 
     /** Load the private task history once the Android service has a Context. */
     fun initialize(context: Context) {
+        applicationContext = context.applicationContext
         AuthStore.initialize(context)
         synchronized(recordLock) {
             if (recordPreferences == null) {
@@ -156,23 +164,114 @@ object AutomationStore {
                 allTaskRecords = decodeRecords(recordPreferences?.getString(TASK_RECORDS_KEY, null))
                 taskHistory = decodeTaskHistory(recordPreferences?.getString(TASK_HISTORY_KEY, null))
                 savedCheckpoint = decodeCheckpoint(recordPreferences?.getString(TASK_CHECKPOINT_KEY, null))
-                _uiState.update { current ->
-                    current.copy(
-                        savedTaskAvailable = savedCheckpoint != null,
-                        savedTaskName = savedCheckpoint?.snapshot?.taskName,
-                        savedTaskQueryIndex = savedCheckpoint?.queryIndex ?: 0,
-                        savedTaskQueryCount = savedCheckpoint?.snapshot?.composedQueries?.size ?: 0,
-                        taskHistory = taskHistory,
-                    )
+            }
+            // A process restart or accessibility-service rebind cannot keep an old controller
+            // running. Reconcile persisted RUNNING entries before publishing the Records tab so
+            // stale tasks never look executable forever.
+            if (currentTaskId == null) {
+                val interruptedAt = System.currentTimeMillis()
+                val reconciled = taskHistory.map { entry ->
+                    if (entry.status == TaskRunStatus.RUNNING) {
+                        entry.copy(
+                            status = TaskRunStatus.FAILED,
+                            updatedAtMillis = interruptedAt,
+                            errorMessage = entry.errorMessage
+                                ?: "应用重启或无障碍服务重连时任务未完成",
+                        )
+                    } else {
+                        entry
+                    }
+                }
+                if (reconciled != taskHistory) {
+                    taskHistory = reconciled
+                    persistTaskHistoryLocked()
                 }
             }
+            val latestTaskId = taskHistory.maxByOrNull(TaskHistoryEntry::updatedAtMillis)?.taskId
+            val latestTaskRecords = latestTaskId?.let { id -> allTaskRecords.filter { it.taskId == id } }.orEmpty()
+            _uiState.update { current ->
+                current.copy(
+                    savedTaskAvailable = savedCheckpoint != null,
+                    savedTaskName = savedCheckpoint?.snapshot?.taskName,
+                    savedTaskQueryIndex = savedCheckpoint?.queryIndex ?: 0,
+                    savedTaskQueryCount = savedCheckpoint?.snapshot?.composedQueries?.size ?: 0,
+                    taskRecords = latestTaskRecords,
+                    recordEntries = allTaskRecords,
+                    taskHandledUserCount = latestTaskRecords.count { it.outcome != UserTaskRecord.Outcome.DUPLICATE_SKIPPED },
+                    taskDuplicateUserCount = latestTaskRecords.count { it.outcome == UserTaskRecord.Outcome.DUPLICATE_SKIPPED },
+                    taskHistory = taskHistory,
+                )
+            }
+            logger.info(
+                "task_records_loaded",
+                attributes = mapOf(
+                    "records" to allTaskRecords.size,
+                    "history" to taskHistory.size,
+                    "latest_records" to latestTaskRecords.size,
+                ),
+            )
         }
         refreshRemoteSync()
+    }
+
+    /** Bring the operator back to the in-app Records tab after any terminal task outcome. */
+    fun openRecordsTab() {
+        val context = applicationContext ?: return
+        val now = System.currentTimeMillis()
+        synchronized(recordLock) {
+            if (now - lastRecordsOpenAtMillis < RECORDS_OPEN_THROTTLE_MS) return
+            lastRecordsOpenAtMillis = now
+        }
+        context.startActivity(
+            Intent(context, com.example.douyinautomation.MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                putExtra(com.example.douyinautomation.MainActivity.EXTRA_OPEN_RECORDS, true)
+            },
+        )
     }
 
     fun getSavedCheckpoint(): TaskCheckpoint? = synchronized(recordLock) { savedCheckpoint }
 
     fun getCurrentTaskId(): String? = synchronized(recordLock) { currentTaskId }
+
+    /**
+     * Returns the frozen task contract when Android has rebound the accessibility service while
+     * the same process still owns a running task.  AccessibilityService instances are transient:
+     * OEMs and diagnostic tooling can destroy and recreate the service without killing the app
+     * process.  The new controller must be allowed to rehydrate this checkpoint instead of
+     * leaving the task in RUNNING/LAUNCHING_TARGET forever.
+     *
+     * A paused, stopped, completed, or failed task is deliberately excluded; those states always
+     * require an explicit operator action.
+     */
+    fun getCheckpointForServiceRebind(): TaskCheckpoint? = synchronized(recordLock) {
+        val checkpoint = savedCheckpoint ?: return@synchronized null
+        val taskId = currentTaskId ?: return@synchronized null
+        val history = taskHistory.firstOrNull { it.taskId == taskId } ?: return@synchronized null
+        if (history.status != TaskRunStatus.RUNNING || checkpoint.taskId != taskId) {
+            return@synchronized null
+        }
+        checkpoint
+    }
+
+    /** Persist the last task configuration so an operator can resume setup after app recreation. */
+    fun loadTaskDraft(): TaskDraft? = synchronized(recordLock) {
+        decodeTaskDraft(recordPreferences?.getString(TASK_DRAFT_KEY, null))
+    }
+
+    fun saveTaskDraft(draft: TaskDraft) {
+        synchronized(recordLock) {
+            recordPreferences?.edit()
+                ?.putString(TASK_DRAFT_KEY, encodeTaskDraft(draft).toString())
+                ?.apply()
+        }
+    }
+
+    fun clearTaskDraft() {
+        synchronized(recordLock) {
+            recordPreferences?.edit()?.remove(TASK_DRAFT_KEY)?.apply()
+        }
+    }
 
     /** Starts a new in-memory task and returns its stable id for later task publishing. */
     fun beginTask(keyword: String, snapshot: TaskSnapshot? = null): String {
@@ -238,6 +337,12 @@ object AutomationStore {
                 duplicateCount = existingRecords.count { record ->
                     record.outcome == UserTaskRecord.Outcome.DUPLICATE_SKIPPED
                 },
+                searchQueries = snapshot?.composedQueries ?: listOf(keyword),
+                region = snapshot?.region,
+                blockedKeywords = snapshot?.normalizedBlockedKeywords.orEmpty(),
+                messageTemplate = snapshot?.messageTemplate,
+                executionMode = snapshot?.executionMode ?: TaskExecutionMode.SAFE_BLANK_PROBE,
+                errorMessage = null,
             )
             taskHistory = (taskHistory.filterNot { it.taskId == taskId } + historyEntry).takeLast(MAX_TASK_HISTORY)
             persistTaskHistoryLocked()
@@ -253,8 +358,11 @@ object AutomationStore {
                 taskStartedAtMillis = now,
                 taskLastEvent = "TASK_STARTED",
                 remoteTaskId = remoteTaskId,
+                remoteTaskStatus = remoteTaskId?.let { RemoteTaskStatus.RUNNING },
+                remoteTaskStatusUpdatedAtMillis = remoteTaskId?.let { now },
                 remoteSyncLastError = null,
                 taskRecords = existingRecords,
+                recordEntries = allTaskRecords,
                 taskHandledUserCount = existingRecords.count { record ->
                     record.outcome != UserTaskRecord.Outcome.DUPLICATE_SKIPPED
                 },
@@ -317,6 +425,15 @@ object AutomationStore {
                     onSuccess = {
                         _uiState.update { it.copy(remoteSyncLastError = null) }
                     },
+                    onStatusSuccess = { task ->
+                        _uiState.update {
+                            it.copy(
+                                remoteTaskStatus = task.status,
+                                remoteTaskStatusUpdatedAtMillis = System.currentTimeMillis(),
+                                remoteSyncLastError = null,
+                            )
+                        }
+                    },
                 )
             }
             remoteSyncQueue?.let { queue ->
@@ -334,6 +451,12 @@ object AutomationStore {
         storeScope.launch {
             runCatching { gateway.claimTask(taskId) }
                 .onSuccess { task ->
+                    _uiState.update {
+                        it.copy(
+                            remoteTaskStatus = task.status,
+                            remoteTaskStatusUpdatedAtMillis = System.currentTimeMillis(),
+                        )
+                    }
                     logger.info(
                         "remote_task_claimed",
                         attributes = mapOf("remote_task_id_hash" to task.id.hashCode(), "status" to task.status),
@@ -422,6 +545,7 @@ object AutomationStore {
         page: PageKind? = PageKind.USER_RESULTS,
         remoteUserKey: String? = null,
         displayName: String? = null,
+        messageContent: String? = null,
     ) {
         val taskId = synchronized(recordLock) { currentTaskId } ?: return
         synchronized(recordLock) {
@@ -437,6 +561,9 @@ object AutomationStore {
                 recordId = UUID.randomUUID().toString(),
                 taskId = taskId,
                 identityHash = identityHash,
+                displayName = displayName,
+                userKey = remoteUserKey,
+                messageContent = messageContent,
                 outcome = UserTaskRecord.Outcome.IN_PROGRESS,
                 startedAtMillis = System.currentTimeMillis(),
                 page = page,
@@ -480,6 +607,8 @@ object AutomationStore {
                     finishedAtMillis = now,
                     page = page ?: allTaskRecords[index].page,
                     reason = reason,
+                    displayName = displayName ?: allTaskRecords[index].displayName,
+                    userKey = remoteUserKey ?: allTaskRecords[index].userKey,
                 )
                 allTaskRecords = allTaskRecords.toMutableList().also { it[index] = updated }
                 persistRecordsLocked()
@@ -490,6 +619,8 @@ object AutomationStore {
                         recordId = UUID.randomUUID().toString(),
                         taskId = taskId,
                         identityHash = identityHash,
+                        displayName = displayName,
+                        userKey = remoteUserKey,
                         outcome = outcome,
                         startedAtMillis = now,
                         finishedAtMillis = now,
@@ -531,8 +662,10 @@ object AutomationStore {
             UserTaskRecord(
                 recordId = UUID.randomUUID().toString(),
                 taskId = taskId,
-                identityHash = identityHash,
-                outcome = outcome,
+                        identityHash = identityHash,
+                        displayName = displayName,
+                        userKey = remoteUserKey,
+                        outcome = outcome,
                 startedAtMillis = now,
                 finishedAtMillis = now,
                 page = page,
@@ -610,6 +743,7 @@ object AutomationStore {
         _uiState.update {
             it.copy(
                 taskRecords = records,
+                recordEntries = allTaskRecords,
                 taskHandledUserCount = records.count { record ->
                     record.outcome != UserTaskRecord.Outcome.DUPLICATE_SKIPPED
                 },
@@ -643,6 +777,36 @@ object AutomationStore {
         put("processed_identity_hashes", JSONArray(checkpoint.processedIdentityHashes))
         put("snapshot", checkpoint.snapshot.toJson())
     }
+
+    private fun encodeTaskDraft(draft: TaskDraft): JSONObject = JSONObject().apply {
+        put("id", draft.id)
+        put("name", draft.name)
+        put("preset_ids", JSONArray(draft.presetIds))
+        put("custom_keywords", JSONArray(draft.customKeywords))
+        put("region", draft.region ?: JSONObject.NULL)
+        put("blocked_keywords", JSONArray(draft.blockedKeywords))
+        put("max_users", draft.maxUsers)
+        put("message_template", draft.messageTemplate ?: JSONObject.NULL)
+        put("execution_mode", draft.executionMode.name)
+    }
+
+    private fun decodeTaskDraft(raw: String?): TaskDraft? = runCatching {
+        if (raw.isNullOrBlank()) return null
+        val root = JSONObject(raw)
+        TaskDraft(
+            id = root.optString("id", "draft"),
+            name = root.optString("name", "红木客户筛选"),
+            presetIds = root.optJSONArray("preset_ids")?.toStringList().orEmpty(),
+            customKeywords = root.optJSONArray("custom_keywords")?.toStringList().orEmpty(),
+            region = root.optStringOrNull("region"),
+            blockedKeywords = root.optJSONArray("blocked_keywords")?.toStringList().orEmpty(),
+            maxUsers = root.optInt("max_users", TaskDraft.DEFAULT_MAX_USERS),
+            messageTemplate = root.optStringOrNull("message_template"),
+            executionMode = runCatching {
+                TaskExecutionMode.valueOf(root.optString("execution_mode"))
+            }.getOrDefault(TaskExecutionMode.SAFE_BLANK_PROBE),
+        )
+    }.getOrNull()
 
     private fun TaskSnapshot.toJson(): JSONObject = JSONObject().apply {
         put("task_id", taskId)
@@ -693,6 +857,12 @@ object AutomationStore {
             buildList(values.length()) { for (index in 0 until values.length()) add(values.getString(index)) }
         }.orEmpty()
 
+    private fun JSONArray.toStringList(): List<String> = buildList(length()) {
+        for (index in 0 until length()) {
+            optString(index).trim().takeIf(String::isNotEmpty)?.let(::add)
+        }
+    }
+
     private fun TaskHistoryEntry.toJson(): JSONObject = JSONObject().apply {
         put("task_id", taskId)
         put("task_name", taskName)
@@ -705,6 +875,12 @@ object AutomationStore {
         put("skipped_count", skippedCount)
         put("filtered_count", filteredCount)
         put("duplicate_count", duplicateCount)
+        put("search_queries", JSONArray(searchQueries))
+        put("region", region ?: JSONObject.NULL)
+        put("blocked_keywords", JSONArray(blockedKeywords))
+        put("message_template", messageTemplate ?: JSONObject.NULL)
+        put("execution_mode", executionMode.name)
+        put("error_message", errorMessage ?: JSONObject.NULL)
     }
 
     private fun decodeTaskHistory(raw: String?): List<TaskHistoryEntry> {
@@ -728,6 +904,18 @@ object AutomationStore {
                             skippedCount = item.getInt("skipped_count"),
                             filteredCount = item.getInt("filtered_count"),
                             duplicateCount = item.getInt("duplicate_count"),
+                            searchQueries = item.optJSONArray("search_queries")?.let { values ->
+                                buildList(values.length()) { for (index in 0 until values.length()) add(values.getString(index)) }
+                            }.orEmpty(),
+                            region = item.optStringOrNull("region"),
+                            blockedKeywords = item.optJSONArray("blocked_keywords")?.let { values ->
+                                buildList(values.length()) { for (index in 0 until values.length()) add(values.getString(index)) }
+                            }.orEmpty(),
+                            messageTemplate = item.optStringOrNull("message_template"),
+                            executionMode = runCatching {
+                                TaskExecutionMode.valueOf(item.optString("execution_mode"))
+                            }.getOrDefault(TaskExecutionMode.SAFE_BLANK_PROBE),
+                            errorMessage = item.optStringOrNull("error_message"),
                         ),
                     )
                 }
@@ -739,6 +927,9 @@ object AutomationStore {
         put("record_id", recordId)
         put("task_id", taskId)
         put("identity_hash", identityHash)
+        put("display_name", displayName ?: JSONObject.NULL)
+        put("user_key", userKey ?: JSONObject.NULL)
+        put("message_content", messageContent ?: JSONObject.NULL)
         put("outcome", outcome.name)
         put("started_at", startedAtMillis)
         put("finished_at", finishedAtMillis ?: JSONObject.NULL)
@@ -753,23 +944,29 @@ object AutomationStore {
             buildList(minOf(json.length(), MAX_TASK_RECORDS)) {
                 val start = (json.length() - MAX_TASK_RECORDS).coerceAtLeast(0)
                 for (index in start until json.length()) {
-                    val item = json.getJSONObject(index)
-                    add(
+                    runCatching {
+                        val item = json.getJSONObject(index)
                         UserTaskRecord(
                             recordId = item.getString("record_id"),
                             taskId = item.getString("task_id"),
                             identityHash = if (item.isNull("identity_hash")) null else item.getInt("identity_hash"),
+                            displayName = item.optStringOrNull("display_name"),
+                            userKey = item.optStringOrNull("user_key"),
+                            messageContent = item.optStringOrNull("message_content"),
                             outcome = UserTaskRecord.Outcome.valueOf(item.getString("outcome")),
                             startedAtMillis = item.getLong("started_at"),
                             finishedAtMillis = if (item.isNull("finished_at")) null else item.getLong("finished_at"),
                             page = if (item.isNull("page")) null else PageKind.valueOf(item.getString("page")),
                             reason = if (item.isNull("reason")) null else item.getString("reason"),
-                        ),
-                    )
+                        )
+                    }.onSuccess(::add)
                 }
             }
         }.getOrDefault(emptyList())
     }
+
+    private fun JSONObject.optStringOrNull(key: String): String? =
+        if (isNull(key)) null else optString(key).takeIf(String::isNotBlank)
 
     fun send(command: AutomationCommand) {
         if (!_uiState.value.serviceConnected) {
@@ -869,7 +1066,11 @@ object AutomationStore {
             if (taskId != null && status != null) {
                 taskHistory = taskHistory.map { entry ->
                     if (entry.taskId == taskId) {
-                        entry.copy(status = status, updatedAtMillis = System.currentTimeMillis())
+                        entry.copy(
+                            status = status,
+                            updatedAtMillis = System.currentTimeMillis(),
+                            errorMessage = error ?: entry.errorMessage,
+                        )
                     } else {
                         entry
                     }
@@ -889,16 +1090,18 @@ object AutomationStore {
         phase.toRemoteTaskStatus()?.let { status ->
             syncRemoteStatus(status, errorCode = if (phase == AutomationPhase.FAILED) "LOCAL_AUTOMATION_FAILED" else null, errorMessage = error)
         }
+        if (phase in TERMINAL_PHASES) openRecordsTab()
     }
 
     private fun AutomationPhase.toRemoteTaskStatus(): Int? = when (this) {
         AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF -> RemoteTaskStatus.PAUSED
         AutomationPhase.STOPPED -> RemoteTaskStatus.CANCELLED
         AutomationPhase.FAILED -> RemoteTaskStatus.FAILED
-        AutomationPhase.COMPLETED_TASK,
-        AutomationPhase.COMPLETED_EMPTY_MESSAGE_PROBE,
-        AutomationPhase.COMPLETED_MESSAGE_SENT,
-        -> RemoteTaskStatus.COMPLETED
+        // COMPLETED_EMPTY_MESSAGE_PROBE and COMPLETED_MESSAGE_SENT are per-user/action
+        // milestones.  The controller advances to the next result immediately afterwards;
+        // publishing COMPLETED here closes the whole remote task after the first successful
+        // user and makes the backend reject subsequent records/checkpoints with 409.
+        AutomationPhase.COMPLETED_TASK -> RemoteTaskStatus.COMPLETED
         else -> null
     }
 
@@ -907,9 +1110,12 @@ object AutomationStore {
         AutomationPhase.STOPPED -> TaskRunStatus.STOPPED
         AutomationPhase.FAILED -> TaskRunStatus.FAILED
         AutomationPhase.COMPLETED_TASK,
+        -> TaskRunStatus.COMPLETED
+        // These are per-user milestones. The controller immediately returns to the list and
+        // continues the same task, so history must remain RUNNING until COMPLETED_TASK.
         AutomationPhase.COMPLETED_EMPTY_MESSAGE_PROBE,
         AutomationPhase.COMPLETED_MESSAGE_SENT,
-        -> TaskRunStatus.COMPLETED
+        -> TaskRunStatus.RUNNING
         AutomationPhase.IDLE,
         AutomationPhase.SERVICE_READY,
         -> null
@@ -933,25 +1139,19 @@ object AutomationStore {
     }
 
     fun publishFailure(reason: String) {
-        _uiState.update {
-            it.copy(
-                phase = AutomationPhase.FAILED,
-                lastError = reason,
-                awaitingManualHandoff = false,
-            )
-        }
-        syncRemoteStatus(RemoteTaskStatus.FAILED, errorCode = "LOCAL_AUTOMATION_FAILED", errorMessage = reason)
+        publishPhase(
+            phase = AutomationPhase.FAILED,
+            error = reason,
+            awaitingManualHandoff = false,
+        )
     }
 
     fun publishManualHandoff(reason: String) {
-        _uiState.update {
-            it.copy(
-                phase = AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF,
-                lastError = reason,
-                awaitingManualHandoff = true,
-            )
-        }
-        syncRemoteStatus(RemoteTaskStatus.PAUSED, errorCode = "MANUAL_HANDOFF_REQUIRED", errorMessage = reason)
+        publishPhase(
+            phase = AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF,
+            error = reason,
+            awaitingManualHandoff = true,
+        )
     }
 
     /** Surface remote-claim/resume failures without changing the local automation phase. */
@@ -975,6 +1175,14 @@ object AutomationStore {
     private const val TASK_RECORDS_KEY = "records"
     private const val TASK_HISTORY_KEY = "history"
     private const val TASK_CHECKPOINT_KEY = "checkpoint"
+    private const val TASK_DRAFT_KEY = "draft"
     private const val MAX_TASK_RECORDS = 2_000
     private const val MAX_TASK_HISTORY = 100
+    private const val RECORDS_OPEN_THROTTLE_MS = 1_500L
+    private val TERMINAL_PHASES = setOf(
+        AutomationPhase.COMPLETED_TASK,
+        AutomationPhase.FAILED,
+        AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF,
+        AutomationPhase.STOPPED,
+    )
 }

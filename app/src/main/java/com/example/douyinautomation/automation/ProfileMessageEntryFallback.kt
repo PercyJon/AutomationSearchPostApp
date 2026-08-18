@@ -1,10 +1,9 @@
 package com.example.douyinautomation.automation
 
 /**
- * Geometry-only fallback for profile layouts that render the private-message action as a paper
- * plane icon without exposing a text/content-description label. It is deliberately constrained to
- * the profile action band and the narrow right-side button, so it cannot select the avatar, follow
- * button, grid, or top navigation controls.
+ * Semantic fallback for profile layouts that render the private-message action as a paper-plane
+ * icon. Geometry alone is never sufficient: a “咨询客服” action can occupy the same region and
+ * may navigate to commerce/cart pages, so candidates must expose a message/paper-plane token.
  */
 object ProfileMessageEntryFallback {
     private const val ACTION_BAND_TOP = 0.28f
@@ -14,10 +13,9 @@ object ProfileMessageEntryFallback {
     private const val MAX_BUTTON_HEIGHT = 0.13f
 
     fun iconNode(context: ScreenContext): NodeSnapshot? {
-        val width = context.screenSize.width.coerceAtLeast(1)
-        val height = context.screenSize.height.coerceAtLeast(1)
         return context.nodes.asSequence()
             .filter { it.isClickable && it.isEnabled && it.bounds.width > 0 && it.bounds.height > 0 }
+            .filter { node -> isPaperPlaneSemantic(node) }
             .filter { node ->
                 val bounds = node.normalizedBounds(context.screenSize)
                 bounds.top >= ACTION_BAND_TOP &&
@@ -33,6 +31,13 @@ object ProfileMessageEntryFallback {
                     .thenBy { it.bounds.width * it.bounds.height },
             )
             .firstOrNull()
+    }
+
+    private fun isPaperPlaneSemantic(node: NodeSnapshot): Boolean {
+        val text = node.searchableText().joinToString(" ").lowercase()
+        if (text.contains("客服") || text.contains("咨询") || text.contains("购物")) return false
+        return listOf("发私信", "私信", "message", "direct message", "paper", "plane", "im_")
+            .any { token -> text.contains(token) }
     }
 
     fun normalizedPoint(screenSize: ScreenSize, followBounds: ScreenBounds?): NormalizedPoint {

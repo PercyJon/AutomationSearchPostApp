@@ -4,7 +4,10 @@ set -euo pipefail
 # Development-only helper. This script is never packaged into the Android app and never uses
 # root/su. Android's production contract still requires the user to enable AccessibilityService.
 task_serial="${1:?Usage: scripts/ensure-accessibility.sh <adb-serial> [service-component]}"
-task_component="${2:-com.example.douyinautomation/com.example.douyinautomation.automation.DouyinAccessibilityService}"
+# Android stores a manifest-relative service name as package/.automation.DouyinAccessibilityService.
+# Using the fully-qualified class path here can be accepted by `settings put` but is ignored by
+# AccessibilityManager on some OEM builds, which then silently clears the setting again.
+task_component="${2:-com.example.douyinautomation/.automation.DouyinAccessibilityService}"
 
 task_read_enabled() {
   adb -s "$task_serial" shell settings get secure enabled_accessibility_services 2>/dev/null | tr -d '\r' | tail -n 1

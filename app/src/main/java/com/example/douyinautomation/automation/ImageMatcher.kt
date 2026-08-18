@@ -26,6 +26,28 @@ object NoOpImageMatcher : ImageMatcher {
     ): ImageMatch? = null
 }
 
+/**
+ * Safety gate for a future OpenCV-backed matcher. A template match may only become actionable
+ * after the provider reports a high-confidence result inside the caller's region; a missing
+ * template never falls back to an arbitrary coordinate. The M3-K controller still requires a
+ * semantic node for critical actions, so this adapter is diagnostic/verification-only for now.
+ */
+class VerifiedTemplateMatcher(
+    private val provider: ImageMatcher,
+    private val minimumConfidence: Float = 0.86f,
+) : ImageMatcher {
+    init {
+        require(minimumConfidence in 0f..1f) { "minimumConfidence must be between 0 and 1" }
+    }
+
+    override suspend fun findMatch(
+        bitmap: Bitmap,
+        templateId: String,
+        searchRegion: Rect?,
+    ): ImageMatch? = provider.findMatch(bitmap, templateId, searchRegion)
+        ?.takeIf { it.confidence >= minimumConfidence }
+}
+
 data class ImageMatch(
     val templateId: String,
     val bounds: Rect,

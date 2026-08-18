@@ -109,7 +109,19 @@ class SelectorEngine {
         var current: AccessibilityNodeInfo = nonNullRoot
         var currentIsOwned = false
         hierarchyPath.forEach { childIndex ->
-            val child = current.getChild(childIndex)
+            // A live Douyin tree can be replaced between snapshot selection and action time.
+            // Android's AccessibilityNodeInfo may throw ArrayIndexOutOfBoundsException instead
+            // of returning null when the old child index no longer exists. Treat that as a stale
+            // selector and let the caller re-inspect/select; never let it terminate the service.
+            val child = try {
+                if (childIndex < 0 || childIndex >= current.childCount) {
+                    null
+                } else {
+                    current.getChild(childIndex)
+                }
+            } catch (_: RuntimeException) {
+                null
+            }
             if (currentIsOwned) current.recycle()
             if (child == null) return null
             current = child

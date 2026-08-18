@@ -148,6 +148,13 @@ data class TaskHistoryEntry(
     val skippedCount: Int,
     val filteredCount: Int,
     val duplicateCount: Int,
+    /** Frozen task inputs retained so the detail page describes what actually ran. */
+    val searchQueries: List<String> = emptyList(),
+    val region: String? = null,
+    val blockedKeywords: List<String> = emptyList(),
+    val messageTemplate: String? = null,
+    val executionMode: TaskExecutionMode = TaskExecutionMode.SAFE_BLANK_PROBE,
+    val errorMessage: String? = null,
 )
 
 data class ComposedSearchQuery(

@@ -2,6 +2,7 @@ package com.example.douyinautomation.automation
 
 import android.graphics.Bitmap
 import android.graphics.Rect
+import kotlin.math.roundToInt
 import com.google.android.gms.tasks.Task
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.Text
@@ -29,20 +30,37 @@ class MlKitOcrEngine(
 ) : Closeable {
     private val isClosed = AtomicBoolean(false)
 
-    suspend fun recognize(bitmap: Bitmap): OcrResult {
+    suspend fun recognize(bitmap: Bitmap, region: OcrRegion = OcrRegion.FULL): OcrResult {
         check(!isClosed.get()) { "MlKitOcrEngine is already closed" }
         check(!bitmap.isRecycled) { "Cannot recognize a recycled bitmap" }
 
+        val crop = region.boundsFor(bitmap.width, bitmap.height)
+        val source = if (crop == null || crop.width() <= 0 || crop.height() <= 0) {
+            bitmap
+        } else {
+            Bitmap.createBitmap(bitmap, crop.left, crop.top, crop.width(), crop.height())
+        }
+        val scale = if (source.width < OCR_MIN_SIDE || source.height < OCR_MIN_SIDE) OCR_SCALE else 1f
+        val input = if (scale == 1f) source else Bitmap.createScaledBitmap(
+            source,
+            (source.width * scale).roundToInt().coerceAtLeast(1),
+            (source.height * scale).roundToInt().coerceAtLeast(1),
+            true,
+        )
         return try {
-            val recognizedText = recognizer.process(InputImage.fromBitmap(bitmap, ROTATION_DEGREES))
+            val recognizedText = recognizer.process(InputImage.fromBitmap(input, ROTATION_DEGREES))
                 .awaitResult()
-            val result = recognizedText.toOcrResult()
+            val result = recognizedText.toOcrResult(
+                sourceOffset = crop?.let { it.left to it.top } ?: (0 to 0),
+                scale = scale,
+            )
             logger.info(
                 "ocr_completed",
                 attributes = mapOf(
                     "blocks" to result.blocks.size,
                     "characters" to result.text.length,
                     "size" to "${bitmap.width}x${bitmap.height}",
+                    "region" to region.name,
                 ),
             )
             result
@@ -53,6 +71,9 @@ class MlKitOcrEngine(
                 throwable = error,
             )
             throw error
+        } finally {
+            if (input !== source) input.recycle()
+            if (source !== bitmap) source.recycle()
         }
     }
 
@@ -63,16 +84,16 @@ class MlKitOcrEngine(
         }
     }
 
-    private fun Text.toOcrResult(): OcrResult = OcrResult(
+    private fun Text.toOcrResult(sourceOffset: Pair<Int, Int>, scale: Float): OcrResult = OcrResult(
         text = text,
         blocks = textBlocks.map { block ->
             OcrBlock(
                 text = block.text,
-                bounds = block.boundingBox?.let(::Rect),
+                bounds = block.boundingBox?.let { it.toSourceRect(sourceOffset, scale) },
                 lines = block.lines.map { line ->
                     OcrLine(
                         text = line.text,
-                        bounds = line.boundingBox?.let(::Rect),
+                        bounds = line.boundingBox?.let { it.toSourceRect(sourceOffset, scale) },
                     )
                 },
             )
@@ -99,7 +120,34 @@ class MlKitOcrEngine(
 
     private companion object {
         const val ROTATION_DEGREES = 0
+        const val OCR_SCALE = 1.5f
+        const val OCR_MIN_SIDE = 720
     }
+}
+
+enum class OcrRegion {
+    FULL,
+    USER_RESULTS,
+    PROFILE_ACTION,
+    MESSAGE_COMPOSER,
+    TOAST,
+    ;
+
+    fun boundsFor(width: Int, height: Int): Rect? = when (this) {
+        FULL -> null
+        USER_RESULTS -> Rect(0, (height * 0.12f).roundToInt(), width, (height * 0.96f).roundToInt())
+        PROFILE_ACTION -> Rect(0, (height * 0.28f).roundToInt(), width, (height * 0.66f).roundToInt())
+        MESSAGE_COMPOSER -> Rect(0, (height * 0.62f).roundToInt(), width, height)
+        TOAST -> Rect(0, (height * 0.35f).roundToInt(), width, (height * 0.78f).roundToInt())
+    }
+}
+
+private fun Rect.toSourceRect(offset: Pair<Int, Int>, scale: Float): Rect {
+    val left = (left / scale).roundToInt() + offset.first
+    val top = (top / scale).roundToInt() + offset.second
+    val right = (right / scale).roundToInt() + offset.first
+    val bottom = (bottom / scale).roundToInt() + offset.second
+    return Rect(left, top, right, bottom)
 }
 
 data class OcrResult(

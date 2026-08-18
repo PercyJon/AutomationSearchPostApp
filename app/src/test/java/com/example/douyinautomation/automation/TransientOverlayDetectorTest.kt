@@ -1,6 +1,7 @@
 package com.example.douyinautomation.automation
 
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -92,5 +93,41 @@ class TransientOverlayDetectorTest {
         )
 
         assertFalse(TransientOverlayDetector.isBlocking(context))
+    }
+
+    @Test
+    fun `startup skip marker is wait only and does not require a wide banner`() {
+        val context = ScreenContext(
+            screenSize = ScreenSize(1080, 2412),
+            nodes = listOf(
+                NodeSnapshot(
+                    text = "跳过",
+                    isVisibleToUser = true,
+                    isClickable = true,
+                    bounds = ScreenBounds(930, 80, 1040, 150),
+                ),
+            ),
+        )
+
+        val match = TransientOverlayDetector.findStartupAd(context)
+
+        assertNotNull(match)
+        assertEquals("跳过", match.marker)
+    }
+
+    @Test
+    fun `ordinary feed ad label alone is not treated as startup ad`() {
+        val context = ScreenContext(
+            screenSize = ScreenSize(1080, 2412),
+            nodes = listOf(
+                NodeSnapshot(
+                    text = "广告",
+                    isVisibleToUser = true,
+                    bounds = ScreenBounds(800, 300, 860, 340),
+                ),
+            ),
+        )
+
+        assertNull(TransientOverlayDetector.findStartupAd(context))
     }
 }
