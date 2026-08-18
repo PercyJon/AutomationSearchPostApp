@@ -3281,10 +3281,13 @@ class DouyinNavigationController(
         phase = nextPhase
         AutomationStore.publishPhase(nextPhase)
         timeoutJob = scope.launch {
-            val timeoutMs = if (nextPhase == AutomationPhase.WAITING_FOR_DIRECT_MESSAGE) {
-                MESSAGE_ENTRY_TIMEOUT_MS
-            } else {
-                STEP_TIMEOUT_MS
+            val timeoutMs = when (nextPhase) {
+                // Cold-start ads, restored video pages, and the first ML Kit model load can all
+                // consume more than one normal action interval. Give only the launch surface a
+                // longer bounded window; user-row/profile/message steps retain the short guard.
+                AutomationPhase.WAITING_FOR_HOME -> STARTUP_STEP_TIMEOUT_MS
+                AutomationPhase.WAITING_FOR_DIRECT_MESSAGE -> MESSAGE_ENTRY_TIMEOUT_MS
+                else -> STEP_TIMEOUT_MS
             }
             delay(timeoutMs)
             mutex.withLock {
@@ -3589,6 +3592,7 @@ class DouyinNavigationController(
             "朋友",
         )
         const val STEP_TIMEOUT_MS = 12_000L
+        const val STARTUP_STEP_TIMEOUT_MS = 30_000L
         const val NODE_DUMP_DIRECTORY = "diagnostics/nodes"
         const val INITIAL_OBSERVATION_ATTEMPTS = 24
         const val INITIAL_OBSERVATION_INTERVAL_MS = 350L
