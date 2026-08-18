@@ -54,3 +54,8 @@ scripts/capture-device-screen.sh <adb-serial>
 ```
 
 当前代码通过 Debug 构建、Android Lint 和 JVM 单元测试。截图、OCR、Node dump、Logcat 和 APK 迭代文件均保存在本地 `outputs/`、`artifacts/` 或 `work/`，不进入版本控制。
+
+## 下一阶段设计
+
+M2.5 产品板块、任务模型、地区组合、预设词接口和关键词屏蔽规则见：
+[`docs/M2.5-product-and-task-design.md`](docs/M2.5-product-and-task-design.md)
