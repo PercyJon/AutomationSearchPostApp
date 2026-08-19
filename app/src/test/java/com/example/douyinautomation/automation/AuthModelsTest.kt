@@ -30,4 +30,14 @@ class AuthModelsTest {
         assertTrue(!AuthConfig("http://api.example.test", "token", "device").isUsable())
         assertTrue(!AuthConfig("https://api.example.test", "", "device").isUsable())
     }
+
+    @Test
+    fun `device identity hash is stable and non-reversible`() {
+        val first = DeviceIdentity.hash("android-id-123")
+        val second = DeviceIdentity.hash("android-id-123")
+
+        assertEquals(first, second)
+        assertEquals(64, first.length)
+        assertTrue(first != "android-id-123")
+    }
 }

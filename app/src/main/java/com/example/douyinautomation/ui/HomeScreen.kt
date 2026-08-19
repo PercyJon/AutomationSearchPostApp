@@ -49,6 +49,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -80,8 +81,11 @@ import com.example.douyinautomation.automation.QueryComposer
 import com.example.douyinautomation.automation.RemoteTask
 import com.example.douyinautomation.automation.RemoteTaskResume
 import com.example.douyinautomation.automation.RemoteTaskResumePolicy
+import com.example.douyinautomation.automation.RemoteTaskVisibilityStore
 import com.example.douyinautomation.automation.RegionCatalog
 import com.example.douyinautomation.automation.BlockKeywordCatalog
+import com.example.douyinautomation.automation.PageKind
+import com.example.douyinautomation.automation.ProfileDisplayNameResolver
 import com.example.douyinautomation.automation.SearchPreset
 import com.example.douyinautomation.automation.SearchPresetCatalog
 import com.example.douyinautomation.automation.TaskDraft
@@ -130,6 +134,10 @@ fun AppHomeScreen(
     var section by rememberSaveable(initialSection) { mutableStateOf(initialSection ?: HomeSection.TASKS.name) }
     var detailTaskId by rememberSaveable { mutableStateOf<String?>(null) }
     var showCreateTask by rememberSaveable { mutableStateOf(false) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var showRemoteTasks by remember(context) {
+        mutableStateOf(RemoteTaskVisibilityStore.isEnabled(context))
+    }
     LaunchedEffect(initialSection) {
         initialSection?.let { section = it }
     }
@@ -219,6 +227,7 @@ fun AppHomeScreen(
                 padding = padding,
                 initialKeyword = initialKeyword,
                 showCreateTask = showCreateTask,
+                showRemoteTasks = showRemoteTasks,
                 onOpenCreateTask = { showCreateTask = true },
                 onCloseCreateTask = { showCreateTask = false },
             )
@@ -229,6 +238,11 @@ fun AppHomeScreen(
             )
             HomeSection.SETTINGS -> SettingsPage(
                 padding = padding,
+                showRemoteTasks = showRemoteTasks,
+                onShowRemoteTasksChange = { enabled ->
+                    showRemoteTasks = enabled
+                    RemoteTaskVisibilityStore.setEnabled(context, enabled)
+                },
                 onOpenDiagnostics = { section = HomeSection.DIAGNOSTICS.name },
             )
 
@@ -242,6 +256,7 @@ private fun TaskDashboard(
     padding: PaddingValues,
     initialKeyword: String,
     showCreateTask: Boolean,
+    showRemoteTasks: Boolean,
     onOpenCreateTask: () -> Unit,
     onCloseCreateTask: () -> Unit,
 ) {
@@ -277,7 +292,14 @@ private fun TaskDashboard(
             withContext(Dispatchers.IO) { AuthStore.loadBlockKeywordCatalog(context) }
         }.getOrDefault(blockKeywordCatalog)
     }
-    LaunchedEffect(context, licenseState.status, remoteRefreshNonce) {
+    LaunchedEffect(context, licenseState.status, remoteRefreshNonce, showRemoteTasks) {
+        if (!showRemoteTasks) {
+            remoteTasks = emptyList()
+            remoteRefreshInFlight = false
+            remoteRefreshAtMillis = null
+            remoteRefreshMessage = null
+            return@LaunchedEffect
+        }
         remoteRefreshInFlight = true
         remoteRefreshMessage = null
         runCatching {
@@ -292,7 +314,8 @@ private fun TaskDashboard(
         }
         remoteRefreshInFlight = false
     }
-    LaunchedEffect(context, licenseState.status) {
+    LaunchedEffect(context, licenseState.status, showRemoteTasks) {
+        if (!showRemoteTasks) return@LaunchedEffect
         while (true) {
             delay(10_000L)
             remoteRefreshNonce += 1
@@ -377,8 +400,8 @@ private fun TaskDashboard(
                 serviceConnected = state.serviceConnected,
                 onOpenSettings = { openAccessibilitySettings(context) },
             )
-            CurrentTaskCard(state = state)
-            if (remoteTasks.isNotEmpty() || licenseState.status != LicenseStatus.NOT_CONFIGURED) {
+            CurrentTaskCard(state = state, showRemoteTasks = showRemoteTasks)
+            if (showRemoteTasks && (remoteTasks.isNotEmpty() || licenseState.status != LicenseStatus.NOT_CONFIGURED)) {
                 RemoteTaskCard(
                     tasks = remoteTasks,
                     serviceConnected = state.serviceConnected,
@@ -860,6 +883,7 @@ private fun SectionHeader(title: String) {
 @Composable
 private fun CurrentTaskCard(
     state: com.example.douyinautomation.automation.AutomationUiState,
+    showRemoteTasks: Boolean,
 ) {
     Card(
         modifier = Modifier
@@ -887,21 +911,23 @@ private fun CurrentTaskCard(
                 return@Column
             }
             state.taskName?.takeIf(String::isNotBlank)?.let { Text(it, style = MaterialTheme.typography.titleLarge) }
-            state.remoteTaskId?.let { remoteId ->
-                Text(
-                    "远程任务 #$remoteId · ${remoteStatusLabel(state.remoteTaskStatus)} · 待同步 ${state.remoteSyncPendingCount}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            state.remoteSyncLastError?.takeIf(String::isNotBlank)?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            if (showRemoteTasks) {
+                state.remoteTaskId?.let { remoteId ->
+                    Text(
+                        "远程任务 #$remoteId · ${remoteStatusLabel(state.remoteTaskStatus)} · 待同步 ${state.remoteSyncPendingCount}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                state.remoteSyncLastError?.takeIf(String::isNotBlank)?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
             }
             HorizontalDivider(color = AutomationDivider)
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                 MetricItem("已处理", state.taskHandledUserCount.toString(), AutomationBlue)
                 MetricItem("已跳过", state.taskDuplicateUserCount.toString(), AutomationWarning)
-                MetricItem("失败", if (state.phase == AutomationPhase.FAILED) "1" else "0", AutomationError)
+                MetricItem("失败", state.taskFailedUserCount.toString(), AutomationError)
             }
             if (state.taskQueryCount > 0 || state.taskMaxUsers != null) {
                 Text(
@@ -1111,7 +1137,7 @@ private fun TaskHistoryCard(history: TaskHistoryEntry, onClick: () -> Unit) {
                     StatusBadge(taskStatusLabel(history.status), taskStatusTone(history.status))
                 }
                 Text(formatTaskTime(history.updatedAtMillis), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
-                Text("已处理 ${history.handledCount} · 跳过 ${history.skippedCount} · 失败 ${if (history.status == TaskRunStatus.FAILED) 1 else 0}")
+                Text("已处理 ${history.handledCount} · 跳过 ${history.skippedCount} · 失败 ${history.failedCount}")
                 if (history.filteredCount > 0 || history.duplicateCount > 0) {
                     Text(
                         "屏蔽 ${history.filteredCount} · 重复 ${history.duplicateCount}",
@@ -1178,7 +1204,7 @@ private fun TaskRecordDetailScreen(
                     Text("任务概览", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     StatusBadge(taskStatusLabel(history.status), taskStatusTone(history.status))
                     history.errorMessage?.takeIf(String::isNotBlank)?.let {
-                        ErrorBanner("执行异常", it)
+                        ErrorBanner("执行异常", taskErrorLabel(it))
                     }
                     HorizontalDivider(color = AutomationDivider)
                     Text("开始：${formatTaskTime(history.startedAtMillis)}")
@@ -1195,7 +1221,7 @@ private fun TaskRecordDetailScreen(
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                         MetricItem("已处理", history.handledCount.toString(), AutomationBlue)
                         MetricItem("已跳过", history.skippedCount.toString(), AutomationWarning)
-                        MetricItem("失败", if (history.status == TaskRunStatus.FAILED) "1" else "0", AutomationError)
+                        MetricItem("失败", history.failedCount.toString(), AutomationError)
                     }
                     Text("命中屏蔽词：${history.filteredCount} · 重复用户：${history.duplicateCount}", style = MaterialTheme.typography.bodySmall)
                     FilledTonalButton(
@@ -1253,37 +1279,240 @@ private fun TaskHistoryEntry.toReusableDraft(): TaskDraft = TaskDraft(
 
 @Composable
 private fun UserTaskResultCard(record: UserTaskRecord) {
+    val visibleName = recordVisibleName(record)
+    val accountLabel = recordAccountLabel(record, visibleName)
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = AutomationCard),
         border = androidx.compose.foundation.BorderStroke(1.dp, AutomationDivider),
         shape = MaterialTheme.shapes.medium,
     ) {
-        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = androidx.compose.ui.Alignment.Top,
             ) {
                 Text(
-                    record.displayName ?: record.userKey ?: "未识别用户",
+                    visibleName,
                     fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.weight(1f),
+                    softWrap = true,
                 )
                 Text(
                     recordOutcomeLabel(record.outcome),
                     color = if (record.outcome == UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED) AutomationSuccess else AutomationError,
                     fontWeight = FontWeight.Medium,
+                    style = MaterialTheme.typography.bodySmall,
+                    softWrap = true,
                 )
             }
-            record.userKey?.takeIf(String::isNotBlank)?.let { Text("账号：$it") }
-            Text("时间：${formatTaskTime(record.startedAtMillis)}")
-            record.finishedAtMillis?.let { Text("结束：${formatTaskTime(it)}") }
-            Text("内容：${record.messageContent.orEmpty().ifBlank { "未设置" }}")
-            Text("页面：${record.page?.name ?: "未知"}")
-            record.reason?.takeIf(String::isNotBlank)?.let {
-                Text("说明：$it", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+            accountLabel?.let { resultDetailLine(if (it.startsWith("抖音号：")) "抖音号" else "账号", it.removePrefix("抖音号：")) }
+            resultDetailLine("时间", formatTaskTime(record.startedAtMillis))
+            record.finishedAtMillis?.let { resultDetailLine("结束", formatTaskTime(it)) }
+            resultDetailLine("内容", record.messageContent.orEmpty().ifBlank { "未设置" })
+            resultDetailLine("页面", recordPageLabel(record.page))
+            resultDetailLine("说明", recordReasonLabel(record), subdued = true)
         }
+    }
+}
+
+/**
+ * The stable identity key is intentionally composite for deduplication, but it is not a user
+ * facing name. Never render that internal key as the card title.
+ */
+private fun recordVisibleName(record: UserTaskRecord): String {
+    val display = record.displayName
+        ?.let(::cleanRecordIdentity)
+        .orEmpty()
+    if (display.isNotBlank() && !isInternalIdentityLabel(display) && !isGenericAccountLabel(display)) {
+        if (!isTruncatedIdentityLabel(display)) return display
+    }
+    record.userKey
+        ?.takeIf { it.startsWith("handle:", ignoreCase = true) }
+        ?.substringAfter(':')
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.let { return "抖音号 $it" }
+    return recordIdentitySegments(record.userKey)
+        .firstOrNull { !isTruncatedIdentityLabel(it) }
+        ?: recordIdentitySegments(record.userKey).firstOrNull()
+        ?: display.takeIf {
+            it.isNotBlank() &&
+                !isInternalIdentityLabel(it) &&
+                !isGenericAccountLabel(it)
+        }
+        ?: "未识别用户"
+}
+
+private fun recordAccountLabel(record: UserTaskRecord, visibleName: String): String? {
+    val key = record.userKey?.trim().orEmpty()
+    if (key.startsWith("handle:", ignoreCase = true)) {
+        return "抖音号：${key.substringAfter(':').trim()}"
+    }
+    // Composite keys are kept for duplicate detection, not for display. Without a real handle,
+    // the cleaned display name is safer than exposing company/verification metadata as an account.
+    return visibleName.takeIf { it != "未识别用户" }
+}
+
+private fun recordIdentitySegments(userKey: String?): List<String> = userKey
+    ?.split('|')
+    ?.asSequence()
+    ?.mapNotNull(::cleanRecordIdentity)
+    ?.filter(String::isNotBlank)
+    ?.filterNot(::isInternalIdentityLabel)
+    ?.filterNot(::isGenericAccountLabel)
+    ?.distinct()
+    ?.toList()
+    .orEmpty()
+
+/**
+ * Cleans only user-facing history text. Stored composite keys remain untouched for deduplication.
+ * A few Douyin builds prepend a row ordinal and expose a clipped final dot/ellipsis in the same
+ * text node; removing those presentation artifacts is safe when a complete profile title was not
+ * available for an older record.
+ */
+private fun cleanRecordIdentity(value: String): String? {
+    var cleaned = ProfileDisplayNameResolver.sanitizeCandidate(value) ?: return null
+    cleaned = cleaned.replace(Regex("^\\d+[)）.]\\s*"), "")
+    cleaned = ProfileDisplayNameResolver.sanitizeCandidate(cleaned) ?: return null
+    cleaned = cleaned.trimEnd(' ', '.', '…', '·')
+    return cleaned.takeIf(String::isNotBlank)
+}
+
+private fun isInternalIdentityLabel(value: String): Boolean {
+    val normalized = value.lowercase(Locale.ROOT)
+    return normalized.startsWith("com.") ||
+        normalized.startsWith("android.") ||
+        normalized.contains(":id/") ||
+        normalized.contains("textview")
+}
+
+private fun isGenericAccountLabel(value: String): Boolean {
+    val normalized = value
+        .replace("（", "(")
+        .replace("）", ")")
+        .replace(" ", "")
+        .lowercase(Locale.ROOT)
+    return normalized in setOf(
+        "直播",
+        "背景图片",
+        "背景图",
+        "用户头像",
+        "头像",
+        "头像图片",
+        "图片",
+        "图片背景",
+        "背景",
+        "默认头像",
+        "用户图片",
+        "封面",
+        "封面图片",
+        "视频封面",
+        "视频",
+        "照片",
+        "筛选",
+        "按钮",
+        "店铺账号",
+        "商家认证账号",
+        "(v)店铺账号",
+        "(v)商家认证账号",
+        "发过相关视频",
+        "朋友",
+    ) || normalized.contains("筛选") || normalized.contains("按钮")
+}
+
+private fun isTruncatedIdentityLabel(value: String): Boolean =
+    value.contains("…") || value.contains("..") || value.trimEnd().endsWith('.')
+
+/** Compact, wrapping key/value row used by the per-user audit cards. */
+@Composable
+private fun resultDetailLine(label: String, value: String, subdued: Boolean = false) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = androidx.compose.ui.Alignment.Top,
+    ) {
+        Text(
+            text = "$label：",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = value,
+            modifier = Modifier.weight(1f),
+            style = if (subdued) MaterialTheme.typography.labelMedium else MaterialTheme.typography.bodySmall,
+            color = if (subdued) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+            softWrap = true,
+        )
+    }
+}
+
+private fun recordPageLabel(page: PageKind?): String = when (page) {
+    PageKind.HOME -> "抖音首页"
+    PageKind.SEARCH_ENTRY -> "搜索页"
+    PageKind.SEARCH_RESULTS -> "搜索结果页"
+    PageKind.USER_RESULTS -> "用户列表页"
+    PageKind.USER_PROFILE -> "用户主页"
+    PageKind.PRIVATE_MESSAGE_RESTRICTED -> "私信受限提示页"
+    PageKind.DIRECT_MESSAGE -> "私信页"
+    PageKind.MESSAGE_EMPTY_REJECTED -> "私信页（空消息提示）"
+    PageKind.MESSAGE_SEND_FAILED -> "私信页（发送失败）"
+    PageKind.HUMAN_INTERVENTION -> "需要人工处理的页面"
+    PageKind.LOGIN -> "登录页"
+    PageKind.OUTSIDE_TARGET -> "抖音外部页面"
+    PageKind.UNKNOWN, null -> "未知页面"
+}
+
+/** Convert internal English diagnostics into a short explanation an operator can understand. */
+private fun recordReasonLabel(record: UserTaskRecord): String {
+    val raw = record.reason.orEmpty().lowercase(Locale.ROOT)
+    return when (record.outcome) {
+        UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED ->
+            "抖音提示不能发送空白消息，安全探测已完成，未发送真实内容。"
+        UserTaskRecord.Outcome.MESSAGE_SEND_FAILED -> when {
+            raw.contains("setting") || raw.contains("rejected") ->
+                "对方设置了私信权限限制，当前消息无法发送，系统已自动跳过。"
+            raw.contains("timeout") ->
+                "等待私信发送结果超时，无法确认是否成功，系统已自动跳过。"
+            raw.contains("input") || raw.contains("place") ->
+                "未能找到或填写私信输入框，系统已自动跳过。"
+            else -> "私信发送未获得成功确认，系统已自动跳过。"
+        }
+        UserTaskRecord.Outcome.PRIVATE_MESSAGE_UNAVAILABLE ->
+            "未找到可用的发私信入口，系统已自动跳过。"
+        UserTaskRecord.Outcome.FOLLOW_BACK_SKIPPED ->
+            "该用户显示为“回关”，按规则跳过，避免误操作。"
+        UserTaskRecord.Outcome.FILTERED_BY_KEYWORD ->
+            "用户信息命中了屏蔽词，未进入私信流程。"
+        UserTaskRecord.Outcome.DUPLICATE_SKIPPED ->
+            "该用户之前已经处理过，为避免重复操作已跳过。"
+        UserTaskRecord.Outcome.IDENTITY_UNAVAILABLE ->
+            "未能读取到稳定的用户身份信息，无法安全操作。"
+        UserTaskRecord.Outcome.PAUSED ->
+            "遇到需要人工确认的页面，任务已暂停。"
+        UserTaskRecord.Outcome.STOPPED ->
+            "任务被手动停止。"
+        UserTaskRecord.Outcome.IN_PROGRESS ->
+            "正在处理。"
+    }
+}
+
+private fun taskErrorLabel(error: String): String {
+    val raw = error.lowercase(Locale.ROOT)
+    if (error.any { it in '\u4e00'..'\u9fff' }) return error
+    return when {
+        raw.contains("blank") && (raw.contains("input") || raw.contains("place")) ->
+            "未能找到私信输入框，当前任务已结束。"
+        raw.contains("result page") || raw.contains("continuation anchor") ->
+            "下一批用户列表加载失败，任务已结束。"
+        raw.contains("timeout") ->
+            "某个处理步骤等待超时，任务已结束。"
+        raw.contains("risk") || raw.contains("verification") ->
+            "遇到抖音安全验证页面，需要人工确认。"
+        raw.contains("login") ->
+            "抖音登录状态失效，请重新登录后再执行任务。"
+        else -> "任务执行过程中出现异常，系统已结束本次任务。"
     }
 }
 
@@ -1339,10 +1568,13 @@ private fun formatTaskTime(timestamp: Long): String =
 @Composable
 private fun SettingsPage(
     padding: PaddingValues,
+    showRemoteTasks: Boolean,
+    onShowRemoteTasksChange: (Boolean) -> Unit,
     onOpenDiagnostics: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val licenseState by AuthStore.uiState.collectAsState()
+    val scope = rememberCoroutineScope()
     val existingConfig = remember { AuthStore.currentConfig() }
     val defaultDeviceId = remember {
         Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID).orEmpty()
@@ -1350,6 +1582,13 @@ private fun SettingsPage(
     var endpoint by rememberSaveable { mutableStateOf(existingConfig?.endpoint.orEmpty()) }
     var licenseToken by rememberSaveable { mutableStateOf(existingConfig?.licenseToken.orEmpty()) }
     var deviceId by rememberSaveable { mutableStateOf(existingConfig?.deviceId ?: defaultDeviceId) }
+    var username by rememberSaveable {
+        mutableStateOf(existingConfig?.accountUsername ?: existingConfig?.accountName.orEmpty())
+    }
+    var password by rememberSaveable { mutableStateOf("") }
+    var loginBusy by remember { mutableStateOf(false) }
+    var loginMessage by rememberSaveable { mutableStateOf<String?>(null) }
+    var loggedInAccount by rememberSaveable { mutableStateOf(existingConfig?.accountName) }
     var configMessage by rememberSaveable { mutableStateOf<String?>(null) }
     Column(
         modifier = Modifier
@@ -1370,6 +1609,13 @@ private fun SettingsPage(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                loggedInAccount?.takeIf(String::isNotBlank)?.let { account ->
+                    Text(
+                        "当前登录账号：$account",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
                 OutlinedTextField(
                     value = endpoint,
                     onValueChange = { endpoint = it },
@@ -1377,6 +1623,71 @@ private fun SettingsPage(
                     label = { Text("后端地址（HTTPS）") },
                     placeholder = { Text("例如 https://api.example.com") },
                     singleLine = true,
+                )
+                Text(
+                    "使用后台账号登录后，系统会为本设备换取移动端授权；密码不会保存，管理端 JWT 也不会写入设备。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = username,
+                    onValueChange = { username = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("后台用户名") },
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("后台密码") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true,
+                )
+                Button(
+                    enabled = !loginBusy,
+                    onClick = {
+                        scope.launch {
+                            loginBusy = true
+                            loginMessage = null
+                            runCatching {
+                                withContext(Dispatchers.IO) {
+                                    AuthStore.login(
+                                        context = context,
+                                        endpoint = endpoint,
+                                        username = username,
+                                        password = password,
+                                    )
+                                }
+                            }.onSuccess { result ->
+                                loggedInAccount = result.accountName ?: result.accountUsername ?: username.trim()
+                                password = ""
+                                loginMessage = "登录成功，已获得本设备授权；现在可以刷新远程任务"
+                            }.onFailure { error ->
+                                loginMessage = "登录失败：${error.message ?: "请检查地址、账号或密码"}"
+                            }
+                            loginBusy = false
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (loginBusy) "登录中…" else "账号登录并获取任务")
+                }
+                loginMessage?.let { message ->
+                    Text(
+                        message,
+                        color = if (message.startsWith("登录成功")) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.error
+                        },
+                    )
+                }
+                HorizontalDivider()
+                Text(
+                    "兼容方式：也可以手动粘贴移动端授权 Token。Token 不是后台登录 access_token，两者长度不同是正常的。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 OutlinedTextField(
                     value = licenseToken,
@@ -1401,6 +1712,8 @@ private fun SettingsPage(
                                 endpoint = endpoint.trim().trimEnd('/'),
                                 licenseToken = licenseToken.trim(),
                                 deviceId = deviceId.trim(),
+                                accountName = loggedInAccount,
+                                accountUsername = username.trim().takeIf(String::isNotBlank),
                             ),
                         )
                         configMessage = if (saved) {
@@ -1419,7 +1732,7 @@ private fun SettingsPage(
                     Text("立即验证 heartbeat")
                 }
                 Text(
-                    "Token 使用 Android Keystore 加密保存；请求仅携带 Bearer 授权，不会写入 Logcat。未配置后端时仍可使用本地安全探测。",
+                    "账号登录后 Token 使用 Android Keystore 加密保存；请求仅携带移动端 Bearer 授权，不会写入 Logcat。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1431,13 +1744,38 @@ private fun SettingsPage(
                 SettingsRow("执行方式", "Android 无障碍服务")
                 SettingsRow("安全模式", "空白消息探测")
                 Text(
-                    "预设搜索词：远程优先，失败时使用本地缓存和内置词；地区规则、屏蔽词与任务断点接口已接入客户端网关。",
+                    "预设搜索词：开启远程任务后使用后台目录；关闭时使用本地缓存和内置词。地区规则、屏蔽词与任务断点接口已接入客户端网关。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 OutlinedButton(onClick = { openAccessibilitySettings(context) }) {
                     Text("无障碍服务设置")
                 }
+            }
+        }
+        SettingsSectionCard(title = "远程任务", icon = Icons.Default.Cloud) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text("显示远程任务", fontWeight = FontWeight.Medium)
+                    Text(
+                        "默认关闭。开启后，任务页才会显示并刷新后台下发的任务；手机本地新建任务不受影响。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = showRemoteTasks,
+                    onCheckedChange = onShowRemoteTasksChange,
+                )
             }
         }
         SettingsSectionCard(title = "开发者选项", icon = Icons.Default.Tune) {

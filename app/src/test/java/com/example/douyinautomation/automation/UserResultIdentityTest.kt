@@ -7,6 +7,75 @@ import kotlin.test.assertTrue
 
 class UserResultIdentityTest {
     @Test
+    fun `ignores avatar accessibility description and keeps the row name`() {
+        val context = context(
+            NodeSnapshot(
+                hierarchyPath = listOf(0, 1),
+                contentDescription = "背景图片",
+                bounds = ScreenBounds(40, 420, 200, 580),
+            ),
+            NodeSnapshot(
+                hierarchyPath = listOf(0, 2),
+                text = "佛山市顺德区乐从镇左右家具馆",
+                bounds = ScreenBounds(220, 420, 760, 500),
+            ),
+            NodeSnapshot(
+                hierarchyPath = listOf(0, 3),
+                text = "关注",
+                contentDescription = "关注按钮",
+                bounds = ScreenBounds(768, 465, 1008, 549),
+            ),
+        )
+        val match = StructuralUserRowDetector.find(context)
+
+        val identity = UserResultIdentityExtractor.extract(context, requireNotNull(match))
+
+        assertEquals("佛山市顺德区乐从镇左右家具馆", identity?.displayName)
+        assertEquals("佛山市顺德区乐从镇左右家具馆", identity?.key)
+    }
+
+    @Test
+    fun `does not create identity from generic avatar descriptions alone`() {
+        val context = context(
+            NodeSnapshot(
+                hierarchyPath = listOf(0, 1),
+                contentDescription = "用户头像",
+                bounds = ScreenBounds(40, 420, 200, 580),
+            ),
+            NodeSnapshot(
+                hierarchyPath = listOf(0, 2),
+                text = "关注",
+                contentDescription = "关注按钮",
+                bounds = ScreenBounds(768, 465, 1008, 549),
+            ),
+        )
+        val match = StructuralUserRowDetector.find(context)
+
+        assertNull(UserResultIdentityExtractor.extract(context, requireNotNull(match)))
+    }
+
+    @Test
+    fun `ignores generic OCR image labels when a real OCR name is present`() {
+        val context = context(
+            NodeSnapshot(
+                hierarchyPath = listOf(0, 2),
+                text = "关注",
+                contentDescription = "关注按钮",
+                bounds = ScreenBounds(768, 465, 1008, 549),
+            ),
+            ocrBlocks = listOf(
+                OcrTextBlock("用户头像", ScreenBounds(40, 420, 200, 580)),
+                OcrTextBlock("杭州世成红木沙发坐垫", ScreenBounds(220, 420, 760, 500)),
+            ),
+        )
+        val match = StructuralUserRowDetector.find(context)
+
+        val identity = UserResultIdentityExtractor.extract(context, requireNotNull(match))
+
+        assertEquals("杭州世成红木沙发坐垫", identity?.displayName)
+    }
+
+    @Test
     fun `uses row accessibility text before action labels`() {
         val context = context(
             NodeSnapshot(

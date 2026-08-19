@@ -148,6 +148,8 @@ data class TaskHistoryEntry(
     val skippedCount: Int,
     val filteredCount: Int,
     val duplicateCount: Int,
+    /** Number of terminal per-user failures (message rejection, timeout, or unavailable input). */
+    val failedCount: Int = 0,
     /** Frozen task inputs retained so the detail page describes what actually ran. */
     val searchQueries: List<String> = emptyList(),
     val region: String? = null,

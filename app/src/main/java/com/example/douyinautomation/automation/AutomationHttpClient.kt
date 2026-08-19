@@ -154,7 +154,12 @@ class AutomationHttpClient(
             .toRemoteTask()
     }
 
-    private fun execute(path: String, method: String, body: JSONObject? = null): Any {
+    private fun execute(
+        path: String,
+        method: String,
+        body: JSONObject? = null,
+        bearerToken: String? = config.licenseToken,
+    ): Any {
         val connection = connectionFactory(URL(endpointUrl(path)))
         try {
             connection.requestMethod = method
@@ -163,7 +168,9 @@ class AutomationHttpClient(
             connection.useCaches = false
             connection.doInput = true
             connection.setRequestProperty("Accept", "application/json")
-            connection.setRequestProperty("Authorization", "Bearer ${config.licenseToken}")
+            bearerToken?.takeIf(String::isNotBlank)?.let {
+                connection.setRequestProperty("Authorization", "Bearer $it")
+            }
             if (body != null) {
                 connection.doOutput = true
                 connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
@@ -204,7 +211,53 @@ class AutomationHttpClient(
     private fun Any?.asArray(): JSONArray = this as? JSONArray
         ?: throw AutomationGatewayException(200, "授权服务返回的列表格式错误")
 
-    private companion object {
+    companion object {
+        /**
+         * Performs the dedicated mobile login without sending a pre-existing bearer token.
+         * The backend returns a device-bound license; the temporary admin session is never
+         * exposed to the Android client.
+         */
+        suspend fun login(
+            endpoint: String,
+            username: String,
+            password: String,
+            deviceIdHash: String,
+            connectTimeoutMillis: Int = DEFAULT_CONNECT_TIMEOUT_MILLIS,
+            readTimeoutMillis: Int = DEFAULT_READ_TIMEOUT_MILLIS,
+        ): MobileLoginWireResponse = withContext(Dispatchers.IO) {
+            val client = AutomationHttpClient(
+                config = AuthConfig(
+                    endpoint = endpoint,
+                    licenseToken = "",
+                    deviceId = deviceIdHash,
+                ),
+                connectTimeoutMillis = connectTimeoutMillis,
+                readTimeoutMillis = readTimeoutMillis,
+            )
+            val payload = client.execute(
+                path = "/automation/mobile/login",
+                method = "POST",
+                body = JSONObject().apply {
+                    put("username", username)
+                    put("password", password)
+                    put("device_id_hash", deviceIdHash)
+                },
+                bearerToken = null,
+            ) as? JSONObject ?: throw AutomationGatewayException(200, "登录响应数据格式错误")
+            val token = payload.optString("license_token").trim()
+            if (token.isBlank()) {
+                throw AutomationGatewayException(200, "登录响应缺少移动端授权")
+            }
+            val account = payload.optJSONObject("account")
+            MobileLoginWireResponse(
+                licenseId = payload.optLong("license_id"),
+                licenseToken = token,
+                accountName = account?.optString("name")?.takeIf(String::isNotBlank)
+                    ?: account?.optString("username")?.takeIf(String::isNotBlank),
+                accountUsername = account?.optString("username")?.takeIf(String::isNotBlank),
+            )
+        }
+
         const val DEFAULT_CONNECT_TIMEOUT_MILLIS = 10_000
         const val DEFAULT_READ_TIMEOUT_MILLIS = 15_000
         const val PACKAGE_NAME = "com.example.douyinautomation"

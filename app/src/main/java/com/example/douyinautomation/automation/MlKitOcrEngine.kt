@@ -128,6 +128,8 @@ class MlKitOcrEngine(
 enum class OcrRegion {
     FULL,
     USER_RESULTS,
+    /** Small top profile crop used only when the accessibility tree clips the profile name. */
+    PROFILE_HEADER,
     PROFILE_ACTION,
     MESSAGE_COMPOSER,
     TOAST,
@@ -136,6 +138,7 @@ enum class OcrRegion {
     fun boundsFor(width: Int, height: Int): Rect? = when (this) {
         FULL -> null
         USER_RESULTS -> Rect(0, (height * 0.12f).roundToInt(), width, (height * 0.96f).roundToInt())
+        PROFILE_HEADER -> Rect(0, (height * 0.08f).roundToInt(), width, (height * 0.35f).roundToInt())
         PROFILE_ACTION -> Rect(0, (height * 0.28f).roundToInt(), width, (height * 0.66f).roundToInt())
         MESSAGE_COMPOSER -> Rect(0, (height * 0.62f).roundToInt(), width, height)
         TOAST -> Rect(0, (height * 0.35f).roundToInt(), width, (height * 0.78f).roundToInt())

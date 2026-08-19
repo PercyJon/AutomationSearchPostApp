@@ -12,8 +12,8 @@ android {
         applicationId = "com.example.douyinautomation"
         minSdk = 30
         targetSdk = 35
-        versionCode = 10
-        versionName = "0.3.0-m3-ui1"
+        versionCode = 14
+        versionName = "0.3.4-mobile-login"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

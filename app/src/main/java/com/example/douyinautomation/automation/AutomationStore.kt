@@ -95,6 +95,7 @@ data class AutomationUiState(
     val taskBlockedKeywordCount: Int = 0,
     val taskStartedAtMillis: Long? = null,
     val taskHandledUserCount: Int = 0,
+    val taskFailedUserCount: Int = 0,
     val taskDuplicateUserCount: Int = 0,
     val taskLastEvent: String? = null,
     val remoteTaskId: Long? = null,
@@ -139,6 +140,21 @@ object AutomationStore {
     private var remoteConfigFingerprint: Int? = null
     private val remoteUserKeys = mutableMapOf<Int, String>()
     private val remoteDisplayNames = mutableMapOf<Int, String>()
+
+    private fun List<UserTaskRecord>.handledCount(): Int = count { record ->
+        record.outcome != UserTaskRecord.Outcome.IN_PROGRESS &&
+            record.outcome != UserTaskRecord.Outcome.DUPLICATE_SKIPPED
+    }
+
+    private fun List<UserTaskRecord>.failureCount(): Int = count { record ->
+        record.outcome in setOf(
+            UserTaskRecord.Outcome.MESSAGE_SEND_FAILED,
+            UserTaskRecord.Outcome.PRIVATE_MESSAGE_UNAVAILABLE,
+            UserTaskRecord.Outcome.IDENTITY_UNAVAILABLE,
+            UserTaskRecord.Outcome.PAUSED,
+            UserTaskRecord.Outcome.STOPPED,
+        )
+    }
 
     val commands: SharedFlow<AutomationCommand> = _commands.asSharedFlow()
     val uiState: StateFlow<AutomationUiState> = _uiState.asStateFlow()
@@ -197,7 +213,8 @@ object AutomationStore {
                     savedTaskQueryCount = savedCheckpoint?.snapshot?.composedQueries?.size ?: 0,
                     taskRecords = latestTaskRecords,
                     recordEntries = allTaskRecords,
-                    taskHandledUserCount = latestTaskRecords.count { it.outcome != UserTaskRecord.Outcome.DUPLICATE_SKIPPED },
+                    taskHandledUserCount = latestTaskRecords.handledCount(),
+                    taskFailedUserCount = latestTaskRecords.failureCount(),
                     taskDuplicateUserCount = latestTaskRecords.count { it.outcome == UserTaskRecord.Outcome.DUPLICATE_SKIPPED },
                     taskHistory = taskHistory,
                 )
@@ -362,9 +379,7 @@ object AutomationStore {
                 startedAtMillis = previous?.startedAtMillis ?: now,
                 updatedAtMillis = now,
                 status = TaskRunStatus.RUNNING,
-                handledCount = existingRecords.count { record ->
-                    record.outcome != UserTaskRecord.Outcome.DUPLICATE_SKIPPED
-                },
+                handledCount = existingRecords.handledCount(),
                 skippedCount = existingRecords.count { record ->
                     record.outcome == UserTaskRecord.Outcome.DUPLICATE_SKIPPED
                 },
@@ -374,6 +389,7 @@ object AutomationStore {
                 duplicateCount = existingRecords.count { record ->
                     record.outcome == UserTaskRecord.Outcome.DUPLICATE_SKIPPED
                 },
+                failedCount = existingRecords.failureCount(),
                 searchQueries = snapshot?.composedQueries ?: listOf(keyword),
                 region = snapshot?.region,
                 blockedKeywords = snapshot?.normalizedBlockedKeywords.orEmpty(),
@@ -400,9 +416,8 @@ object AutomationStore {
                 remoteSyncLastError = null,
                 taskRecords = existingRecords,
                 recordEntries = allTaskRecords,
-                taskHandledUserCount = existingRecords.count { record ->
-                    record.outcome != UserTaskRecord.Outcome.DUPLICATE_SKIPPED
-                },
+                taskHandledUserCount = existingRecords.handledCount(),
+                taskFailedUserCount = existingRecords.failureCount(),
                 taskDuplicateUserCount = existingRecords.count { record ->
                     record.outcome == UserTaskRecord.Outcome.DUPLICATE_SKIPPED
                 },
@@ -609,6 +624,43 @@ object AutomationStore {
         enqueueRemoteRecord(identityHash, UserTaskRecord.Outcome.IN_PROGRESS, null, page)
     }
 
+    /**
+     * Replaces a clipped list-row name with the complete name read from the verified profile
+     * header. The update is limited to the current in-progress record.
+     */
+    fun updateCurrentUserDisplayName(
+        identityHash: Int?,
+        displayName: String?,
+        page: PageKind = PageKind.USER_PROFILE,
+    ) {
+        if (identityHash == null || displayName.isNullOrBlank()) return
+        val normalizedName = displayName.trim().take(MAX_DISPLAY_NAME_LENGTH)
+        val taskId = synchronized(recordLock) { currentTaskId } ?: return
+        var changed = false
+        synchronized(recordLock) {
+            remoteDisplayNames[identityHash] = normalizedName
+            val index = allTaskRecords.indexOfLast {
+                it.taskId == taskId &&
+                    it.identityHash == identityHash &&
+                    it.outcome == UserTaskRecord.Outcome.IN_PROGRESS
+            }
+            if (index >= 0 && allTaskRecords[index].displayName != normalizedName) {
+                val updated = allTaskRecords[index].copy(displayName = normalizedName)
+                allTaskRecords = allTaskRecords.toMutableList().also { it[index] = updated }
+                persistRecordsLocked()
+                publishCurrentTaskRecordsLocked(updated.outcome.name)
+                changed = true
+            }
+        }
+        if (changed) {
+            enqueueRemoteRecord(identityHash, UserTaskRecord.Outcome.IN_PROGRESS, null, page)
+            logger.info(
+                "task_user_display_name_updated",
+                attributes = mapOf("task_id_hash" to taskId.hashCode(), "identity_hash" to identityHash),
+            )
+        }
+    }
+
     /** Finish the current user's record without creating a second row for the same attempt. */
     fun recordUserTaskFinished(
         identityHash: Int?,
@@ -761,9 +813,7 @@ object AutomationStore {
                 if (entry.taskId != taskId) return@map entry
                 entry.copy(
                     updatedAtMillis = System.currentTimeMillis(),
-                    handledCount = records.count { record ->
-                        record.outcome != UserTaskRecord.Outcome.DUPLICATE_SKIPPED
-                    },
+                    handledCount = records.handledCount(),
                     skippedCount = records.count { record ->
                         record.outcome == UserTaskRecord.Outcome.DUPLICATE_SKIPPED
                     },
@@ -773,6 +823,7 @@ object AutomationStore {
                     duplicateCount = records.count { record ->
                         record.outcome == UserTaskRecord.Outcome.DUPLICATE_SKIPPED
                     },
+                    failedCount = records.failureCount(),
                 )
             }
             persistTaskHistoryLocked()
@@ -781,9 +832,8 @@ object AutomationStore {
             it.copy(
                 taskRecords = records,
                 recordEntries = allTaskRecords,
-                taskHandledUserCount = records.count { record ->
-                    record.outcome != UserTaskRecord.Outcome.DUPLICATE_SKIPPED
-                },
+                taskHandledUserCount = records.handledCount(),
+                taskFailedUserCount = records.failureCount(),
                 taskDuplicateUserCount = records.count { record ->
                     record.outcome == UserTaskRecord.Outcome.DUPLICATE_SKIPPED
                 },
@@ -912,6 +962,7 @@ object AutomationStore {
         put("skipped_count", skippedCount)
         put("filtered_count", filteredCount)
         put("duplicate_count", duplicateCount)
+        put("failed_count", failedCount)
         put("search_queries", JSONArray(searchQueries))
         put("region", region ?: JSONObject.NULL)
         put("blocked_keywords", JSONArray(blockedKeywords))
@@ -941,6 +992,7 @@ object AutomationStore {
                             skippedCount = item.getInt("skipped_count"),
                             filteredCount = item.getInt("filtered_count"),
                             duplicateCount = item.getInt("duplicate_count"),
+                            failedCount = item.optInt("failed_count", 0),
                             searchQueries = item.optJSONArray("search_queries")?.let { values ->
                                 buildList(values.length()) { for (index in 0 until values.length()) add(values.getString(index)) }
                             }.orEmpty(),
@@ -1208,6 +1260,7 @@ object AutomationStore {
     }
 
     private const val MAX_OCR_PREVIEW = 1_000
+    private const val MAX_DISPLAY_NAME_LENGTH = 128
     private const val TASK_RECORDS_PREFERENCES = "automation_task_records"
     private const val TASK_RECORDS_KEY = "records"
     private const val TASK_HISTORY_KEY = "history"

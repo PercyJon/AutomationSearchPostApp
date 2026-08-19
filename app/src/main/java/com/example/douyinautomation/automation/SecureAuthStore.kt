@@ -24,6 +24,8 @@ class SecureAuthStore(
             put("endpoint", config.endpoint)
             put("license_token", config.licenseToken)
             put("device_id", config.deviceId)
+            config.accountName?.let { put("account_name", it) }
+            config.accountUsername?.let { put("account_username", it) }
         }.toString().toByteArray(StandardCharsets.UTF_8)
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
@@ -50,6 +52,8 @@ class SecureAuthStore(
             endpoint = json.getString("endpoint"),
             licenseToken = json.getString("license_token"),
             deviceId = json.getString("device_id"),
+            accountName = json.optString("account_name").takeIf(String::isNotBlank),
+            accountUsername = json.optString("account_username").takeIf(String::isNotBlank),
         ).takeIf(AuthConfig::isUsable)
     }.getOrNull()
 

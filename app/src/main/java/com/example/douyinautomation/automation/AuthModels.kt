@@ -1,5 +1,6 @@
 package com.example.douyinautomation.automation
 
+import android.provider.Settings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -11,6 +12,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.security.MessageDigest
 
 enum class LicenseStatus {
@@ -23,6 +26,7 @@ enum class LicenseStatus {
 data class LicenseUiState(
     val status: LicenseStatus = LicenseStatus.NOT_CONFIGURED,
     val message: String = "尚未配置授权服务",
+    val accountName: String? = null,
     val lastHeartbeatAtMillis: Long? = null,
     val nextHeartbeatAtMillis: Long? = null,
 )
@@ -47,10 +51,33 @@ data class AuthConfig(
     val endpoint: String,
     val licenseToken: String,
     val deviceId: String,
+    val accountName: String? = null,
+    val accountUsername: String? = null,
 ) {
     fun isUsable(): Boolean = endpoint.startsWith("https://") &&
         licenseToken.isNotBlank() &&
         deviceId.isNotBlank()
+}
+
+data class MobileLoginResult(
+    val accountName: String?,
+    val accountUsername: String?,
+    val licenseId: Long,
+)
+
+data class MobileLoginWireResponse(
+    val licenseId: Long,
+    val licenseToken: String,
+    val accountName: String?,
+    val accountUsername: String?,
+)
+
+/** Stable device digest shared by heartbeat and the mobile-login license binding. */
+object DeviceIdentity {
+    fun hash(value: String): String = MessageDigest
+        .getInstance("SHA-256")
+        .digest(value.toByteArray(Charsets.UTF_8))
+        .joinToString("") { byte -> "%02x".format(byte) }
 }
 
 fun interface HeartbeatGateway {
@@ -72,21 +99,25 @@ object HeartbeatPolicy {
         config == null || !config.isUsable() -> LicenseUiState(
             status = LicenseStatus.NOT_CONFIGURED,
             message = "尚未配置授权服务",
+            accountName = config?.accountName,
         )
         response == null -> LicenseUiState(
             status = LicenseStatus.TEMPORARILY_UNAVAILABLE,
             message = "授权服务暂时不可用",
+            accountName = config.accountName,
             lastHeartbeatAtMillis = nowMillis,
         )
         response.accepted -> LicenseUiState(
             status = LicenseStatus.VERIFIED,
             message = response.message,
+            accountName = config.accountName,
             lastHeartbeatAtMillis = nowMillis,
             nextHeartbeatAtMillis = nowMillis + response.nextCheckAfterMillis.coerceAtLeast(60_000L),
         )
         else -> LicenseUiState(
             status = LicenseStatus.REJECTED,
             message = response.message,
+            accountName = config.accountName,
             lastHeartbeatAtMillis = nowMillis,
             nextHeartbeatAtMillis = nowMillis + response.nextCheckAfterMillis.coerceAtLeast(60_000L),
         )
@@ -102,22 +133,23 @@ class HeartbeatCoordinator(
 ) {
     private val _state = MutableStateFlow(LicenseUiState())
     private var periodicJob: Job? = null
+    private val verificationMutex = Mutex()
 
     val state: StateFlow<LicenseUiState> = _state.asStateFlow()
 
-    suspend fun verifyNow(): LicenseUiState {
+    suspend fun verifyNow(): LicenseUiState = verificationMutex.withLock {
         val config = configProvider()
         if (config == null || !config.isUsable()) {
             val nextState = HeartbeatPolicy.evaluate(config, null, nowMillis())
             _state.emit(nextState)
-            return nextState
+            return@withLock nextState
         }
         val response = runCatching {
             gatewayProvider().verify(
                 HeartbeatRequest(
                     // The backend requires a stable, non-reversible digest (minimum 16 chars).
                     // Do not send the device identifier itself over the wire.
-                    deviceIdHash = stableDeviceHash(config.deviceId),
+                    deviceIdHash = DeviceIdentity.hash(config.deviceId),
                     appVersion = appVersion,
                 ),
             )
@@ -133,13 +165,8 @@ class HeartbeatCoordinator(
         }
         val nextState = HeartbeatPolicy.evaluate(config, response, nowMillis())
         _state.emit(nextState)
-        return nextState
+        nextState
     }
-
-    private fun stableDeviceHash(value: String): String = MessageDigest
-        .getInstance("SHA-256")
-        .digest(value.toByteArray(Charsets.UTF_8))
-        .joinToString("") { byte -> "%02x".format(byte) }
 
     fun start(scope: CoroutineScope, intervalMillis: Long = HeartbeatResponse.DEFAULT_HEARTBEAT_INTERVAL_MILLIS) {
         periodicJob?.cancel()
@@ -177,7 +204,7 @@ object AuthStore {
                     ?.let(::AutomationHttpClient)
                     ?: UnconfiguredHeartbeatGateway
             },
-            appVersion = "0.3.0-m3-ui1",
+            appVersion = "0.3.4-mobile-login",
         )
         coordinator?.state?.let { state ->
             scope.launch { state.collect { _uiState.emit(it) } }
@@ -193,6 +220,50 @@ object AuthStore {
     fun saveConfig(context: android.content.Context, config: AuthConfig): Boolean {
         initialize(context)
         return secureStore?.save(config) == true
+    }
+
+    /**
+     * Logs into the backend with username/password, exchanges the short-lived admin session for
+     * a device-bound mobile license, and discards the admin session immediately.
+     */
+    suspend fun login(
+        context: android.content.Context,
+        endpoint: String,
+        username: String,
+        password: String,
+    ): MobileLoginResult {
+        initialize(context)
+        val normalizedEndpoint = endpoint.trim().trimEnd('/')
+        require(normalizedEndpoint.startsWith("https://")) { "后端地址必须使用 HTTPS" }
+        require(username.isNotBlank()) { "请输入用户名" }
+        require(password.isNotBlank()) { "请输入密码" }
+        val deviceId = Settings.Secure.getString(
+            context.contentResolver,
+            Settings.Secure.ANDROID_ID,
+        ).orEmpty()
+        require(deviceId.isNotBlank()) { "无法读取设备标识" }
+        val response = AutomationHttpClient.login(
+            endpoint = normalizedEndpoint,
+            username = username.trim(),
+            password = password,
+            deviceIdHash = DeviceIdentity.hash(deviceId),
+        )
+        val accountName = response.accountName
+        val accountUsername = response.accountUsername ?: username.trim()
+        val config = AuthConfig(
+            endpoint = normalizedEndpoint,
+            licenseToken = response.licenseToken,
+            deviceId = deviceId,
+            accountName = accountName,
+            accountUsername = accountUsername,
+        )
+        check(secureStore?.save(config) == true) { "登录信息保存失败" }
+        coordinator?.verifyNow()
+        return MobileLoginResult(
+            accountName = accountName,
+            accountUsername = accountUsername,
+            licenseId = response.licenseId,
+        )
     }
 
     fun clearConfig(context: android.content.Context) {
