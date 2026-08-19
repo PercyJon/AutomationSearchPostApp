@@ -7,13 +7,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.ui.Modifier
 import com.example.douyinautomation.automation.AutomationStore
 import com.example.douyinautomation.automation.AuthStore
 import com.example.douyinautomation.ui.AppHomeScreen
+import com.example.douyinautomation.ui.theme.AutomationTheme
 
 class MainActivity : ComponentActivity() {
     private val statusHandler = Handler(Looper.getMainLooper())
@@ -28,7 +27,7 @@ class MainActivity : ComponentActivity() {
         AutomationStore.initialize(this)
 
         setContent {
-            DouyinAutomationTheme {
+            AutomationTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     AppHomeScreen(
                         initialKeyword = intent.getStringExtra(EXTRA_PREFILL_KEYWORD).orEmpty(),
@@ -66,14 +65,4 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_PREFILL_KEYWORD = "com.example.douyinautomation.PREFILL_KEYWORD"
         const val EXTRA_OPEN_RECORDS = "com.example.douyinautomation.OPEN_RECORDS"
     }
-}
-
-private val PocColorScheme = lightColorScheme()
-
-@androidx.compose.runtime.Composable
-private fun DouyinAutomationTheme(content: @androidx.compose.runtime.Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = PocColorScheme,
-        content = content,
-    )
 }

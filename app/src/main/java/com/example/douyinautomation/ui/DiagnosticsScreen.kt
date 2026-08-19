@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.background
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
@@ -28,6 +29,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -36,7 +38,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -44,6 +45,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.douyinautomation.automation.AutomationCommand
 import com.example.douyinautomation.automation.AutomationStore
+import com.example.douyinautomation.ui.theme.AutomationError
+import com.example.douyinautomation.ui.theme.AutomationErrorSurface
+import com.example.douyinautomation.ui.theme.AutomationPage
+import com.example.douyinautomation.ui.theme.AutomationSuccess
+import com.example.douyinautomation.ui.theme.AutomationWarning
 
 /**
  * An on-device control surface for the M0 proof of concept.
@@ -63,7 +69,7 @@ fun DiagnosticsScreen(
     var keyword by rememberSaveable(initialKeyword) { mutableStateOf(initialKeyword) }
 
     LazyColumn(
-        modifier = modifier,
+        modifier = modifier.background(AutomationPage),
         contentPadding = PaddingValues(bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -72,20 +78,21 @@ fun DiagnosticsScreen(
                 navigationIcon = {
                     onBack?.let { back ->
                         androidx.compose.material3.TextButton(onClick = back) {
-                            Text("返回")
+                            Text("返回工作台")
                         }
                     }
                 },
                 title = {
                     Column {
-                        Text("Douyin Automation POC")
+                        Text("开发诊断")
                         Text(
-                            text = "M2 blank-message safety probe",
+                            text = "截图、OCR、节点树与运行日志",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = AutomationPage),
             )
         }
 
@@ -152,7 +159,7 @@ fun DiagnosticsScreen(
 
         item {
             Text(
-                text = "Diagnostic log",
+                text = "诊断日志",
                 modifier = Modifier.padding(horizontal = 16.dp),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
@@ -162,7 +169,7 @@ fun DiagnosticsScreen(
         if (state.diagnosticEntries.isEmpty()) {
             item {
                 Text(
-                    text = "No diagnostic events yet. Enable the accessibility service, then capture diagnostics.",
+                    text = "暂无诊断事件。开启无障碍服务后，可在这里采集诊断信息。",
                     modifier = Modifier.padding(horizontal = 16.dp),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodyMedium,
@@ -196,33 +203,33 @@ private fun ServiceStatusCard(
         ) {
             Text(
                 text = when {
-                    !statusKnown -> "Checking accessibility service…"
-                    connected -> "Accessibility service connected"
-                    else -> "Accessibility service not connected"
+                    !statusKnown -> "正在检查无障碍服务…"
+                    connected -> "无障碍服务已连接"
+                    else -> "无障碍服务未连接"
                 },
                 style = MaterialTheme.typography.titleMedium,
                 color = when {
                     !statusKnown -> MaterialTheme.colorScheme.onSurface
-                    connected -> SuccessGreen
-                    else -> MaterialTheme.colorScheme.error
+                    connected -> AutomationSuccess
+                    else -> AutomationError
                 },
                 fontWeight = FontWeight.SemiBold,
             )
             Text(
                 text = when {
-                    !statusKnown -> "Checking the Android accessibility service status."
+                    !statusKnown -> "正在检查 Android 无障碍服务状态。"
                     connected -> {
-                    "The POC can inspect the active window and run explicitly requested diagnostics."
+                    "可以检查当前窗口，并执行明确请求的诊断操作。"
                     }
                     else -> {
-                    "Enable “Douyin automation diagnostics” in Android Accessibility settings before testing."
+                    "请先在 Android 无障碍设置中开启“抖音自动化诊断”。"
                     }
                 },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             OutlinedButton(onClick = onOpenSettings) {
-                Text("Open accessibility settings")
+                Text("打开无障碍设置")
             }
         }
     }
@@ -235,22 +242,22 @@ private fun ManualHandoffCard(reason: String?) {
             .fillMaxWidth()
             .padding(horizontal = 16.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.errorContainer,
-            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+            containerColor = AutomationErrorSurface,
+            contentColor = AutomationError,
         ),
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Text("Manual action required", fontWeight = FontWeight.Bold)
+            Text("需要人工处理", fontWeight = FontWeight.Bold)
             Text(
                 text = "暂停原因：${reason.orEmpty().ifBlank { "未提供" }}",
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.error,
             )
             Text(
-                "The automation has paused for a verification, risk notice, or other ambiguous state. Complete or dismiss it manually, then review diagnostics before resuming.",
+                "自动化因验证、风控提示或其他不明确状态已暂停。请人工完成或关闭提示，再检查诊断信息后继续。",
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
@@ -276,7 +283,7 @@ private fun TaskControlCard(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("Guided POC flow", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text("引导式 POC 流程", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(
                 "M2 安全探测模式：不会发送真实文案。进入私信页后只提交一个空格；检测到“不能发送空白消息”后，视为当前用户验证成功并继续下一位。",
                 style = MaterialTheme.typography.bodyMedium,
@@ -286,12 +293,12 @@ private fun TaskControlCard(
                 value = keyword,
                 onValueChange = onKeywordChange,
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("Search keyword") },
+                label = { Text("搜索关键词") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
             )
             Text(
-                text = "Test keyword presets",
+                text = "测试关键词预设",
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -314,7 +321,7 @@ private fun TaskControlCard(
                     enabled = keyword.isNotBlank(),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text("Start test")
+                    Text("开始测试")
                 }
             }
             Row(modifier = Modifier.fillMaxWidth()) {
@@ -324,7 +331,7 @@ private fun TaskControlCard(
                     modifier = Modifier.weight(1f),
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
                 ) {
-                    Text("Pause")
+                    Text("暂停")
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 FilledTonalButton(
@@ -332,7 +339,7 @@ private fun TaskControlCard(
                     modifier = Modifier.weight(1f),
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
                 ) {
-                    Text("Resume")
+                    Text("继续")
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 OutlinedButton(
@@ -340,7 +347,7 @@ private fun TaskControlCard(
                     modifier = Modifier.weight(1f),
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp),
                 ) {
-                    Text("Stop")
+                    Text("停止")
                 }
             }
         }
@@ -361,19 +368,19 @@ private fun DiagnosticsActionsCard(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text("Capture diagnostics", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text("采集诊断", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(
-                "Capture a service screenshot with OCR and export the current accessibility node tree for selector review.",
+                "采集服务截图并执行 OCR，同时导出当前无障碍节点树用于选择器检查。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Row(modifier = Modifier.fillMaxWidth()) {
                 FilledTonalButton(onClick = onCapture, modifier = Modifier.weight(1f)) {
-                    Text("Screenshot + OCR")
+                    Text("截图 + OCR")
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 OutlinedButton(onClick = onDumpNodeTree, modifier = Modifier.weight(1f)) {
-                    Text("Dump node tree")
+                    Text("导出节点树")
                 }
             }
         }
@@ -402,17 +409,17 @@ private fun StateCard(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text("Latest state", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            DetailRow("Task ID", taskId)
-            DetailRow("Handled users", taskHandledUserCount)
-            DetailRow("Duplicates skipped", taskDuplicateUserCount)
-            DetailRow("Last task event", taskLastEvent)
-            DetailRow("Phase", phase)
-            DetailRow("Detected page", lastPage)
-            DetailRow("Node dump", lastNodeDumpPath)
-            DetailRow("Screenshot", lastScreenshotPath)
+            Text("最新状态", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            DetailRow("任务 ID", taskId)
+            DetailRow("已处理用户", taskHandledUserCount)
+            DetailRow("跳过重复", taskDuplicateUserCount)
+            DetailRow("最近事件", taskLastEvent)
+            DetailRow("阶段", phase)
+            DetailRow("检测页面", lastPage)
+            DetailRow("节点树", lastNodeDumpPath)
+            DetailRow("截图", lastScreenshotPath)
             DetailRow("OCR", lastOcrText)
-            DetailRow("Error", lastError)
+            DetailRow("错误", lastError)
         }
     }
 }
@@ -464,4 +471,3 @@ private val DEFAULT_TEST_KEYWORDS = listOf(
     "实木餐桌",
     "茶桌",
 )
-private val SuccessGreen = Color(0xFF166534)

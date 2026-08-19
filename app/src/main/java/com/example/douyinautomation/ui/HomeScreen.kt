@@ -7,18 +7,42 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Assignment
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Accessibility
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Devices
+import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -28,6 +52,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -38,6 +63,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.background
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -70,6 +98,21 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import com.example.douyinautomation.ui.theme.AutomationBlue
+import com.example.douyinautomation.ui.theme.AutomationBlueDark
+import com.example.douyinautomation.ui.theme.AutomationBlueLight
+import com.example.douyinautomation.ui.theme.AutomationBlueSurface
+import com.example.douyinautomation.ui.theme.AutomationCard
+import com.example.douyinautomation.ui.theme.AutomationDivider
+import com.example.douyinautomation.ui.theme.AutomationError
+import com.example.douyinautomation.ui.theme.AutomationErrorSurface
+import com.example.douyinautomation.ui.theme.AutomationNeutralSurface
+import com.example.douyinautomation.ui.theme.AutomationPage
+import com.example.douyinautomation.ui.theme.AutomationSpacing
+import com.example.douyinautomation.ui.theme.AutomationSuccess
+import com.example.douyinautomation.ui.theme.AutomationSuccessSurface
+import com.example.douyinautomation.ui.theme.AutomationWarning
+import com.example.douyinautomation.ui.theme.AutomationWarningSurface
 
 private enum class HomeSection {
     TASKS,
@@ -86,6 +129,7 @@ fun AppHomeScreen(
 ) {
     var section by rememberSaveable(initialSection) { mutableStateOf(initialSection ?: HomeSection.TASKS.name) }
     var detailTaskId by rememberSaveable { mutableStateOf<String?>(null) }
+    var showCreateTask by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(initialSection) {
         initialSection?.let { section = it }
     }
@@ -113,14 +157,18 @@ fun AppHomeScreen(
     }
 
     Scaffold(
+        containerColor = AutomationPage,
         topBar = {
             TopAppBar(
                 title = {
                     Column {
-                        Text("自动化任务", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            if (selectedSection == HomeSection.TASKS && showCreateTask) "新建任务" else "自动化任务",
+                            fontWeight = FontWeight.SemiBold,
+                        )
                         Text(
                             text = when (selectedSection) {
-                                HomeSection.TASKS -> "任务工作台"
+                                HomeSection.TASKS -> if (showCreateTask) "配置搜索条件" else "任务工作台"
                                 HomeSection.RECORDS -> "处理记录"
                                 HomeSection.SETTINGS -> "设置"
                                 HomeSection.DIAGNOSTICS -> "诊断"
@@ -130,27 +178,38 @@ fun AppHomeScreen(
                         )
                     }
                 },
+                navigationIcon = {
+                    if (showCreateTask && selectedSection == HomeSection.TASKS) {
+                        IconButton(onClick = { showCreateTask = false }) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "返回任务工作台")
+                        }
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = AutomationPage,
+                    scrolledContainerColor = AutomationPage,
+                ),
             )
         },
         bottomBar = {
-            NavigationBar {
+            NavigationBar(containerColor = AutomationCard, tonalElevation = 0.dp) {
                 NavigationBarItem(
                     selected = selectedSection == HomeSection.TASKS,
-                    onClick = { section = HomeSection.TASKS.name },
-                    icon = { Text("任务") },
-                    label = null,
+                    onClick = { section = HomeSection.TASKS.name; showCreateTask = false },
+                    icon = { Icon(Icons.Default.Assignment, contentDescription = null) },
+                    label = { Text("任务") },
                 )
                 NavigationBarItem(
                     selected = selectedSection == HomeSection.RECORDS,
-                    onClick = { section = HomeSection.RECORDS.name },
-                    icon = { Text("记录") },
-                    label = null,
+                    onClick = { section = HomeSection.RECORDS.name; showCreateTask = false },
+                    icon = { Icon(Icons.Default.History, contentDescription = null) },
+                    label = { Text("记录") },
                 )
                 NavigationBarItem(
                     selected = selectedSection == HomeSection.SETTINGS,
-                    onClick = { section = HomeSection.SETTINGS.name },
-                    icon = { Text("设置") },
-                    label = null,
+                    onClick = { section = HomeSection.SETTINGS.name; showCreateTask = false },
+                    icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                    label = { Text("设置") },
                 )
             }
         },
@@ -159,6 +218,9 @@ fun AppHomeScreen(
             HomeSection.TASKS -> TaskDashboard(
                 padding = padding,
                 initialKeyword = initialKeyword,
+                showCreateTask = showCreateTask,
+                onOpenCreateTask = { showCreateTask = true },
+                onCloseCreateTask = { showCreateTask = false },
             )
 
             HomeSection.RECORDS -> TaskRecordsPage(
@@ -179,6 +241,9 @@ fun AppHomeScreen(
 private fun TaskDashboard(
     padding: PaddingValues,
     initialKeyword: String,
+    showCreateTask: Boolean,
+    onOpenCreateTask: () -> Unit,
+    onCloseCreateTask: () -> Unit,
 ) {
     val state by AutomationStore.uiState.collectAsState()
     val licenseState by AuthStore.uiState.collectAsState()
@@ -302,79 +367,96 @@ private fun TaskDashboard(
     Column(
         modifier = Modifier
             .padding(padding)
+            .fillMaxWidth()
             .verticalScroll(rememberScrollState())
             .padding(bottom = 24.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(AutomationSpacing.Content),
     ) {
+        if (!showCreateTask) {
+            DashboardHeader(
+                serviceConnected = state.serviceConnected,
+                onOpenSettings = { openAccessibilitySettings(context) },
+            )
+            CurrentTaskCard(state = state)
+            if (remoteTasks.isNotEmpty() || licenseState.status != LicenseStatus.NOT_CONFIGURED) {
+                RemoteTaskCard(
+                    tasks = remoteTasks,
+                    serviceConnected = state.serviceConnected,
+                    startingTaskId = remoteStartingTaskId,
+                    refreshInFlight = remoteRefreshInFlight,
+                    lastRefreshAtMillis = remoteRefreshAtMillis,
+                    refreshMessage = remoteRefreshMessage,
+                    onRefresh = { remoteRefreshNonce += 1 },
+                    onStart = { remoteTask ->
+                        scope.launch {
+                            remoteStartingTaskId = remoteTask.id
+                            val session = runCatching {
+                                withContext(Dispatchers.IO) {
+                                    AuthStore.claimRemoteTask(context, remoteTask.id)
+                                }
+                            }.getOrElse { error ->
+                                AutomationStore.publishRemoteSyncError(
+                                    "远程任务 #${remoteTask.id} 领取/读取进度失败：${error.message ?: "网络异常"}",
+                                )
+                                null
+                            }
+                            if (session != null) {
+                                val progress = session.progress
+                                if (!RemoteTaskResumePolicy.canResumeExactly(progress)) {
+                                    AutomationStore.publishRemoteSyncError(
+                                        "远程任务 #${remoteTask.id} 已有 ${progress.processedCount} 条进度，但缺少最后用户锚点，已暂停以避免重复处理",
+                                    )
+                                } else {
+                                    AutomationStore.send(
+                                        AutomationCommand.Start(
+                                            keyword = session.task.keyword,
+                                            // Remote "send" tasks remain in the M2 blank-message safety
+                                            // mode until a separate, explicit confirmation flow exists.
+                                            message = "",
+                                            safetyProbe = true,
+                                            taskSnapshot = session.task.toTaskSnapshot(),
+                                            remoteResume = RemoteTaskResume(session.task.id, progress),
+                                        ),
+                                    )
+                                }
+                            }
+                            remoteStartingTaskId = null
+                        }
+                    },
+                )
+            }
+            PrimaryActionButton(
+                label = "新建任务",
+                icon = Icons.Default.Add,
+                onClick = onOpenCreateTask,
+                modifier = Modifier.padding(horizontal = AutomationSpacing.Page),
+            )
+            return@Column
+        }
+
         ServiceStatusBanner(
             connected = state.serviceConnected,
             onOpenSettings = { openAccessibilitySettings(context) },
         )
 
-        CurrentTaskCard(state = state)
-
-        if (remoteTasks.isNotEmpty() || licenseState.status != LicenseStatus.NOT_CONFIGURED) {
-            RemoteTaskCard(
-                tasks = remoteTasks,
-                serviceConnected = state.serviceConnected,
-                startingTaskId = remoteStartingTaskId,
-                refreshInFlight = remoteRefreshInFlight,
-                lastRefreshAtMillis = remoteRefreshAtMillis,
-                refreshMessage = remoteRefreshMessage,
-                onRefresh = { remoteRefreshNonce += 1 },
-                onStart = { remoteTask ->
-                    scope.launch {
-                        remoteStartingTaskId = remoteTask.id
-                        val session = runCatching {
-                            withContext(Dispatchers.IO) {
-                                AuthStore.claimRemoteTask(context, remoteTask.id)
-                            }
-                        }.getOrElse { error ->
-                            AutomationStore.publishRemoteSyncError(
-                                "远程任务 #${remoteTask.id} 领取/读取进度失败：${error.message ?: "网络异常"}",
-                            )
-                            null
-                        }
-                        if (session != null) {
-                            val progress = session.progress
-                            if (!RemoteTaskResumePolicy.canResumeExactly(progress)) {
-                                AutomationStore.publishRemoteSyncError(
-                                    "远程任务 #${remoteTask.id} 已有 ${progress.processedCount} 条进度，但缺少最后用户锚点，已暂停以避免重复处理",
-                                )
-                            } else {
-                                AutomationStore.send(
-                                    AutomationCommand.Start(
-                                        keyword = session.task.keyword,
-                                        // Remote "send" tasks remain in the M2 blank-message safety
-                                        // mode until a separate, explicit confirmation flow exists.
-                                        message = "",
-                                        safetyProbe = true,
-                                        taskSnapshot = session.task.toTaskSnapshot(),
-                                        remoteResume = RemoteTaskResume(session.task.id, progress),
-                                    ),
-                                )
-                            }
-                        }
-                        remoteStartingTaskId = null
-                    }
-                },
-            )
-        }
-
         Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp),
+                .padding(horizontal = AutomationSpacing.Page),
+            colors = CardDefaults.cardColors(containerColor = AutomationCard),
+            border = androidx.compose.foundation.BorderStroke(1.dp, AutomationDivider),
+            shape = MaterialTheme.shapes.large,
         ) {
             Column(
                 modifier = Modifier.padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Text("新建任务", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("任务配置", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Text(
                     "配置搜索词、地区和屏蔽规则。当前默认使用空格安全探测，不发送真实消息。",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                SectionHeader("基础信息")
                 OutlinedTextField(
                     value = taskName,
                     onValueChange = { taskName = it },
@@ -389,6 +471,7 @@ private fun TaskDashboard(
                     label = { Text("自定义搜索词") },
                     singleLine = true,
                 )
+                SectionHeader("搜索条件")
                 Text("预设搜索词", style = MaterialTheme.typography.labelLarge)
                 PresetChips(
                     presets = presets,
@@ -408,6 +491,7 @@ private fun TaskDashboard(
                     label = { Text("地区（可选，例如广东）") },
                     singleLine = true,
                 )
+                SectionHeader("筛选条件")
                 if (regionCatalog.items.isNotEmpty()) {
                     Text("后台地区规则", style = MaterialTheme.typography.labelLarge)
                     Row(
@@ -458,6 +542,7 @@ private fun TaskDashboard(
                         }
                     }
                 }
+                SectionHeader("执行限制")
                 OutlinedTextField(
                     value = maxUsers,
                     onValueChange = { maxUsers = it.filter(Char::isDigit) },
@@ -465,6 +550,7 @@ private fun TaskDashboard(
                     label = { Text("最多处理用户数") },
                     singleLine = true,
                 )
+                SectionHeader("搜索词预览")
                 Text("最终搜索词预览", style = MaterialTheme.typography.labelLarge)
                 if (queries.isEmpty()) {
                     Text("请先选择预设或输入自定义搜索词", color = MaterialTheme.colorScheme.error)
@@ -516,20 +602,7 @@ private fun TaskDashboard(
                 draftMessage?.let {
                     Text(it, color = MaterialTheme.colorScheme.primary)
                 }
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilledTonalButton(
-                        onClick = { AutomationStore.send(AutomationCommand.Pause) },
-                        modifier = Modifier.weight(1f),
-                    ) { Text("暂停") }
-                    FilledTonalButton(
-                        onClick = { AutomationStore.send(AutomationCommand.Resume) },
-                        modifier = Modifier.weight(1f),
-                    ) { Text("继续") }
-                    OutlinedButton(
-                        onClick = { AutomationStore.send(AutomationCommand.Stop) },
-                        modifier = Modifier.weight(1f),
-                    ) { Text("停止") }
-                }
+                TextButton(onClick = onCloseCreateTask) { Text("返回任务工作台") }
             }
         }
     }
@@ -549,7 +622,10 @@ private fun RemoteTaskCard(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp),
+            .padding(horizontal = AutomationSpacing.Page),
+        colors = CardDefaults.cardColors(containerColor = AutomationCard),
+        border = androidx.compose.foundation.BorderStroke(1.dp, AutomationDivider),
+        shape = MaterialTheme.shapes.large,
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
@@ -558,6 +634,8 @@ private fun RemoteTaskCard(
             ) {
                 Text("远程任务", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 OutlinedButton(onClick = onRefresh, enabled = !refreshInFlight) {
+                    Icon(Icons.Default.Refresh, contentDescription = null)
+                    Spacer(Modifier.padding(horizontal = 2.dp))
                     Text(if (refreshInFlight) "刷新中" else "刷新")
                 }
             }
@@ -577,10 +655,7 @@ private fun RemoteTaskCard(
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
             if (tasks.isEmpty()) {
-                Text(
-                    "当前没有可领取的后台任务",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                EmptyState(title = "暂无待领取任务", detail = "后台发布任务后将在这里显示")
             } else tasks.take(5).forEach { task ->
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Column(modifier = Modifier.weight(1f)) {
@@ -664,13 +739,19 @@ private fun ServiceStatusBanner(
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp),
+            .padding(horizontal = AutomationSpacing.Page),
         colors = CardDefaults.cardColors(
             containerColor = if (connected) {
-                MaterialTheme.colorScheme.primaryContainer
+                AutomationSuccessSurface
             } else {
-                MaterialTheme.colorScheme.errorContainer
+                AutomationErrorSurface
             },
+            contentColor = MaterialTheme.colorScheme.onSurface,
+        ),
+        shape = MaterialTheme.shapes.medium,
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            if (connected) AutomationSuccess.copy(alpha = 0.24f) else AutomationError.copy(alpha = 0.24f),
         ),
     ) {
         Row(
@@ -680,12 +761,16 @@ private fun ServiceStatusBanner(
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Column(modifier = Modifier.weight(1f)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(
+                        if (connected) Icons.Default.CheckCircle else Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = if (connected) AutomationSuccess else AutomationWarning,
+                    )
+                    Text(if (connected) "自动化服务正常" else "自动化服务未开启", fontWeight = FontWeight.SemiBold)
+                }
                 Text(
-                    if (connected) "无障碍服务已连接" else "需要开启无障碍服务",
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    if (connected) "可以开始配置任务" else "开启后才能执行自动化任务",
+                    if (connected) "Accessibility 已连接，可以开始执行任务" else "开启后才能执行自动化任务",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -697,19 +782,111 @@ private fun ServiceStatusBanner(
 }
 
 @Composable
-private fun CurrentTaskCard(
-    state: com.example.douyinautomation.automation.AutomationUiState,
+private fun DashboardHeader(
+    serviceConnected: Boolean,
+    onOpenSettings: () -> Unit,
 ) {
-    if (state.taskId == null && state.phase == AutomationPhase.IDLE) return
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp),
+            .padding(horizontal = AutomationSpacing.Page),
+        colors = CardDefaults.cardColors(containerColor = AutomationBlue),
+        shape = MaterialTheme.shapes.large,
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text("自动化工作台", style = MaterialTheme.typography.headlineSmall, color = Color.White)
+            Text(
+                "把搜索、筛选与安全探测集中在一个清晰的执行面板",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color.White.copy(alpha = 0.82f),
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Icon(Icons.Default.Accessibility, contentDescription = null, tint = Color.White)
+                    Text(
+                        if (serviceConnected) "设备已就绪" else "需要开启无障碍",
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                }
+                if (!serviceConnected) {
+                    TextButton(onClick = onOpenSettings) {
+                        Text("去开启", color = Color.White)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PrimaryActionButton(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Button(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        contentPadding = PaddingValues(vertical = 14.dp),
+    ) {
+        Icon(icon, contentDescription = null)
+        Spacer(Modifier.padding(horizontal = 4.dp))
+        Text(label)
+    }
+}
+
+@Composable
+private fun SectionHeader(title: String) {
+    Text(
+        text = title,
+        style = MaterialTheme.typography.titleMedium,
+        color = AutomationBlueDark,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier.padding(top = 8.dp),
+    )
+}
+
+@Composable
+private fun CurrentTaskCard(
+    state: com.example.douyinautomation.automation.AutomationUiState,
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = AutomationSpacing.Page),
+        colors = CardDefaults.cardColors(containerColor = AutomationCard),
+        border = androidx.compose.foundation.BorderStroke(1.dp, AutomationDivider),
+        shape = MaterialTheme.shapes.large,
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("当前任务", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            state.taskName?.takeIf(String::isNotBlank)?.let { Text(it, fontWeight = FontWeight.SemiBold) }
-            Text(phaseLabel(state.phase), fontWeight = FontWeight.SemiBold)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            ) {
+                Text("当前任务", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                StatusBadge(
+                    label = if (state.taskId == null && state.phase == AutomationPhase.IDLE) "暂无任务" else phaseLabel(state.phase),
+                    tone = statusTone(state.phase),
+                )
+            }
+            if (state.taskId == null && state.phase == AutomationPhase.IDLE) {
+                Text("还没有运行中的任务", style = MaterialTheme.typography.titleLarge)
+                Text("创建任务后，处理进度和安全探测结果会显示在这里。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                return@Column
+            }
+            state.taskName?.takeIf(String::isNotBlank)?.let { Text(it, style = MaterialTheme.typography.titleLarge) }
             state.remoteTaskId?.let { remoteId ->
                 Text(
                     "远程任务 #$remoteId · ${remoteStatusLabel(state.remoteTaskStatus)} · 待同步 ${state.remoteSyncPendingCount}",
@@ -720,9 +897,11 @@ private fun CurrentTaskCard(
             state.remoteSyncLastError?.takeIf(String::isNotBlank)?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                Text("已处理 ${state.taskHandledUserCount}")
-                Text("已跳过 ${state.taskDuplicateUserCount}")
+            HorizontalDivider(color = AutomationDivider)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                MetricItem("已处理", state.taskHandledUserCount.toString(), AutomationBlue)
+                MetricItem("已跳过", state.taskDuplicateUserCount.toString(), AutomationWarning)
+                MetricItem("失败", if (state.phase == AutomationPhase.FAILED) "1" else "0", AutomationError)
             }
             if (state.taskQueryCount > 0 || state.taskMaxUsers != null) {
                 Text(
@@ -748,9 +927,120 @@ private fun CurrentTaskCard(
                 }
             }
             state.lastError?.takeIf(String::isNotBlank)?.let {
-                Text(it, color = MaterialTheme.colorScheme.error, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                ErrorBanner(message = "任务执行异常", detail = it)
+            }
+            if (isTaskActivePhase(state.phase)) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (state.phase != AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF) {
+                        FilledTonalButton(onClick = { AutomationStore.send(AutomationCommand.Pause) }, modifier = Modifier.weight(1f)) {
+                            Icon(Icons.Default.Pause, contentDescription = null)
+                            Spacer(Modifier.padding(horizontal = 2.dp))
+                            Text("暂停")
+                        }
+                    } else {
+                        Button(onClick = { AutomationStore.send(AutomationCommand.Resume) }, modifier = Modifier.weight(1f)) {
+                            Icon(Icons.Default.PlayArrow, contentDescription = null)
+                            Spacer(Modifier.padding(horizontal = 2.dp))
+                            Text("继续任务")
+                        }
+                    }
+                    OutlinedButton(onClick = { AutomationStore.send(AutomationCommand.Stop) }, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Default.Stop, contentDescription = null)
+                        Spacer(Modifier.padding(horizontal = 2.dp))
+                        Text("停止")
+                    }
+                }
             }
         }
+    }
+}
+
+private enum class StatusTone { PRIMARY, SUCCESS, WARNING, ERROR, NEUTRAL }
+
+@Composable
+private fun StatusBadge(label: String, tone: StatusTone) {
+    val (background, foreground) = when (tone) {
+        StatusTone.PRIMARY -> AutomationBlueLight to AutomationBlueDark
+        StatusTone.SUCCESS -> AutomationSuccessSurface to AutomationSuccess
+        StatusTone.WARNING -> AutomationWarningSurface to AutomationWarning
+        StatusTone.ERROR -> AutomationErrorSurface to AutomationError
+        StatusTone.NEUTRAL -> AutomationNeutralSurface to MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    androidx.compose.material3.Surface(
+        color = background,
+        shape = MaterialTheme.shapes.small,
+    ) {
+        Text(
+            label,
+            color = foreground,
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+        )
+    }
+}
+
+private fun statusTone(phase: AutomationPhase): StatusTone = when (phase) {
+    AutomationPhase.COMPLETED_EMPTY_MESSAGE_PROBE,
+    AutomationPhase.COMPLETED_TASK,
+    AutomationPhase.COMPLETED_AT_MESSAGE_PAGE,
+    -> StatusTone.SUCCESS
+    AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF -> StatusTone.WARNING
+    AutomationPhase.FAILED -> StatusTone.ERROR
+    AutomationPhase.IDLE,
+    AutomationPhase.SERVICE_READY,
+    AutomationPhase.STOPPED,
+    -> StatusTone.NEUTRAL
+    else -> StatusTone.PRIMARY
+}
+
+private fun isTaskActivePhase(phase: AutomationPhase): Boolean = phase !in setOf(
+    AutomationPhase.IDLE,
+    AutomationPhase.SERVICE_READY,
+    AutomationPhase.STOPPED,
+    AutomationPhase.FAILED,
+    AutomationPhase.COMPLETED_EMPTY_MESSAGE_PROBE,
+    AutomationPhase.COMPLETED_TASK,
+    AutomationPhase.COMPLETED_AT_MESSAGE_PAGE,
+)
+
+@Composable
+private fun MetricItem(label: String, value: String, color: Color) {
+    Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
+        Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = color)
+        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun ErrorBanner(message: String, detail: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.small)
+            .background(AutomationErrorSurface)
+            .padding(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(Icons.Default.Error, contentDescription = null, tint = AutomationError)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(message, color = AutomationError, fontWeight = FontWeight.SemiBold)
+            Text(detail, color = AutomationError, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+private fun EmptyState(title: String, detail: String) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp),
+        horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Icon(Icons.Default.Assignment, contentDescription = null, tint = AutomationBlue)
+        Text(title, fontWeight = FontWeight.Medium)
+        Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -768,8 +1058,8 @@ private fun TaskRecordsPage(
         modifier = Modifier
             .padding(padding)
             .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+            .padding(AutomationSpacing.Page),
+        verticalArrangement = Arrangement.spacedBy(AutomationSpacing.Content),
     ) {
         Text("处理记录", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Text(
@@ -789,7 +1079,7 @@ private fun TaskRecordsPage(
             }
         }
         if (visibleHistory.isEmpty()) {
-            Text("暂无任务记录", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            EmptyState(title = "暂无任务记录", detail = "完成的自动化任务将在这里显示")
         } else {
             visibleHistory.forEach { history ->
                 TaskHistoryCard(history, onClick = { onOpenTask(history.taskId) })
@@ -800,20 +1090,35 @@ private fun TaskRecordsPage(
 
 @Composable
 private fun TaskHistoryCard(history: TaskHistoryEntry, onClick: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(history.taskName, fontWeight = FontWeight.SemiBold)
-            Text(
-                "${taskStatusLabel(history.status)} · ${formatTaskTime(history.updatedAtMillis)}",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(containerColor = AutomationCard),
+        border = androidx.compose.foundation.BorderStroke(1.dp, AutomationDivider),
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Row(modifier = Modifier.fillMaxWidth()) {
+            androidx.compose.foundation.layout.Box(
+                modifier = Modifier
+                    .width(4.dp)
+                    .height(92.dp)
+                    .background(AutomationBlue),
             )
-            Text("搜索词 ${history.queryCount} · 已处理 ${history.handledCount} · 跳过 ${history.skippedCount}")
-            if (history.filteredCount > 0 || history.duplicateCount > 0) {
-                Text(
-                    "屏蔽 ${history.filteredCount} · 重复 ${history.duplicateCount}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(history.taskName, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                    StatusBadge(taskStatusLabel(history.status), taskStatusTone(history.status))
+                }
+                Text(formatTaskTime(history.updatedAtMillis), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                Text("已处理 ${history.handledCount} · 跳过 ${history.skippedCount} · 失败 ${if (history.status == TaskRunStatus.FAILED) 1 else 0}")
+                if (history.filteredCount > 0 || history.duplicateCount > 0) {
+                    Text(
+                        "屏蔽 ${history.filteredCount} · 重复 ${history.duplicateCount}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }
@@ -835,12 +1140,16 @@ private fun TaskRecordDetailScreen(
         .sortedByDescending { it.startedAtMillis }
 
     Scaffold(
+        containerColor = AutomationPage,
         topBar = {
             TopAppBar(
                 title = { Text(history?.taskName ?: "任务结果") },
                 navigationIcon = {
-                    TextButton(onClick = onBack) { Text("返回") }
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "返回")
+                    }
                 },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = AutomationPage),
             )
         },
     ) { padding ->
@@ -848,24 +1157,30 @@ private fun TaskRecordDetailScreen(
             modifier = Modifier
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
-                .padding(16.dp),
+                .padding(AutomationSpacing.Page),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             if (history == null) {
-                Text("任务记录不存在或已被清理", color = MaterialTheme.colorScheme.error)
+                ErrorBanner("记录不可用", "任务记录不存在或已被清理")
                 return@Column
             }
 
-            Card(modifier = Modifier.fillMaxWidth()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = AutomationCard),
+                border = androidx.compose.foundation.BorderStroke(1.dp, AutomationDivider),
+                shape = MaterialTheme.shapes.large,
+            ) {
                 Column(
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Text("任务概览", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    Text("状态：${taskStatusLabel(history.status)}")
+                    StatusBadge(taskStatusLabel(history.status), taskStatusTone(history.status))
                     history.errorMessage?.takeIf(String::isNotBlank)?.let {
-                        Text("原因：$it", color = MaterialTheme.colorScheme.error)
+                        ErrorBanner("执行异常", it)
                     }
+                    HorizontalDivider(color = AutomationDivider)
                     Text("开始：${formatTaskTime(history.startedAtMillis)}")
                     Text("更新：${formatTaskTime(history.updatedAtMillis)}")
                     Text("搜索词组：${history.queryCount} · 用户上限：${history.maxUsers}")
@@ -877,8 +1192,12 @@ private fun TaskRecordDetailScreen(
                         Text("屏蔽词：${history.blockedKeywords.joinToString("、")}")
                     }
                     Text("执行模式：${executionModeLabel(history.executionMode)}")
-                    Text("已处理：${history.handledCount} · 已跳过：${history.skippedCount}")
-                    Text("命中屏蔽词：${history.filteredCount} · 重复用户：${history.duplicateCount}")
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                        MetricItem("已处理", history.handledCount.toString(), AutomationBlue)
+                        MetricItem("已跳过", history.skippedCount.toString(), AutomationWarning)
+                        MetricItem("失败", if (history.status == TaskRunStatus.FAILED) "1" else "0", AutomationError)
+                    }
+                    Text("命中屏蔽词：${history.filteredCount} · 重复用户：${history.duplicateCount}", style = MaterialTheme.typography.bodySmall)
                     FilledTonalButton(
                         onClick = {
                             AutomationStore.saveTaskDraft(history.toReusableDraft())
@@ -906,12 +1225,12 @@ private fun TaskRecordDetailScreen(
             }
 
             Text(
-                "任务结果（${records.size}）",
+                "用户处理结果（${records.size}）",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
             )
             if (records.isEmpty()) {
-                Text("当前任务还没有用户处理记录", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                EmptyState("暂无用户记录", "任务执行后，每个用户的处理结果会显示在这里")
             } else {
                 records.forEach { record ->
                     UserTaskResultCard(record)
@@ -934,11 +1253,13 @@ private fun TaskHistoryEntry.toReusableDraft(): TaskDraft = TaskDraft(
 
 @Composable
 private fun UserTaskResultCard(record: UserTaskRecord) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(5.dp),
-        ) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = AutomationCard),
+        border = androidx.compose.foundation.BorderStroke(1.dp, AutomationDivider),
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -950,11 +1271,8 @@ private fun UserTaskResultCard(record: UserTaskRecord) {
                 )
                 Text(
                     recordOutcomeLabel(record.outcome),
-                    color = if (record.outcome == UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.error
-                    },
+                    color = if (record.outcome == UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED) AutomationSuccess else AutomationError,
+                    fontWeight = FontWeight.Medium,
                 )
             }
             record.userKey?.takeIf(String::isNotBlank)?.let { Text("账号：$it") }
@@ -988,6 +1306,14 @@ private fun taskStatusLabel(status: TaskRunStatus): String = when (status) {
     TaskRunStatus.STOPPED -> "已停止"
     TaskRunStatus.COMPLETED -> "已完成"
     TaskRunStatus.FAILED -> "执行失败"
+}
+
+private fun taskStatusTone(status: TaskRunStatus): StatusTone = when (status) {
+    TaskRunStatus.RUNNING -> StatusTone.PRIMARY
+    TaskRunStatus.PAUSED -> StatusTone.WARNING
+    TaskRunStatus.COMPLETED -> StatusTone.SUCCESS
+    TaskRunStatus.FAILED -> StatusTone.ERROR
+    TaskRunStatus.STOPPED -> StatusTone.NEUTRAL
 }
 
 private fun remoteStatusLabel(status: Int?): String = when (status) {
@@ -1029,14 +1355,16 @@ private fun SettingsPage(
         modifier = Modifier
             .padding(padding)
             .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+            .padding(AutomationSpacing.Page),
+        verticalArrangement = Arrangement.spacedBy(AutomationSpacing.Content),
     ) {
         Text("设置", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        Card(modifier = Modifier.fillMaxWidth()) {
+        SettingsSectionCard(title = "账号与授权", icon = Icons.Default.Cloud) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("授权与连接", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text("状态：${licenseStatusLabel(licenseState.status)}")
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("授权状态", fontWeight = FontWeight.Medium)
+                    StatusBadge(licenseStatusLabel(licenseState.status), if (licenseState.status == LicenseStatus.VERIFIED) StatusTone.SUCCESS else StatusTone.WARNING)
+                }
                 Text(
                     licenseState.message,
                     style = MaterialTheme.typography.bodySmall,
@@ -1097,10 +1425,11 @@ private fun SettingsPage(
                 )
             }
         }
-        Card(modifier = Modifier.fillMaxWidth()) {
+        SettingsSectionCard(title = "自动化服务", icon = Icons.Default.Accessibility) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("设备与服务", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text("目标应用：抖音\n执行方式：Android 无障碍服务\n安全模式：空白消息探测")
+                SettingsRow("目标应用", "抖音")
+                SettingsRow("执行方式", "Android 无障碍服务")
+                SettingsRow("安全模式", "空白消息探测")
                 Text(
                     "预设搜索词：远程优先，失败时使用本地缓存和内置词；地区规则、屏蔽词与任务断点接口已接入客户端网关。",
                     style = MaterialTheme.typography.bodySmall,
@@ -1111,13 +1440,47 @@ private fun SettingsPage(
                 }
             }
         }
-        Card(modifier = Modifier.fillMaxWidth()) {
+        SettingsSectionCard(title = "开发者选项", icon = Icons.Default.Tune) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("开发诊断", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Text("截图、OCR、节点树和原始事件仅在诊断页显示。")
                 OutlinedButton(onClick = onOpenDiagnostics) { Text("打开诊断页") }
             }
         }
+    }
+}
+
+@Composable
+private fun SettingsSectionCard(
+    title: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    content: @Composable () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = AutomationCard),
+        border = androidx.compose.foundation.BorderStroke(1.dp, AutomationDivider),
+        shape = MaterialTheme.shapes.large,
+    ) {
+        Column {
+            Row(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            ) {
+                Icon(icon, contentDescription = null, tint = AutomationBlue)
+                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            }
+            HorizontalDivider(color = AutomationDivider)
+            content()
+        }
+    }
+}
+
+@Composable
+private fun SettingsRow(label: String, value: String) {
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, fontWeight = FontWeight.Medium)
     }
 }
 
