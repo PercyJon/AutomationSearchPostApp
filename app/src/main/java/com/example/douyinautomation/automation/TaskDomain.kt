@@ -1,6 +1,8 @@
 package com.example.douyinautomation.automation
 
 import java.util.Locale
+import java.text.SimpleDateFormat
+import java.util.Date
 
 /** The execution modes exposed by task configuration. Real sending stays opt-in and gated. */
 enum class TaskExecutionMode {
@@ -40,7 +42,6 @@ data class TaskDraft(
     val executionMode: TaskExecutionMode = TaskExecutionMode.SAFE_BLANK_PROBE,
 ) {
     fun validationErrors(): List<String> = buildList {
-        if (name.trim().isEmpty()) add("任务名称不能为空")
         if (presetIds.isEmpty() && customKeywords.none { it.isNotBlank() }) {
             add("至少选择一个预设搜索词或填写自定义搜索词")
         }
@@ -65,9 +66,13 @@ data class TaskDraft(
             baseKeywords = presetKeywords + customKeywords,
         )
         require(queries.isNotEmpty()) { "任务没有可执行的搜索词" }
+        val resolvedTaskName = name.trim().ifBlank {
+            val time = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.getDefault()).format(Date(nowMillis))
+            "${queries.first().query}-$time"
+        }
         return TaskSnapshot(
             taskId = id,
-            taskName = name.trim(),
+            taskName = resolvedTaskName,
             presetVersion = presets.version,
             baseKeywords = queries.map { it.baseKeyword },
             region = QueryComposer.normalize(region),

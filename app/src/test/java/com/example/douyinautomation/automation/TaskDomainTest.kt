@@ -84,6 +84,25 @@ class TaskDomainTest {
     }
 
     @Test
+    fun `blank task name is generated from first query and timestamp`() {
+        val snapshot = TaskDraft(
+            id = "task-1",
+            name = "",
+            customKeywords = listOf("红木沙发"),
+        ).toSnapshot(
+            presets = SearchPresetCatalog(
+                version = "test",
+                items = emptyList(),
+                updatedAtMillis = 1L,
+            ),
+            nowMillis = 0L,
+        )
+
+        assertTrue(snapshot.taskName.startsWith("红木沙发-"))
+        assertTrue(snapshot.taskName.length > "红木沙发-".length)
+    }
+
+    @Test
     fun `task query cursor advances in frozen order and stops at the end`() {
         val cursor = TaskQueryCursor(listOf("广东红木家具", "广东实木餐桌"))
 

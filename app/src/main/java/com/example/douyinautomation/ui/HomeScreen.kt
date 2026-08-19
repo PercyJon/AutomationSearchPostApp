@@ -5,6 +5,8 @@ import android.content.Intent
 import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -229,7 +231,6 @@ fun AppHomeScreen(
                 showCreateTask = showCreateTask,
                 showRemoteTasks = showRemoteTasks,
                 onOpenCreateTask = { showCreateTask = true },
-                onCloseCreateTask = { showCreateTask = false },
             )
 
             HomeSection.RECORDS -> TaskRecordsPage(
@@ -258,7 +259,6 @@ private fun TaskDashboard(
     showCreateTask: Boolean,
     showRemoteTasks: Boolean,
     onOpenCreateTask: () -> Unit,
-    onCloseCreateTask: () -> Unit,
 ) {
     val state by AutomationStore.uiState.collectAsState()
     val licenseState by AuthStore.uiState.collectAsState()
@@ -322,14 +322,13 @@ private fun TaskDashboard(
         }
     }
     val presets = presetCatalog.items
-    var taskName by rememberSaveable { mutableStateOf("红木客户筛选") }
+    var taskName by rememberSaveable { mutableStateOf("") }
     var keyword by rememberSaveable(initialKeyword) { mutableStateOf(initialKeyword) }
     var region by rememberSaveable { mutableStateOf("") }
     var blockedKeywords by rememberSaveable { mutableStateOf("") }
     var maxUsers by rememberSaveable { mutableStateOf(TaskDraft.DEFAULT_MAX_USERS.toString()) }
     var selectedPresetIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var draftHydrated by remember { mutableStateOf(false) }
-    var draftMessage by rememberSaveable { mutableStateOf<String?>(null) }
 
     LaunchedEffect(context, initialKeyword) {
         val savedDraft = withContext(Dispatchers.IO) { AutomationStore.loadTaskDraft() }
@@ -459,7 +458,6 @@ private fun TaskDashboard(
 
         ServiceStatusBanner(
             connected = state.serviceConnected,
-            onOpenSettings = { openAccessibilitySettings(context) },
         )
 
         Card(
@@ -471,55 +469,77 @@ private fun TaskDashboard(
             shape = MaterialTheme.shapes.large,
         ) {
             Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Text("任务配置", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("任务配置", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Text(
                     "配置搜索词、地区和屏蔽规则。当前默认使用空格安全探测，不发送真实消息。",
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 SectionHeader("基础信息")
                 OutlinedTextField(
                     value = taskName,
                     onValueChange = { taskName = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("任务名称") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp),
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                    label = { Text("任务名称（可选）", style = MaterialTheme.typography.bodySmall) },
+                    placeholder = { Text("不填则按搜索词+时间自动生成", style = MaterialTheme.typography.bodySmall) },
                     singleLine = true,
                 )
                 OutlinedTextField(
                     value = keyword,
-                    onValueChange = { keyword = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("自定义搜索词") },
+                    onValueChange = { value ->
+                        keyword = value
+                        val selectedKeyword = presets.firstOrNull { it.id in selectedPresetIds }?.keyword
+                        if (selectedKeyword != null && value != selectedKeyword) {
+                            selectedPresetIds = emptySet()
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp),
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                    label = { Text("自定义搜索词", style = MaterialTheme.typography.bodySmall) },
+                    placeholder = { Text("输入搜索词，或点击下方预设", style = MaterialTheme.typography.bodySmall) },
                     singleLine = true,
                 )
                 SectionHeader("搜索条件")
-                Text("预设搜索词", style = MaterialTheme.typography.labelLarge)
+                Text("预设搜索词（点击后填入上方输入框）", style = MaterialTheme.typography.labelMedium)
                 PresetChips(
                     presets = presets,
                     selectedIds = selectedPresetIds,
                     onToggle = { id ->
-                        selectedPresetIds = if (id in selectedPresetIds) {
-                            selectedPresetIds - id
+                        val selected = presets.firstOrNull { it.id == id }
+                        if (id in selectedPresetIds) {
+                            selectedPresetIds = emptySet()
+                            keyword = ""
                         } else {
-                            selectedPresetIds + id
+                            selectedPresetIds = setOf(id)
+                            keyword = selected?.keyword.orEmpty()
                         }
                     },
                 )
                 OutlinedTextField(
                     value = region,
                     onValueChange = { region = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("地区（可选，例如广东）") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp),
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                    label = { Text("地区（可选，例如广东）", style = MaterialTheme.typography.bodySmall) },
                     singleLine = true,
                 )
                 SectionHeader("筛选条件")
                 if (regionCatalog.items.isNotEmpty()) {
                     Text("后台地区规则", style = MaterialTheme.typography.labelLarge)
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    @OptIn(ExperimentalLayoutApi::class)
+                    FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         regionCatalog.items.forEach { rule ->
                             FilterChip(
@@ -533,34 +553,41 @@ private fun TaskDashboard(
                 OutlinedTextField(
                     value = blockedKeywords,
                     onValueChange = { blockedKeywords = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("屏蔽关键词（逗号分隔）") },
-                    placeholder = { Text("例如：工厂，批发") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp),
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                    label = { Text("屏蔽关键词（逗号分隔）", style = MaterialTheme.typography.bodySmall) },
+                    placeholder = { Text("例如：厂，公司", style = MaterialTheme.typography.bodySmall) },
                     singleLine = true,
                 )
-                if (blockKeywordCatalog.items.isNotEmpty()) {
-                    Text("后台屏蔽词", style = MaterialTheme.typography.labelLarge)
+                val blockedPresetKeywords = (blockKeywordCatalog.items.map { it.keyword } + listOf("厂", "公司"))
+                    .map(String::trim)
+                    .filter(String::isNotEmpty)
+                    .distinct()
+                if (blockedPresetKeywords.isNotEmpty()) {
+                    Text("预设屏蔽词（点击后替换输入框内容）", style = MaterialTheme.typography.labelMedium)
                     val selectedBlocked = blockedKeywords
                         .split(',', '，', '\n')
                         .map(String::trim)
                         .filter(String::isNotEmpty)
                         .toSet()
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    @OptIn(ExperimentalLayoutApi::class)
+                    FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        blockKeywordCatalog.items.forEach { rule ->
+                        blockedPresetKeywords.forEach { keywordPreset ->
                             FilterChip(
-                                selected = rule.keyword in selectedBlocked,
+                                selected = keywordPreset in selectedBlocked,
                                 onClick = {
-                                    val next = if (rule.keyword in selectedBlocked) {
-                                        selectedBlocked - rule.keyword
+                                    blockedKeywords = if (keywordPreset in selectedBlocked) {
+                                        ""
                                     } else {
-                                        selectedBlocked + rule.keyword
+                                        keywordPreset
                                     }
-                                    blockedKeywords = next.joinToString(",")
                                 },
-                                label = { Text(rule.keyword) },
+                                label = { Text(keywordPreset) },
                             )
                         }
                     }
@@ -569,19 +596,13 @@ private fun TaskDashboard(
                 OutlinedTextField(
                     value = maxUsers,
                     onValueChange = { maxUsers = it.filter(Char::isDigit) },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("最多处理用户数") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp),
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                    label = { Text("最多处理用户数", style = MaterialTheme.typography.bodySmall) },
                     singleLine = true,
                 )
-                SectionHeader("搜索词预览")
-                Text("最终搜索词预览", style = MaterialTheme.typography.labelLarge)
-                if (queries.isEmpty()) {
-                    Text("请先选择预设或输入自定义搜索词", color = MaterialTheme.colorScheme.error)
-                } else {
-                    queries.forEach { query ->
-                        Text("• ${query.query}", fontWeight = FontWeight.Medium)
-                    }
-                }
                 if (draftErrors.isNotEmpty()) {
                     Text(draftErrors.first(), color = MaterialTheme.colorScheme.error)
                 }
@@ -600,32 +621,6 @@ private fun TaskDashboard(
                 ) {
                     Text(if (state.phase == AutomationPhase.IDLE) "开始任务" else "启动新的任务")
                 }
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = {
-                            AutomationStore.saveTaskDraft(draft)
-                            draftMessage = "任务配置已保存，下次打开仍会保留"
-                        },
-                        modifier = Modifier.weight(1f),
-                    ) { Text("保存配置") }
-                    OutlinedButton(
-                        onClick = {
-                            AutomationStore.clearTaskDraft()
-                            taskName = "红木客户筛选"
-                            keyword = initialKeyword
-                            region = ""
-                            blockedKeywords = ""
-                            maxUsers = TaskDraft.DEFAULT_MAX_USERS.toString()
-                            selectedPresetIds = emptySet()
-                            draftMessage = "已清除本地配置"
-                        },
-                        modifier = Modifier.weight(1f),
-                    ) { Text("清除配置") }
-                }
-                draftMessage?.let {
-                    Text(it, color = MaterialTheme.colorScheme.primary)
-                }
-                TextButton(onClick = onCloseCreateTask) { Text("返回任务工作台") }
             }
         }
     }
@@ -740,9 +735,10 @@ private fun PresetChips(
     selectedIds: Set<String>,
     onToggle: (String) -> Unit,
 ) {
-    Row(
-        modifier = Modifier.horizontalScroll(rememberScrollState()),
+    @OptIn(ExperimentalLayoutApi::class)
+    FlowRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         presets.forEach { preset ->
             FilterChip(
@@ -757,7 +753,6 @@ private fun PresetChips(
 @Composable
 private fun ServiceStatusBanner(
     connected: Boolean,
-    onOpenSettings: () -> Unit,
 ) {
     Card(
         modifier = Modifier
@@ -780,26 +775,21 @@ private fun ServiceStatusBanner(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(
-                        if (connected) Icons.Default.CheckCircle else Icons.Default.Warning,
-                        contentDescription = null,
-                        tint = if (connected) AutomationSuccess else AutomationWarning,
-                    )
-                    Text(if (connected) "自动化服务正常" else "自动化服务未开启", fontWeight = FontWeight.SemiBold)
-                }
-                Text(
-                    if (connected) "Accessibility 已连接，可以开始执行任务" else "开启后才能执行自动化任务",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            if (!connected) {
-                TextButton(onClick = onOpenSettings) { Text("去开启") }
-            }
+            Icon(
+                if (connected) Icons.Default.CheckCircle else Icons.Default.Warning,
+                contentDescription = null,
+                modifier = Modifier.height(18.dp),
+                tint = if (connected) AutomationSuccess else AutomationWarning,
+            )
+            Text(
+                if (connected) "自动化服务正常" else "自动化服务未开启",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
         }
     }
 }
@@ -873,10 +863,10 @@ private fun PrimaryActionButton(
 private fun SectionHeader(title: String) {
     Text(
         text = title,
-        style = MaterialTheme.typography.titleMedium,
+        style = MaterialTheme.typography.labelLarge,
         color = AutomationBlueDark,
         fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.padding(top = 8.dp),
+        modifier = Modifier.padding(top = 4.dp),
     )
 }
 
