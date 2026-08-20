@@ -448,13 +448,21 @@ private fun TaskDashboard(
     }.getOrNull()
     val canStart = state.serviceConnected && queries.isNotEmpty() && draftErrors.isEmpty()
     val canSave = queries.isNotEmpty() && draftErrors.isEmpty()
+    val fixedTodoLayout = !showCreateTask && showTodoOnly && !showRemoteTasks
 
     Column(
-        modifier = Modifier
-            .padding(padding)
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(bottom = 24.dp),
+        modifier = if (fixedTodoLayout) {
+            Modifier
+                .padding(padding)
+                .fillMaxWidth()
+                .fillMaxHeight()
+        } else {
+            Modifier
+                .padding(padding)
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(bottom = 24.dp)
+        },
         verticalArrangement = Arrangement.spacedBy(AutomationSpacing.Content),
     ) {
         if (!showCreateTask) {
@@ -482,15 +490,40 @@ private fun TaskDashboard(
                 }
             }
             if (showTodoOnly) {
-                TodoTaskCard(
-                    tasks = savedTasks,
-                    presetCatalog = presetCatalog,
-                    selectedTaskIds = selectedSavedTaskIds,
-                    serviceConnected = state.serviceConnected,
-                    activeState = state,
-                    onToggleTask = toggleTask,
-                    onStartSelected = startSelected,
-                )
+                if (fixedTodoLayout) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState()),
+                    ) {
+                        TodoTaskCard(
+                            tasks = savedTasks,
+                            presetCatalog = presetCatalog,
+                            selectedTaskIds = selectedSavedTaskIds,
+                            activeState = state,
+                            onToggleTask = toggleTask,
+                        )
+                    }
+                    Button(
+                        onClick = startSelected,
+                        enabled = state.serviceConnected && selectedSavedTaskIds.isNotEmpty() && !isTaskActivePhase(state.phase),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = AutomationSpacing.Page, vertical = 8.dp),
+                        shape = RoundedCornerShape(22.dp),
+                    ) {
+                        Text("开始任务")
+                    }
+                } else {
+                    TodoTaskCard(
+                        tasks = savedTasks,
+                        presetCatalog = presetCatalog,
+                        selectedTaskIds = selectedSavedTaskIds,
+                        activeState = state,
+                        onToggleTask = toggleTask,
+                    )
+                }
             } else {
                 HomeDashboardContent(
                     state = state,
@@ -1310,10 +1343,8 @@ private fun TodoTaskCard(
     tasks: List<TaskDraft>,
     presetCatalog: SearchPresetCatalog,
     selectedTaskIds: Set<String>,
-    serviceConnected: Boolean,
     activeState: com.example.douyinautomation.automation.AutomationUiState,
     onToggleTask: (String) -> Unit,
-    onStartSelected: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -1407,14 +1438,6 @@ private fun TodoTaskCard(
                         enabled = !isTaskActivePhase(activeState.phase),
                     )
                 }
-            }
-            Button(
-                onClick = onStartSelected,
-                enabled = serviceConnected && selectedTaskIds.isNotEmpty() && !isTaskActivePhase(activeState.phase),
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(22.dp),
-            ) {
-                Text("开始任务")
             }
         }
     }
