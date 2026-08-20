@@ -17,13 +17,21 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.shadow
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Assignment
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.ListAlt
+import androidx.compose.material.icons.filled.Business
+import androidx.compose.material.icons.filled.Forum
+import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.ArrowBack
@@ -44,6 +52,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledTonalButton
@@ -136,7 +145,8 @@ import com.example.douyinautomation.ui.theme.AutomationWarning
 import com.example.douyinautomation.ui.theme.AutomationWarningSurface
 
 private enum class HomeSection {
-    TASKS,
+    HOME,
+    TODO,
     RECORDS,
     SETTINGS,
     DIAGNOSTICS,
@@ -148,7 +158,7 @@ fun AppHomeScreen(
     initialKeyword: String = "",
     initialSection: String? = null,
 ) {
-    var section by rememberSaveable(initialSection) { mutableStateOf(initialSection ?: HomeSection.TASKS.name) }
+    var section by rememberSaveable(initialSection) { mutableStateOf(initialSection ?: HomeSection.HOME.name) }
     var detailTaskId by rememberSaveable { mutableStateOf<String?>(null) }
     var showCreateTask by rememberSaveable { mutableStateOf(false) }
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -166,11 +176,11 @@ fun AppHomeScreen(
             onBack = { detailTaskId = null },
             onReuse = {
                 detailTaskId = null
-                section = HomeSection.TASKS.name
+                section = HomeSection.TODO.name
             },
             onRetry = {
                 detailTaskId = null
-                section = HomeSection.TASKS.name
+                section = HomeSection.TODO.name
             },
         )
         return
@@ -184,17 +194,25 @@ fun AppHomeScreen(
     Scaffold(
         containerColor = AutomationPage,
         topBar = {
-            TopAppBar(
+            if (showCreateTask || selectedSection == HomeSection.RECORDS || selectedSection == HomeSection.SETTINGS || selectedSection == HomeSection.DIAGNOSTICS || selectedSection == HomeSection.TODO) {
+                TopAppBar(
                 title = {
                     Column {
                         Text(
-                            if (selectedSection == HomeSection.TASKS && showCreateTask) "新建任务" else "自动化任务",
+                            when {
+                                showCreateTask -> "新建任务"
+                                selectedSection == HomeSection.TODO -> "待办"
+                                selectedSection == HomeSection.RECORDS -> "记录"
+                                selectedSection == HomeSection.SETTINGS -> "设置"
+                                else -> "诊断"
+                            },
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.SemiBold,
                         )
                         Text(
                             text = when (selectedSection) {
-                                HomeSection.TASKS -> if (showCreateTask) "配置搜索条件" else "任务工作台"
+                                HomeSection.HOME -> ""
+                                HomeSection.TODO -> "保存的任务按顺序执行"
                                 HomeSection.RECORDS -> "处理记录"
                                 HomeSection.SETTINGS -> "设置"
                                 HomeSection.DIAGNOSTICS -> "诊断"
@@ -205,9 +223,9 @@ fun AppHomeScreen(
                     }
                 },
                 navigationIcon = {
-                    if (showCreateTask && selectedSection == HomeSection.TASKS) {
+                    if (showCreateTask) {
                         IconButton(onClick = { showCreateTask = false }) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "返回任务工作台")
+                            Icon(Icons.Default.ArrowBack, contentDescription = "返回首页")
                         }
                     }
                 },
@@ -215,55 +233,33 @@ fun AppHomeScreen(
                     containerColor = AutomationPage,
                     scrolledContainerColor = AutomationPage,
                 ),
-            )
+                )
+            }
         },
         bottomBar = {
-            if (selectedSection == HomeSection.TASKS && !showCreateTask) {
-                Column(modifier = Modifier.background(AutomationPage)) {
-                    PrimaryActionButton(
-                        label = "新建任务",
-                        icon = Icons.Default.Add,
-                        onClick = { showCreateTask = true },
-                        modifier = Modifier.padding(horizontal = AutomationSpacing.Page, vertical = 8.dp),
-                    )
-                    NavigationBar(containerColor = AutomationCard, tonalElevation = 0.dp) {
-                        NavigationBarItem(
-                            selected = true,
-                            onClick = { section = HomeSection.TASKS.name },
-                            icon = { Icon(Icons.Default.Assignment, contentDescription = null) },
-                            label = { Text("任务") },
-                        )
-                        NavigationBarItem(
-                            selected = false,
-                            onClick = { section = HomeSection.RECORDS.name; showCreateTask = false },
-                            icon = { Icon(Icons.Default.History, contentDescription = null) },
-                            label = { Text("记录") },
-                        )
-                        NavigationBarItem(
-                            selected = false,
-                            onClick = { section = HomeSection.SETTINGS.name; showCreateTask = false },
-                            icon = { Icon(Icons.Default.Settings, contentDescription = null) },
-                            label = { Text("设置") },
-                        )
-                    }
-                }
-            } else if (!(selectedSection == HomeSection.TASKS && showCreateTask)) {
+            if (!showCreateTask) {
                 NavigationBar(containerColor = AutomationCard, tonalElevation = 0.dp) {
                     NavigationBarItem(
-                        selected = selectedSection == HomeSection.TASKS,
-                        onClick = { section = HomeSection.TASKS.name; showCreateTask = false },
-                        icon = { Icon(Icons.Default.Assignment, contentDescription = null) },
-                        label = { Text("任务") },
+                        selected = selectedSection == HomeSection.HOME,
+                        onClick = { section = HomeSection.HOME.name },
+                        icon = { Icon(Icons.Default.Home, contentDescription = null) },
+                        label = { Text("首页") },
+                    )
+                    NavigationBarItem(
+                        selected = selectedSection == HomeSection.TODO,
+                        onClick = { section = HomeSection.TODO.name },
+                        icon = { Icon(Icons.Default.ListAlt, contentDescription = null) },
+                        label = { Text("待办") },
                     )
                     NavigationBarItem(
                         selected = selectedSection == HomeSection.RECORDS,
-                        onClick = { section = HomeSection.RECORDS.name; showCreateTask = false },
+                        onClick = { section = HomeSection.RECORDS.name },
                         icon = { Icon(Icons.Default.History, contentDescription = null) },
                         label = { Text("记录") },
                     )
                     NavigationBarItem(
                         selected = selectedSection == HomeSection.SETTINGS,
-                        onClick = { section = HomeSection.SETTINGS.name; showCreateTask = false },
+                        onClick = { section = HomeSection.SETTINGS.name },
                         icon = { Icon(Icons.Default.Settings, contentDescription = null) },
                         label = { Text("设置") },
                     )
@@ -272,12 +268,25 @@ fun AppHomeScreen(
         },
     ) { padding ->
         when (selectedSection) {
-            HomeSection.TASKS -> TaskDashboard(
+            HomeSection.HOME -> TaskDashboard(
                 padding = padding,
                 initialKeyword = initialKeyword,
                 showCreateTask = showCreateTask,
                 showRemoteTasks = showRemoteTasks,
+                showTodoOnly = false,
                 onCloseCreateTask = { showCreateTask = false },
+                onOpenCreateTask = { showCreateTask = true },
+                onOpenTodo = { section = HomeSection.TODO.name },
+            )
+            HomeSection.TODO -> TaskDashboard(
+                padding = padding,
+                initialKeyword = initialKeyword,
+                showCreateTask = showCreateTask,
+                showRemoteTasks = showRemoteTasks,
+                showTodoOnly = true,
+                onCloseCreateTask = { showCreateTask = false },
+                onOpenCreateTask = { showCreateTask = true },
+                onOpenTodo = { section = HomeSection.TODO.name },
             )
 
             HomeSection.RECORDS -> TaskRecordsPage(
@@ -305,7 +314,10 @@ private fun TaskDashboard(
     initialKeyword: String,
     showCreateTask: Boolean,
     showRemoteTasks: Boolean,
+    showTodoOnly: Boolean,
     onCloseCreateTask: () -> Unit,
+    onOpenCreateTask: () -> Unit,
+    onOpenTodo: () -> Unit,
 ) {
     val state by AutomationStore.uiState.collectAsState()
     val licenseState by AuthStore.uiState.collectAsState()
@@ -446,41 +458,49 @@ private fun TaskDashboard(
         verticalArrangement = Arrangement.spacedBy(AutomationSpacing.Content),
     ) {
         if (!showCreateTask) {
-            DashboardHeader(
-                serviceConnected = state.serviceConnected,
-                onOpenSettings = { openAccessibilitySettings(context) },
-            )
-            TodoTaskCard(
-                tasks = savedTasks,
-                presetCatalog = presetCatalog,
-                selectedTaskIds = selectedSavedTaskIds,
-                serviceConnected = state.serviceConnected,
-                activeState = state,
-                onToggleTask = { taskId ->
-                    selectedSavedTaskIds = if (taskId in selectedSavedTaskIds) {
-                        selectedSavedTaskIds - taskId
-                    } else {
-                        selectedSavedTaskIds + taskId
+            val toggleTask: (String) -> Unit = { taskId ->
+                selectedSavedTaskIds = if (taskId in selectedSavedTaskIds) {
+                    selectedSavedTaskIds - taskId
+                } else {
+                    selectedSavedTaskIds + taskId
+                }
+            }
+            val startSelected: () -> Unit = {
+                val snapshots = savedTasks
+                    .filter { it.id in selectedSavedTaskIds }
+                    .mapNotNull { saved ->
+                        runCatching {
+                            saved.toSnapshot(
+                                presets = presetCatalog,
+                                nowMillis = System.currentTimeMillis(),
+                            )
+                        }.getOrNull()
                     }
-                },
-                onStartSelected = {
-                    val snapshots = savedTasks
-                        .filter { it.id in selectedSavedTaskIds }
-                        .mapNotNull { saved ->
-                            runCatching {
-                                saved.toSnapshot(
-                                    presets = presetCatalog,
-                                    nowMillis = System.currentTimeMillis(),
-                                )
-                            }.getOrNull()
-                        }
-                    if (snapshots.isNotEmpty()) {
-                        AutomationStore.send(AutomationCommand.StartBatch(snapshots))
-                        selectedSavedTaskIds = emptySet()
-                    }
-                },
-            )
-            if (showRemoteTasks && (remoteTasks.isNotEmpty() || licenseState.status != LicenseStatus.NOT_CONFIGURED)) {
+                if (snapshots.isNotEmpty()) {
+                    AutomationStore.send(AutomationCommand.StartBatch(snapshots))
+                    selectedSavedTaskIds = emptySet()
+                }
+            }
+            if (showTodoOnly) {
+                TodoTaskCard(
+                    tasks = savedTasks,
+                    presetCatalog = presetCatalog,
+                    selectedTaskIds = selectedSavedTaskIds,
+                    serviceConnected = state.serviceConnected,
+                    activeState = state,
+                    onToggleTask = toggleTask,
+                    onStartSelected = startSelected,
+                )
+            } else {
+                HomeDashboardContent(
+                    state = state,
+                    savedTasks = savedTasks,
+                    presetCatalog = presetCatalog,
+                    onOpenCreateTask = onOpenCreateTask,
+                    onOpenTodo = onOpenTodo,
+                )
+            }
+            if (showTodoOnly && showRemoteTasks && (remoteTasks.isNotEmpty() || licenseState.status != LicenseStatus.NOT_CONFIGURED)) {
                 RemoteTaskCard(
                     tasks = remoteTasks,
                     serviceConnected = state.serviceConnected,
@@ -732,6 +752,193 @@ private fun TaskDashboard(
                         Text("立即开始")
                     }
                 }
+        }
+    }
+}
+
+@Composable
+private fun HomeDashboardContent(
+    state: com.example.douyinautomation.automation.AutomationUiState,
+    savedTasks: List<TaskDraft>,
+    presetCatalog: SearchPresetCatalog,
+    onOpenCreateTask: () -> Unit,
+    onOpenTodo: () -> Unit,
+) {
+    val history = state.taskHistory
+    val totalTasks = history.size
+    val terminalTasks = history.count { it.status != TaskRunStatus.RUNNING }
+    val completion = if (totalTasks == 0) 1f else (terminalTasks.toFloat() / totalTasks).coerceIn(0f, 1f)
+    val handledCustomers = history.sumOf { it.handledCount }
+    val greeting = when (java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)) {
+        in 5..11 -> "早上好，欢迎回来"
+        in 12..17 -> "下午好，欢迎回来"
+        else -> "晚上好，欢迎回来"
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(AutomationSpacing.Section)) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(190.dp)
+                .background(AutomationBlue),
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(greeting, color = Color.White, style = MaterialTheme.typography.titleMedium)
+                Text("自动化获客助手", color = Color.White, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            }
+            Card(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .offset(y = 38.dp)
+                    .padding(horizontal = AutomationSpacing.Page),
+                colors = CardDefaults.cardColors(containerColor = AutomationCard),
+                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+                shape = RoundedCornerShape(24.dp),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 18.dp, vertical = 18.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text("总览", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelLarge)
+                        Text("$totalTasks 个任务已运行", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Text("$handledCustomers 个客户已发送", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    }
+                    Box(contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(
+                            progress = completion,
+                            modifier = Modifier.height(92.dp),
+                            color = AutomationBlue,
+                            trackColor = AutomationBlueLight,
+                            strokeWidth = 9.dp,
+                        )
+                        Text("${(completion * 100).toInt()}%", color = AutomationBlue, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(30.dp))
+        Column(
+            modifier = Modifier.padding(horizontal = AutomationSpacing.Page),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("功能", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                FunctionEntryCard(
+                    title = "B端私信",
+                    description = "搜索用户并安全探测",
+                    icon = Icons.Default.Business,
+                    color = AutomationBlue,
+                    onClick = onOpenCreateTask,
+                    modifier = Modifier.weight(1f),
+                )
+                FunctionEntryCard(
+                    title = "评论私信",
+                    description = "评论区触达功能",
+                    icon = Icons.Default.Forum,
+                    color = Color(0xFFE83A55),
+                    onClick = {},
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+
+        Column(
+            modifier = Modifier.padding(horizontal = AutomationSpacing.Page),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("今日待办", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                TextButton(onClick = onOpenTodo, contentPadding = PaddingValues(0.dp)) { Text("查看全部") }
+            }
+            if (savedTasks.isEmpty()) {
+                EmptyState(title = "今天没有任务", detail = "点击功能中的 B端私信创建任务")
+            } else {
+                savedTasks.take(3).forEach { task ->
+                    val query = task.customKeywords.firstOrNull { it.isNotBlank() }
+                        ?: task.presetIds.asSequence()
+                            .mapNotNull { id -> presetCatalog.items.firstOrNull { it.id == id }?.keyword }
+                            .firstOrNull { it.isNotBlank() }
+                        ?: "未设置搜索词"
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(AutomationBlueSurface)
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .height(42.dp)
+                                .width(4.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(AutomationBlue),
+                        )
+                        Column(modifier = Modifier.padding(start = 12.dp).weight(1f)) {
+                            Text(task.name.ifBlank { query }, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                "$query · 上限 ${task.maxUsers}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        Icon(Icons.Default.ListAlt, contentDescription = null, tint = AutomationBlue)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FunctionEntryCard(
+    title: String,
+    description: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    color: Color,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Card(
+        modifier = modifier
+            .height(142.dp)
+            .clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(containerColor = color),
+        shape = RoundedCornerShape(22.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+    ) {
+        Box(modifier = Modifier.fillMaxWidth().fillMaxHeight()) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(title, color = Color.White, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(description, color = Color.White.copy(alpha = 0.82f), style = MaterialTheme.typography.bodySmall)
+                Text(if (title == "B端私信") "立即创建" else "敬请期待", color = Color.White, style = MaterialTheme.typography.labelLarge)
+            }
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = Color.White.copy(alpha = 0.35f),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(12.dp)
+                    .height(54.dp),
+            )
         }
     }
 }
