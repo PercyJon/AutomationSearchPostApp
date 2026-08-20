@@ -57,6 +57,8 @@ class DouyinNavigationController(
     private var messageEntryPostconditionJob: Job? = null
     private var messageResultJob: Job? = null
     private var profilePostconditionJob: Job? = null
+    /** Pending local tasks are consumed only after the current task reaches a terminal state. */
+    private val queuedTaskSnapshots = SequentialTaskQueue<TaskSnapshot>()
     private var initialOcrAttempts = 0
     private var latestContext: ScreenContext? = null
     private var userTabRevealAttempts = 0
@@ -137,13 +139,17 @@ class DouyinNavigationController(
 
     suspend fun handle(command: AutomationCommand) = mutex.withLock {
         when (command) {
-            is AutomationCommand.Start -> start(
-                searchKeyword = command.keyword,
-                startMessage = command.message,
-                safetyProbe = command.safetyProbe,
-                taskSnapshot = command.taskSnapshot,
-                remoteResume = command.remoteResume,
-            )
+            is AutomationCommand.Start -> {
+                queuedTaskSnapshots.clear()
+                start(
+                    searchKeyword = command.keyword,
+                    startMessage = command.message,
+                    safetyProbe = command.safetyProbe,
+                    taskSnapshot = command.taskSnapshot,
+                    remoteResume = command.remoteResume,
+                )
+            }
+            is AutomationCommand.StartBatch -> startBatch(command.tasks)
             AutomationCommand.ResumeSavedTask -> resumeSavedTask()
             is AutomationCommand.SendMessage -> sendMessageOnce(command.message)
             AutomationCommand.Pause -> pause("Paused by the operator")
@@ -334,9 +340,12 @@ class DouyinNavigationController(
         messageResultJob?.cancel()
         profilePostconditionJob?.cancel()
         initialObservationJob?.cancel()
+        // Create/switch the persisted task history entry before publishing the first phase.
+        // In a queued batch, publishing LAUNCHING_TARGET while currentTaskId still points to
+        // the previous task would regress its terminal COMPLETED status back to RUNNING.
+        AutomationStore.beginTask(sanitizedKeyword, taskSnapshot)
         phase = AutomationPhase.LAUNCHING_TARGET
         AutomationStore.publishPhase(phase)
-        AutomationStore.beginTask(sanitizedKeyword, taskSnapshot)
         logger.info("poc_started", attributes = mapOf("target" to TargetAppLauncher.DOUYIN_PACKAGE))
 
         when (val result = TargetAppLauncher.launch(service)) {
@@ -359,6 +368,74 @@ class DouyinNavigationController(
             }
 
             is LaunchResult.Failed -> pause("Could not open Douyin: ${result.reason}")
+        }
+    }
+
+    private suspend fun startBatch(tasks: List<TaskSnapshot>) {
+        if (taskActive) {
+            logger.warn("start_batch_ignored_active")
+            return
+        }
+        val validTasks = tasks.filter { snapshot ->
+            snapshot.composedQueries.any { it.isNotBlank() }
+        }
+        if (validTasks.isEmpty()) {
+            AutomationStore.publishFailure("没有可执行的待办任务")
+            return
+        }
+        queuedTaskSnapshots.replace(validTasks.drop(1))
+        logger.info(
+            "task_batch_started",
+            attributes = mapOf("task_count" to validTasks.size),
+        )
+        val first = validTasks.first()
+        start(
+            searchKeyword = first.composedQueries.first(),
+            startMessage = first.messageTemplate.orEmpty(),
+            safetyProbe = first.executionMode == TaskExecutionMode.SAFE_BLANK_PROBE,
+            taskSnapshot = first,
+            remoteResume = null,
+        )
+    }
+
+    /**
+     * Continue a local batch after a task has finished.  A short settle delay gives Douyin time to
+     * return to its stable surface before the next launch, while the same controller mutex keeps
+     * two task starts from overlapping.
+     */
+    private fun scheduleNextQueuedTask(): Boolean {
+        val next = queuedTaskSnapshots.poll() ?: return false
+        scope.launch {
+            delay(NEXT_TASK_SETTLE_DELAY_MS)
+            mutex.withLock {
+                if (taskActive) {
+                    queuedTaskSnapshots.replace(listOf(next) + queuedTaskSnapshots.asList())
+                    return@withLock
+                }
+                start(
+                    searchKeyword = next.composedQueries.firstOrNull().orEmpty(),
+                    startMessage = next.messageTemplate.orEmpty(),
+                    safetyProbe = next.executionMode == TaskExecutionMode.SAFE_BLANK_PROBE,
+                    taskSnapshot = next,
+                    remoteResume = null,
+                )
+            }
+        }
+        return true
+    }
+
+    private fun publishTaskTerminal(
+        phase: AutomationPhase,
+        error: String? = null,
+    ) {
+        val hasNext = !queuedTaskSnapshots.isEmpty
+        if (phase == AutomationPhase.FAILED) {
+            AutomationStore.publishFailure(error ?: "任务执行失败", openRecords = !hasNext)
+        } else {
+            AutomationStore.publishPhase(phase, error = error, openRecords = !hasNext)
+        }
+        if (hasNext) {
+            scheduleNextQueuedTask()
         }
     }
 
@@ -3012,7 +3089,7 @@ class DouyinNavigationController(
             attributes = mapOf("max_users" to maxUsers),
         )
         phase = AutomationPhase.COMPLETED_TASK
-        AutomationStore.publishPhase(phase)
+        publishTaskTerminal(phase)
     }
 
     private fun completeTaskAtQueryEnd() {
@@ -3029,7 +3106,7 @@ class DouyinNavigationController(
             attributes = mapOf("query_count" to (activeTaskSnapshot?.composedQueries?.size ?: 1)),
         )
         phase = AutomationPhase.COMPLETED_TASK
-        AutomationStore.publishPhase(phase)
+        publishTaskTerminal(phase)
     }
 
     private fun scheduleMessageResultCheck(expectedMessage: String) {
@@ -3836,7 +3913,7 @@ class DouyinNavigationController(
         messageResultJob?.cancel()
         taskActive = false
         phase = AutomationPhase.FAILED
-        AutomationStore.publishFailure(reason)
+        publishTaskTerminal(phase, error = reason)
         logger.error("task_failed_after_user_recovery", message = reason)
     }
 
@@ -3851,6 +3928,7 @@ class DouyinNavigationController(
             it == AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF || it == AutomationPhase.STOPPED
         }
         taskActive = false
+        queuedTaskSnapshots.clear()
         phase = AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF
         if (currentUserIdentityHash != null) {
             AutomationStore.recordUserTaskFinished(
@@ -3874,6 +3952,7 @@ class DouyinNavigationController(
         messageEntryPostconditionJob?.cancel()
         messageResultJob?.cancel()
         taskActive = false
+        queuedTaskSnapshots.clear()
         if (currentUserIdentityHash != null) {
             AutomationStore.recordUserTaskFinished(
                 identityHash = currentUserIdentityHash,
@@ -3942,6 +4021,7 @@ class DouyinNavigationController(
         const val INITIAL_OCR_MAX_ATTEMPTS = 6
         const val OCR_PAGE_STABLE_OBSERVATIONS = 2
         const val INITIAL_SCREEN_SETTLE_DELAY_MS = 5_000L
+        const val NEXT_TASK_SETTLE_DELAY_MS = 900L
         const val INITIAL_READY_STABLE_OBSERVATIONS = 2
         val INITIAL_READY_PAGE_KINDS = setOf(
             PageKind.HOME,

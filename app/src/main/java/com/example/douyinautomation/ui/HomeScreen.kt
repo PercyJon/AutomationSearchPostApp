@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -12,11 +13,14 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Assignment
@@ -39,24 +43,29 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -66,12 +75,18 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.foundation.background
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import com.example.douyinautomation.automation.AutomationCommand
 import com.example.douyinautomation.automation.AutomationPhase
 import com.example.douyinautomation.automation.AutomationStore
@@ -174,6 +189,7 @@ fun AppHomeScreen(
                     Column {
                         Text(
                             if (selectedSection == HomeSection.TASKS && showCreateTask) "新建任务" else "自动化任务",
+                            style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.SemiBold,
                         )
                         Text(
@@ -202,25 +218,56 @@ fun AppHomeScreen(
             )
         },
         bottomBar = {
-            NavigationBar(containerColor = AutomationCard, tonalElevation = 0.dp) {
-                NavigationBarItem(
-                    selected = selectedSection == HomeSection.TASKS,
-                    onClick = { section = HomeSection.TASKS.name; showCreateTask = false },
-                    icon = { Icon(Icons.Default.Assignment, contentDescription = null) },
-                    label = { Text("任务") },
-                )
-                NavigationBarItem(
-                    selected = selectedSection == HomeSection.RECORDS,
-                    onClick = { section = HomeSection.RECORDS.name; showCreateTask = false },
-                    icon = { Icon(Icons.Default.History, contentDescription = null) },
-                    label = { Text("记录") },
-                )
-                NavigationBarItem(
-                    selected = selectedSection == HomeSection.SETTINGS,
-                    onClick = { section = HomeSection.SETTINGS.name; showCreateTask = false },
-                    icon = { Icon(Icons.Default.Settings, contentDescription = null) },
-                    label = { Text("设置") },
-                )
+            if (selectedSection == HomeSection.TASKS && !showCreateTask) {
+                Column(modifier = Modifier.background(AutomationPage)) {
+                    PrimaryActionButton(
+                        label = "新建任务",
+                        icon = Icons.Default.Add,
+                        onClick = { showCreateTask = true },
+                        modifier = Modifier.padding(horizontal = AutomationSpacing.Page, vertical = 8.dp),
+                    )
+                    NavigationBar(containerColor = AutomationCard, tonalElevation = 0.dp) {
+                        NavigationBarItem(
+                            selected = true,
+                            onClick = { section = HomeSection.TASKS.name },
+                            icon = { Icon(Icons.Default.Assignment, contentDescription = null) },
+                            label = { Text("任务") },
+                        )
+                        NavigationBarItem(
+                            selected = false,
+                            onClick = { section = HomeSection.RECORDS.name; showCreateTask = false },
+                            icon = { Icon(Icons.Default.History, contentDescription = null) },
+                            label = { Text("记录") },
+                        )
+                        NavigationBarItem(
+                            selected = false,
+                            onClick = { section = HomeSection.SETTINGS.name; showCreateTask = false },
+                            icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                            label = { Text("设置") },
+                        )
+                    }
+                }
+            } else if (!(selectedSection == HomeSection.TASKS && showCreateTask)) {
+                NavigationBar(containerColor = AutomationCard, tonalElevation = 0.dp) {
+                    NavigationBarItem(
+                        selected = selectedSection == HomeSection.TASKS,
+                        onClick = { section = HomeSection.TASKS.name; showCreateTask = false },
+                        icon = { Icon(Icons.Default.Assignment, contentDescription = null) },
+                        label = { Text("任务") },
+                    )
+                    NavigationBarItem(
+                        selected = selectedSection == HomeSection.RECORDS,
+                        onClick = { section = HomeSection.RECORDS.name; showCreateTask = false },
+                        icon = { Icon(Icons.Default.History, contentDescription = null) },
+                        label = { Text("记录") },
+                    )
+                    NavigationBarItem(
+                        selected = selectedSection == HomeSection.SETTINGS,
+                        onClick = { section = HomeSection.SETTINGS.name; showCreateTask = false },
+                        icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                        label = { Text("设置") },
+                    )
+                }
             }
         },
     ) { padding ->
@@ -230,7 +277,7 @@ fun AppHomeScreen(
                 initialKeyword = initialKeyword,
                 showCreateTask = showCreateTask,
                 showRemoteTasks = showRemoteTasks,
-                onOpenCreateTask = { showCreateTask = true },
+                onCloseCreateTask = { showCreateTask = false },
             )
 
             HomeSection.RECORDS -> TaskRecordsPage(
@@ -258,7 +305,7 @@ private fun TaskDashboard(
     initialKeyword: String,
     showCreateTask: Boolean,
     showRemoteTasks: Boolean,
-    onOpenCreateTask: () -> Unit,
+    onCloseCreateTask: () -> Unit,
 ) {
     val state by AutomationStore.uiState.collectAsState()
     val licenseState by AuthStore.uiState.collectAsState()
@@ -281,7 +328,10 @@ private fun TaskDashboard(
     var remoteRefreshInFlight by remember { mutableStateOf(false) }
     var remoteRefreshAtMillis by remember { mutableStateOf<Long?>(null) }
     var remoteRefreshMessage by remember { mutableStateOf<String?>(null) }
+    var savedTasks by remember { mutableStateOf<List<TaskDraft>>(emptyList()) }
+    var selectedSavedTaskIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     LaunchedEffect(context) {
+        savedTasks = withContext(Dispatchers.IO) { AutomationStore.loadSavedTasks() }
         presetCatalog = runCatching {
             withContext(Dispatchers.IO) { AuthStore.loadSearchPresets(context) }
         }.getOrElse { builtInCatalog }
@@ -385,6 +435,7 @@ private fun TaskDashboard(
         )
     }.getOrNull()
     val canStart = state.serviceConnected && queries.isNotEmpty() && draftErrors.isEmpty()
+    val canSave = queries.isNotEmpty() && draftErrors.isEmpty()
 
     Column(
         modifier = Modifier
@@ -399,7 +450,36 @@ private fun TaskDashboard(
                 serviceConnected = state.serviceConnected,
                 onOpenSettings = { openAccessibilitySettings(context) },
             )
-            CurrentTaskCard(state = state, showRemoteTasks = showRemoteTasks)
+            TodoTaskCard(
+                tasks = savedTasks,
+                presetCatalog = presetCatalog,
+                selectedTaskIds = selectedSavedTaskIds,
+                serviceConnected = state.serviceConnected,
+                activeState = state,
+                onToggleTask = { taskId ->
+                    selectedSavedTaskIds = if (taskId in selectedSavedTaskIds) {
+                        selectedSavedTaskIds - taskId
+                    } else {
+                        selectedSavedTaskIds + taskId
+                    }
+                },
+                onStartSelected = {
+                    val snapshots = savedTasks
+                        .filter { it.id in selectedSavedTaskIds }
+                        .mapNotNull { saved ->
+                            runCatching {
+                                saved.toSnapshot(
+                                    presets = presetCatalog,
+                                    nowMillis = System.currentTimeMillis(),
+                                )
+                            }.getOrNull()
+                        }
+                    if (snapshots.isNotEmpty()) {
+                        AutomationStore.send(AutomationCommand.StartBatch(snapshots))
+                        selectedSavedTaskIds = emptySet()
+                    }
+                },
+            )
             if (showRemoteTasks && (remoteTasks.isNotEmpty() || licenseState.status != LicenseStatus.NOT_CONFIGURED)) {
                 RemoteTaskCard(
                     tasks = remoteTasks,
@@ -447,12 +527,6 @@ private fun TaskDashboard(
                     },
                 )
             }
-            PrimaryActionButton(
-                label = "新建任务",
-                icon = Icons.Default.Add,
-                onClick = onOpenCreateTask,
-                modifier = Modifier.padding(horizontal = AutomationSpacing.Page),
-            )
             return@Column
         }
 
@@ -460,37 +534,31 @@ private fun TaskDashboard(
             connected = state.serviceConnected,
         )
 
-        Card(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = AutomationSpacing.Page),
-            colors = CardDefaults.cardColors(containerColor = AutomationCard),
-            border = androidx.compose.foundation.BorderStroke(1.dp, AutomationDivider),
-            shape = MaterialTheme.shapes.large,
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Column(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Text("任务配置", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text("任务配置", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                 Text(
-                    "配置搜索词、地区和屏蔽规则。当前默认使用空格安全探测，不发送真实消息。",
+                    "配置搜索词、地区和屏蔽规则。默认使用空格安全探测，不发送真实消息。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 SectionHeader("基础信息")
-                OutlinedTextField(
+                CompactOutlinedTextField(
                     value = taskName,
                     onValueChange = { taskName = it },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(50.dp),
-                    textStyle = MaterialTheme.typography.bodyMedium,
-                    label = { Text("任务名称（可选）", style = MaterialTheme.typography.bodySmall) },
-                    placeholder = { Text("不填则按搜索词+时间自动生成", style = MaterialTheme.typography.bodySmall) },
+                        .height(54.dp),
+                    textStyle = MaterialTheme.typography.bodyLarge,
+                    label = "任务名称（可选）",
+                    placeholder = "不填则按搜索词+时间自动生成",
                     singleLine = true,
                 )
-                OutlinedTextField(
+                CompactOutlinedTextField(
                     value = keyword,
                     onValueChange = { value ->
                         keyword = value
@@ -501,10 +569,10 @@ private fun TaskDashboard(
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(50.dp),
-                    textStyle = MaterialTheme.typography.bodyMedium,
-                    label = { Text("自定义搜索词", style = MaterialTheme.typography.bodySmall) },
-                    placeholder = { Text("输入搜索词，或点击下方预设", style = MaterialTheme.typography.bodySmall) },
+                        .height(54.dp),
+                    textStyle = MaterialTheme.typography.bodyLarge,
+                    label = "自定义搜索词",
+                    placeholder = "输入搜索词，或点击下方预设",
                     singleLine = true,
                 )
                 SectionHeader("搜索条件")
@@ -523,14 +591,14 @@ private fun TaskDashboard(
                         }
                     },
                 )
-                OutlinedTextField(
+                CompactOutlinedTextField(
                     value = region,
                     onValueChange = { region = it },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(50.dp),
-                    textStyle = MaterialTheme.typography.bodyMedium,
-                    label = { Text("地区（可选，例如广东）", style = MaterialTheme.typography.bodySmall) },
+                        .height(54.dp),
+                    textStyle = MaterialTheme.typography.bodyLarge,
+                    label = "地区（可选，例如广东）",
                     singleLine = true,
                 )
                 SectionHeader("筛选条件")
@@ -538,27 +606,27 @@ private fun TaskDashboard(
                     Text("后台地区规则", style = MaterialTheme.typography.labelLarge)
                     @OptIn(ExperimentalLayoutApi::class)
                     FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        verticalArrangement = Arrangement.spacedBy(3.dp),
                     ) {
                         regionCatalog.items.forEach { rule ->
-                            FilterChip(
+                            CompactPresetChip(
                                 selected = region == rule.prefix,
                                 onClick = { region = rule.prefix },
-                                label = { Text(rule.name) },
+                                label = rule.name,
                             )
                         }
                     }
                 }
-                OutlinedTextField(
+                CompactOutlinedTextField(
                     value = blockedKeywords,
                     onValueChange = { blockedKeywords = it },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(50.dp),
-                    textStyle = MaterialTheme.typography.bodyMedium,
-                    label = { Text("屏蔽关键词（逗号分隔）", style = MaterialTheme.typography.bodySmall) },
-                    placeholder = { Text("例如：厂，公司", style = MaterialTheme.typography.bodySmall) },
+                        .height(54.dp),
+                    textStyle = MaterialTheme.typography.bodyLarge,
+                    label = "屏蔽关键词（逗号分隔）",
+                    placeholder = "例如：厂，公司",
                     singleLine = true,
                 )
                 val blockedPresetKeywords = (blockKeywordCatalog.items.map { it.keyword } + listOf("厂", "公司"))
@@ -574,11 +642,11 @@ private fun TaskDashboard(
                         .toSet()
                     @OptIn(ExperimentalLayoutApi::class)
                     FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        verticalArrangement = Arrangement.spacedBy(3.dp),
                     ) {
                         blockedPresetKeywords.forEach { keywordPreset ->
-                            FilterChip(
+                            CompactPresetChip(
                                 selected = keywordPreset in selectedBlocked,
                                 onClick = {
                                     blockedKeywords = if (keywordPreset in selectedBlocked) {
@@ -587,41 +655,83 @@ private fun TaskDashboard(
                                         keywordPreset
                                     }
                                 },
-                                label = { Text(keywordPreset) },
+                                label = keywordPreset,
                             )
                         }
                     }
                 }
                 SectionHeader("执行限制")
-                OutlinedTextField(
+                CompactOutlinedTextField(
                     value = maxUsers,
                     onValueChange = { maxUsers = it.filter(Char::isDigit) },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(50.dp),
-                    textStyle = MaterialTheme.typography.bodyMedium,
-                    label = { Text("最多处理用户数", style = MaterialTheme.typography.bodySmall) },
+                        .height(54.dp),
+                    textStyle = MaterialTheme.typography.bodyLarge,
+                    label = "最多处理用户数",
                     singleLine = true,
                 )
                 if (draftErrors.isNotEmpty()) {
                     Text(draftErrors.first(), color = MaterialTheme.colorScheme.error)
                 }
-                Button(
-                    onClick = {
-                        AutomationStore.send(
-                            AutomationCommand.Start(
-                                keyword = queries.firstOrNull()?.query.orEmpty(),
-                                safetyProbe = true,
-                                taskSnapshot = taskSnapshot,
-                            ),
-                        )
-                    },
-                    enabled = canStart,
+                Row(
                     modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text(if (state.phase == AutomationPhase.IDLE) "开始任务" else "启动新的任务")
+                    OutlinedButton(
+                        onClick = {
+                            val reusableTask = taskSnapshot?.let { snapshot ->
+                                draft.copy(
+                                    id = java.util.UUID.randomUUID().toString(),
+                                    name = snapshot.taskName,
+                                )
+                            } ?: return@OutlinedButton
+                            scope.launch {
+                                val stored = withContext(Dispatchers.IO) {
+                                    AutomationStore.saveSavedTask(reusableTask)
+                                }
+                                savedTasks = withContext(Dispatchers.IO) { AutomationStore.loadSavedTasks() }
+                                selectedSavedTaskIds = selectedSavedTaskIds - stored.id
+                                AutomationStore.clearTaskDraft()
+                                // Saving is a completed form action. Start the next new-task
+                                // form clean so the operator cannot accidentally save the same
+                                // configuration again while preparing the next batch item.
+                                taskName = ""
+                                keyword = ""
+                                region = ""
+                                blockedKeywords = ""
+                                maxUsers = TaskDraft.DEFAULT_MAX_USERS.toString()
+                                selectedPresetIds = emptySet()
+                                onCloseCreateTask()
+                            }
+                        },
+                        enabled = canSave,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(52.dp),
+                        shape = RoundedCornerShape(26.dp),
+                    ) {
+                        Text("保存")
+                    }
+                    Button(
+                        onClick = {
+                            AutomationStore.send(
+                                AutomationCommand.Start(
+                                    keyword = queries.firstOrNull()?.query.orEmpty(),
+                                    safetyProbe = true,
+                                    taskSnapshot = taskSnapshot,
+                                ),
+                            )
+                        },
+                        enabled = canStart,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(52.dp),
+                        shape = RoundedCornerShape(26.dp),
+                    ) {
+                        Text("立即开始")
+                    }
                 }
-            }
         }
     }
 }
@@ -730,6 +840,51 @@ private fun RemoteTask.toTaskSnapshot(): com.example.douyinautomation.automation
 }
 
 @Composable
+private fun CompactOutlinedTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier,
+    textStyle: TextStyle,
+    label: String,
+    placeholder: String? = null,
+    singleLine: Boolean,
+    visualTransformation: VisualTransformation = VisualTransformation.None,
+) {
+    Column(modifier = modifier.padding(top = 4.dp)) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            if (value.isBlank() && placeholder != null) {
+                Text(
+                    placeholder,
+                    style = textStyle,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+                    maxLines = if (singleLine) 1 else Int.MAX_VALUE,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                modifier = Modifier.fillMaxWidth(),
+                textStyle = textStyle.copy(color = MaterialTheme.colorScheme.onSurface),
+                singleLine = singleLine,
+                visualTransformation = visualTransformation,
+            )
+        }
+        HorizontalDivider(color = AutomationDivider, thickness = 1.dp)
+    }
+}
+
+@Composable
 private fun PresetChips(
     presets: List<SearchPreset>,
     selectedIds: Set<String>,
@@ -737,15 +892,50 @@ private fun PresetChips(
 ) {
     @OptIn(ExperimentalLayoutApi::class)
     FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+        // Keep presets in a natural flow instead of forcing a two-column grid.
+        // The small gap lets several short presets share a line while still
+        // wrapping safely on narrower devices.
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         presets.forEach { preset ->
-            FilterChip(
+            CompactPresetChip(
                 selected = preset.id in selectedIds,
                 onClick = { onToggle(preset.id) },
-                label = { Text(preset.label) },
+                label = preset.label,
             )
+        }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalMaterial3Api::class)
+private fun CompactPresetChip(
+    modifier: Modifier = Modifier,
+    selected: Boolean,
+    onClick: () -> Unit,
+    label: String,
+    shape: Shape = RoundedCornerShape(18.dp),
+) {
+    val borderColor = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else Color.Transparent
+    CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp.Unspecified) {
+        Surface(
+                modifier = modifier
+                    .height(30.dp)
+                    .clickable(onClick = onClick),
+            shape = shape,
+            color = AutomationNeutralSurface,
+            contentColor = MaterialTheme.colorScheme.onSurface,
+            border = androidx.compose.foundation.BorderStroke(1.dp, borderColor),
+        ) {
+            Box(
+                modifier = Modifier
+                    .padding(horizontal = 2.dp)
+                    .fillMaxHeight(),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(label, style = MaterialTheme.typography.labelMedium)
+            }
         }
     }
 }
@@ -754,43 +944,25 @@ private fun PresetChips(
 private fun ServiceStatusBanner(
     connected: Boolean,
 ) {
-    Card(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = AutomationSpacing.Page),
-        colors = CardDefaults.cardColors(
-            containerColor = if (connected) {
-                AutomationSuccessSurface
-            } else {
-                AutomationErrorSurface
-            },
-            contentColor = MaterialTheme.colorScheme.onSurface,
-        ),
-        shape = MaterialTheme.shapes.medium,
-        border = androidx.compose.foundation.BorderStroke(
-            1.dp,
-            if (connected) AutomationSuccess.copy(alpha = 0.24f) else AutomationError.copy(alpha = 0.24f),
-        ),
+            .padding(horizontal = AutomationSpacing.Page, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(7.dp),
-            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-        ) {
-            Icon(
-                if (connected) Icons.Default.CheckCircle else Icons.Default.Warning,
-                contentDescription = null,
-                modifier = Modifier.height(18.dp),
-                tint = if (connected) AutomationSuccess else AutomationWarning,
-            )
-            Text(
-                if (connected) "自动化服务正常" else "自动化服务未开启",
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.SemiBold,
-            )
-        }
+        Icon(
+            if (connected) Icons.Default.CheckCircle else Icons.Default.Warning,
+            contentDescription = null,
+            modifier = Modifier.height(17.dp),
+            tint = if (connected) AutomationSuccess else AutomationWarning,
+        )
+        Text(
+            if (connected) "自动化服务正常" else "自动化服务未开启",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontWeight = FontWeight.Medium,
+        )
     }
 }
 
@@ -799,41 +971,33 @@ private fun DashboardHeader(
     serviceConnected: Boolean,
     onOpenSettings: () -> Unit,
 ) {
-    Card(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = AutomationSpacing.Page),
-        colors = CardDefaults.cardColors(containerColor = AutomationBlue),
-        shape = MaterialTheme.shapes.large,
+            .padding(horizontal = AutomationSpacing.Page, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+        Text("自动化工作台", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+        Text(
+            "搜索、筛选与安全探测",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
         ) {
-            Text("自动化工作台", style = MaterialTheme.typography.headlineSmall, color = Color.White)
-            Text(
-                "把搜索、筛选与安全探测集中在一个清晰的执行面板",
-                style = MaterialTheme.typography.bodyMedium,
-                color = Color.White.copy(alpha = 0.82f),
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-            ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Icon(Icons.Default.Accessibility, contentDescription = null, tint = Color.White)
-                    Text(
-                        if (serviceConnected) "设备已就绪" else "需要开启无障碍",
-                        color = Color.White,
-                        style = MaterialTheme.typography.labelLarge,
-                    )
-                }
-                if (!serviceConnected) {
-                    TextButton(onClick = onOpenSettings) {
-                        Text("去开启", color = Color.White)
-                    }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Icon(Icons.Default.Accessibility, contentDescription = null, modifier = Modifier.height(18.dp), tint = if (serviceConnected) AutomationSuccess else AutomationWarning)
+                Text(
+                    if (serviceConnected) "设备已就绪" else "需要开启无障碍",
+                    style = MaterialTheme.typography.labelLarge,
+                )
+            }
+            if (!serviceConnected) {
+                TextButton(onClick = onOpenSettings, contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)) {
+                    Text("去开启")
                 }
             }
         }
@@ -849,9 +1013,11 @@ private fun PrimaryActionButton(
 ) {
     Button(
         onClick = onClick,
-        modifier = modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.medium,
-        contentPadding = PaddingValues(vertical = 14.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .height(52.dp),
+        shape = RoundedCornerShape(26.dp),
+        contentPadding = PaddingValues(vertical = 10.dp),
     ) {
         Icon(icon, contentDescription = null)
         Spacer(Modifier.padding(horizontal = 4.dp))
@@ -863,11 +1029,134 @@ private fun PrimaryActionButton(
 private fun SectionHeader(title: String) {
     Text(
         text = title,
-        style = MaterialTheme.typography.labelLarge,
-        color = AutomationBlueDark,
+        style = MaterialTheme.typography.titleLarge,
+        color = MaterialTheme.colorScheme.onSurface,
         fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.padding(top = 4.dp),
+        modifier = Modifier.padding(top = 14.dp, bottom = 2.dp),
     )
+}
+
+@Composable
+private fun TodoTaskCard(
+    tasks: List<TaskDraft>,
+    presetCatalog: SearchPresetCatalog,
+    selectedTaskIds: Set<String>,
+    serviceConnected: Boolean,
+    activeState: com.example.douyinautomation.automation.AutomationUiState,
+    onToggleTask: (String) -> Unit,
+    onStartSelected: () -> Unit,
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = AutomationSpacing.Page),
+        colors = CardDefaults.cardColors(containerColor = AutomationCard),
+        border = androidx.compose.foundation.BorderStroke(1.dp, AutomationDivider),
+        shape = MaterialTheme.shapes.large,
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("待办任务", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    if (selectedTaskIds.isEmpty()) "可多选" else "已选 ${selectedTaskIds.size} 个",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (isTaskActivePhase(activeState.phase)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(AutomationBlueSurface, MaterialTheme.shapes.small)
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("正在执行", style = MaterialTheme.typography.labelMedium, color = AutomationBlueDark)
+                        Text(
+                            activeState.taskName ?: "当前任务",
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Text(
+                        "${activeState.taskHandledUserCount} 已处理",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = AutomationBlueDark,
+                    )
+                }
+            }
+            if (tasks.isEmpty()) {
+                EmptyState(
+                    title = "暂无待办任务",
+                    detail = "保存任务后，可在这里勾选多个任务并按顺序执行。",
+                )
+            } else {
+                tasks.forEach { task ->
+                    val taskLabel = task.name.trim().ifBlank { "未命名任务" }
+                    val query = task.customKeywords.firstOrNull { it.isNotBlank() }
+                        ?: task.presetIds.asSequence()
+                            .mapNotNull { id -> presetCatalog.items.firstOrNull { it.id == id }?.keyword }
+                            .firstOrNull { it.isNotBlank() }
+                        ?: "未设置搜索词"
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(MaterialTheme.shapes.small)
+                            .clickable(enabled = !isTaskActivePhase(activeState.phase)) {
+                                onToggleTask(task.id)
+                            }
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(
+                            checked = task.id in selectedTaskIds,
+                            onCheckedChange = { onToggleTask(task.id) },
+                            enabled = !isTaskActivePhase(activeState.phase),
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                taskLabel,
+                                style = MaterialTheme.typography.bodyLarge,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                buildString {
+                                    append(query)
+                                    task.region?.takeIf(String::isNotBlank)?.let { append(" · ").append(it) }
+                                    append(" · 上限 ").append(task.maxUsers)
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+                Button(
+                    onClick = onStartSelected,
+                    enabled = serviceConnected && selectedTaskIds.isNotEmpty() && !isTaskActivePhase(activeState.phase),
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(22.dp),
+                ) {
+                    Icon(Icons.Default.PlayArrow, contentDescription = null)
+                    Spacer(Modifier.width(4.dp))
+                    Text("开始选中任务")
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -1606,12 +1895,13 @@ private fun SettingsPage(
                         color = MaterialTheme.colorScheme.primary,
                     )
                 }
-                OutlinedTextField(
+                CompactOutlinedTextField(
                     value = endpoint,
                     onValueChange = { endpoint = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("后端地址（HTTPS）") },
-                    placeholder = { Text("例如 https://api.example.com") },
+                    modifier = Modifier.fillMaxWidth().height(54.dp),
+                    textStyle = MaterialTheme.typography.bodyLarge,
+                    label = "后端地址（HTTPS）",
+                    placeholder = "例如 https://api.example.com",
                     singleLine = true,
                 )
                 Text(
@@ -1619,20 +1909,22 @@ private fun SettingsPage(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                OutlinedTextField(
+                CompactOutlinedTextField(
                     value = username,
                     onValueChange = { username = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("后台用户名") },
+                    modifier = Modifier.fillMaxWidth().height(54.dp),
+                    textStyle = MaterialTheme.typography.bodyLarge,
+                    label = "后台用户名",
                     singleLine = true,
                 )
-                OutlinedTextField(
+                CompactOutlinedTextField(
                     value = password,
                     onValueChange = { password = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("后台密码") },
-                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth().height(54.dp),
+                    textStyle = MaterialTheme.typography.bodyLarge,
+                    label = "后台密码",
                     singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
                 )
                 Button(
                     enabled = !loginBusy,
@@ -1679,19 +1971,21 @@ private fun SettingsPage(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                OutlinedTextField(
+                CompactOutlinedTextField(
                     value = licenseToken,
                     onValueChange = { licenseToken = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("授权 Token") },
-                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth().height(54.dp),
+                    textStyle = MaterialTheme.typography.bodyLarge,
+                    label = "授权 Token",
                     singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
                 )
-                OutlinedTextField(
+                CompactOutlinedTextField(
                     value = deviceId,
                     onValueChange = { deviceId = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("设备标识（默认 Android ID）") },
+                    modifier = Modifier.fillMaxWidth().height(54.dp),
+                    textStyle = MaterialTheme.typography.bodyLarge,
+                    label = "设备标识（默认 Android ID）",
                     singleLine = true,
                 )
                 Button(

@@ -35,6 +35,10 @@ sealed interface AutomationCommand {
         /** Optional backend progress fetched immediately before a remote task is resumed. */
         val remoteResume: RemoteTaskResume? = null,
     ) : AutomationCommand
+    /** Runs a frozen list of local task snapshots sequentially. */
+    data class StartBatch(
+        val tasks: List<TaskSnapshot>,
+    ) : AutomationCommand
     /** Explicitly sends one operator-provided message on the currently verified chat page. */
     data class SendMessage(val message: String) : AutomationCommand
     /** Explicitly resumes the last private checkpoint after the operator reviews the screen. */
@@ -274,6 +278,46 @@ object AutomationStore {
     /** Persist the last task configuration so an operator can resume setup after app recreation. */
     fun loadTaskDraft(): TaskDraft? = synchronized(recordLock) {
         decodeTaskDraft(recordPreferences?.getString(TASK_DRAFT_KEY, null))
+    }
+
+    /** Load the reusable local task definitions shown in the task-page todo list. */
+    fun loadSavedTasks(): List<TaskDraft> = synchronized(recordLock) {
+        decodeTaskDrafts(recordPreferences?.getString(SAVED_TASKS_KEY, null))
+    }
+
+    /** Persist one reusable task definition and return the stored copy with a stable id. */
+    fun saveSavedTask(draft: TaskDraft): TaskDraft {
+        val stored = draft.copy(
+            id = draft.id.takeIf { it.isNotBlank() && it != "preview" && it != "draft" }
+                ?: UUID.randomUUID().toString(),
+        )
+        synchronized(recordLock) {
+            val tasks = decodeTaskDrafts(recordPreferences?.getString(SAVED_TASKS_KEY, null))
+                .filterNot { it.id == stored.id }
+                .plus(stored)
+                .takeLast(MAX_SAVED_TASKS)
+            persistSavedTasksLocked(tasks)
+        }
+        return stored
+    }
+
+    /**
+     * Replaces the local reusable-task list. This is intentionally small and synchronous so a
+     * debug-device fixture can be installed before Compose loads the task dashboard. Normal user
+     * flows should continue to use [saveSavedTask] and [deleteSavedTask].
+     */
+    fun replaceSavedTasks(drafts: List<TaskDraft>) {
+        synchronized(recordLock) {
+            persistSavedTasksLocked(drafts.takeLast(MAX_SAVED_TASKS))
+        }
+    }
+
+    fun deleteSavedTask(taskId: String) {
+        synchronized(recordLock) {
+            val tasks = decodeTaskDrafts(recordPreferences?.getString(SAVED_TASKS_KEY, null))
+                .filterNot { it.id == taskId }
+            persistSavedTasksLocked(tasks)
+        }
     }
 
     /**
@@ -895,6 +939,23 @@ object AutomationStore {
         )
     }.getOrNull()
 
+    private fun decodeTaskDrafts(raw: String?): List<TaskDraft> = runCatching {
+        if (raw.isNullOrBlank()) return emptyList()
+        val json = JSONArray(raw)
+        buildList(minOf(json.length(), MAX_SAVED_TASKS)) {
+            val start = (json.length() - MAX_SAVED_TASKS).coerceAtLeast(0)
+            for (index in start until json.length()) {
+                decodeTaskDraft(json.optJSONObject(index)?.toString())?.let(::add)
+            }
+        }
+    }.getOrDefault(emptyList())
+
+    private fun persistSavedTasksLocked(tasks: List<TaskDraft>) {
+        recordPreferences?.edit()
+            ?.putString(SAVED_TASKS_KEY, JSONArray(tasks.map { encodeTaskDraft(it) }).toString())
+            ?.apply()
+    }
+
     private fun TaskSnapshot.toJson(): JSONObject = JSONObject().apply {
         put("task_id", taskId)
         put("task_name", taskName)
@@ -1148,6 +1209,7 @@ object AutomationStore {
         phase: AutomationPhase,
         error: String? = null,
         awaitingManualHandoff: Boolean = false,
+        openRecords: Boolean = true,
     ) {
         val historySnapshot = synchronized(recordLock) {
             val taskId = currentTaskId
@@ -1179,7 +1241,7 @@ object AutomationStore {
         phase.toRemoteTaskStatus()?.let { status ->
             syncRemoteStatus(status, errorCode = if (phase == AutomationPhase.FAILED) "LOCAL_AUTOMATION_FAILED" else null, errorMessage = error)
         }
-        if (phase in TERMINAL_PHASES) openRecordsTab()
+        if (openRecords && phase in TERMINAL_PHASES) openRecordsTab()
     }
 
     private fun AutomationPhase.toRemoteTaskStatus(): Int? = when (this) {
@@ -1227,11 +1289,12 @@ object AutomationStore {
         _uiState.update { it.copy(lastOcrText = text.take(MAX_OCR_PREVIEW)) }
     }
 
-    fun publishFailure(reason: String) {
+    fun publishFailure(reason: String, openRecords: Boolean = true) {
         publishPhase(
             phase = AutomationPhase.FAILED,
             error = reason,
             awaitingManualHandoff = false,
+            openRecords = openRecords,
         )
     }
 
@@ -1250,6 +1313,7 @@ object AutomationStore {
 
     private fun AutomationCommand.name(): String = when (this) {
         is AutomationCommand.Start -> "start"
+        is AutomationCommand.StartBatch -> "start_batch"
         is AutomationCommand.SendMessage -> "send_message"
         AutomationCommand.ResumeSavedTask -> "resume_saved_task"
         AutomationCommand.Pause -> "pause"
@@ -1266,8 +1330,10 @@ object AutomationStore {
     private const val TASK_HISTORY_KEY = "history"
     private const val TASK_CHECKPOINT_KEY = "checkpoint"
     private const val TASK_DRAFT_KEY = "draft"
+    private const val SAVED_TASKS_KEY = "saved_tasks"
     private const val MAX_TASK_RECORDS = 2_000
     private const val MAX_TASK_HISTORY = 100
+    private const val MAX_SAVED_TASKS = 100
     private const val RECORDS_OPEN_THROTTLE_MS = 1_500L
     private val TERMINAL_PHASES = setOf(
         AutomationPhase.COMPLETED_TASK,

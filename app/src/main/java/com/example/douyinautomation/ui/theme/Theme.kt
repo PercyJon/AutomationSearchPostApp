@@ -33,11 +33,14 @@ private val AutomationColorScheme = lightColorScheme(
 private val AutomationTypography = Typography().run {
     copy(
         displaySmall = displaySmall.copy(fontWeight = FontWeight.SemiBold),
-        headlineSmall = headlineSmall.copy(fontWeight = FontWeight.SemiBold, fontSize = 24.sp),
-        titleLarge = titleLarge.copy(fontWeight = FontWeight.SemiBold),
-        titleMedium = titleMedium.copy(fontWeight = FontWeight.SemiBold),
+        headlineSmall = headlineSmall.copy(fontWeight = FontWeight.SemiBold, fontSize = 22.sp),
+        titleLarge = titleLarge.copy(fontWeight = FontWeight.SemiBold, fontSize = 20.sp),
+        titleMedium = titleMedium.copy(fontWeight = FontWeight.SemiBold, fontSize = 17.sp),
         bodyLarge = bodyLarge.copy(fontSize = 16.sp),
-        labelLarge = labelLarge.copy(fontWeight = FontWeight.Medium),
+        bodyMedium = bodyMedium.copy(fontSize = 14.sp),
+        bodySmall = bodySmall.copy(fontSize = 13.sp),
+        labelLarge = labelLarge.copy(fontWeight = FontWeight.Medium, fontSize = 14.sp),
+        labelMedium = labelMedium.copy(fontSize = 12.sp),
     )
 }
 

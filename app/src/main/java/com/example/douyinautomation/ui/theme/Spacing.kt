@@ -4,8 +4,8 @@ import androidx.compose.ui.unit.dp
 
 object AutomationSpacing {
     val Page = 16.dp
-    val Section = 24.dp
-    val Card = 16.dp
-    val Compact = 8.dp
-    val Content = 12.dp
+    val Section = 20.dp
+    val Card = 14.dp
+    val Compact = 6.dp
+    val Content = 8.dp
 }
