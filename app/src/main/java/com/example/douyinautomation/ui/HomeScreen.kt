@@ -803,10 +803,17 @@ private fun HomeDashboardContent(
                         .fillMaxWidth()
                         .padding(horizontal = 18.dp, vertical = 14.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
+                    verticalAlignment = Alignment.Top,
                 ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("总览", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelLarge)
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            "总览",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Normal,
+                        )
                         OverviewMetric(
                             value = totalTasks.toString(),
                             label = "个任务已运行",
@@ -832,8 +839,8 @@ private fun HomeDashboardContent(
                             CircularProgressIndicator(
                                 progress = completion,
                                 modifier = Modifier
-                                    .height(82.dp)
-                                    .width(82.dp),
+                                    .height(64.dp)
+                                    .width(64.dp),
                                 color = AutomationBlue,
                                 trackColor = AutomationBlueLight,
                                 strokeWidth = 5.dp,
@@ -1353,64 +1360,62 @@ private fun TodoTaskCard(
                             .mapNotNull { id -> presetCatalog.items.firstOrNull { it.id == id }?.keyword }
                             .firstOrNull { it.isNotBlank() }
                         ?: "未设置搜索词"
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(AutomationBlueSurface)
-                            .clickable(enabled = !isTaskActivePhase(activeState.phase)) {
-                                onToggleTask(task.id)
-                            }
-                            .padding(horizontal = 8.dp, vertical = 7.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Checkbox(
-                            checked = task.id in selectedTaskIds,
-                            onCheckedChange = { onToggleTask(task.id) },
-                            enabled = !isTaskActivePhase(activeState.phase),
-                        )
-                        Box(
-                            modifier = Modifier
-                                .height(42.dp)
-                                .width(4.dp)
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(AutomationBlue),
-                        )
-                        Column(
-                            modifier = Modifier
-                                .padding(start = 10.dp)
-                                .weight(1f),
-                        ) {
-                            Text(
-                                taskLabel,
-                                style = MaterialTheme.typography.bodyLarge,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Text(
-                                buildString {
-                                    append(query)
-                                    task.region?.takeIf(String::isNotBlank)?.let { append(" · ").append(it) }
-                                    append(" · 上限 ").append(task.maxUsers)
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(AutomationBlueSurface)
+                        .clickable(enabled = !isTaskActivePhase(activeState.phase)) {
+                            onToggleTask(task.id)
                         }
-                    }
-                }
-                Button(
-                    onClick = onStartSelected,
-                    enabled = serviceConnected && selectedTaskIds.isNotEmpty() && !isTaskActivePhase(activeState.phase),
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(22.dp),
+                        .padding(horizontal = 8.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(Icons.Default.PlayArrow, contentDescription = null)
-                    Spacer(Modifier.width(4.dp))
-                    Text("开始选中任务")
+                    Box(
+                        modifier = Modifier
+                            .height(42.dp)
+                            .width(4.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(AutomationBlue),
+                    )
+                    Column(
+                        modifier = Modifier
+                            .padding(start = 10.dp)
+                            .weight(1f),
+                    ) {
+                        Text(
+                            taskLabel,
+                            style = MaterialTheme.typography.bodyLarge,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            buildString {
+                                append(query)
+                                task.region?.takeIf(String::isNotBlank)?.let { append(" · ").append(it) }
+                                append(" · 上限 ").append(task.maxUsers)
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Checkbox(
+                        checked = task.id in selectedTaskIds,
+                        onCheckedChange = { onToggleTask(task.id) },
+                        enabled = !isTaskActivePhase(activeState.phase),
+                    )
                 }
+            }
+            Button(
+                onClick = onStartSelected,
+                enabled = serviceConnected && selectedTaskIds.isNotEmpty() && !isTaskActivePhase(activeState.phase),
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(22.dp),
+            ) {
+                Text("开始任务")
+            }
         }
     }
 }
