@@ -60,7 +60,7 @@ object CommentCandidateExtractor {
                 CommentKeywordMatcher.matches(fragment.text, terms)
         }
         val candidates = commentFragments.mapNotNull { comment ->
-            val author = findAuthor(comment, fragments)
+            val author = findAuthor(comment, fragments, context.screenSize.width)
             val authorText = author?.text?.trim()?.takeIf(::isLikelyAuthorText)
             val identitySeed = authorText ?: "${comment.text}:${comment.bounds.centerX}:${comment.bounds.centerY}"
             val key = "comment-user:${IdentityTextCanonicalizer.normalize(identitySeed)}"
@@ -108,12 +108,15 @@ object CommentCandidateExtractor {
     private fun findAuthor(
         comment: CommentTextFragment,
         fragments: List<CommentTextFragment>,
+        screenWidth: Int,
     ): CommentTextFragment? {
         val maxGap = (comment.bounds.height * MAX_AUTHOR_GAP_MULTIPLIER).coerceAtLeast(96f)
+        val maxColumnOffset = screenWidth * MAX_AUTHOR_COLUMN_OFFSET_RATIO
         return fragments.asSequence()
             .filter { it !== comment }
             .filter { it.bounds.bottom <= comment.bounds.top }
             .filter { (comment.bounds.top - it.bounds.bottom) <= maxGap }
+            .filter { kotlin.math.abs(it.bounds.left - comment.bounds.left) <= maxColumnOffset }
             .filter { isLikelyAuthorText(it.text) }
             .sortedWith(
                 compareBy< CommentTextFragment> { comment.bounds.top - it.bounds.bottom }
@@ -167,6 +170,8 @@ object CommentCandidateExtractor {
         "用户",
         "综合",
     )
+
+    private const val MAX_AUTHOR_COLUMN_OFFSET_RATIO = 0.22f
 }
 
 data class CommentSurfaceDetection(

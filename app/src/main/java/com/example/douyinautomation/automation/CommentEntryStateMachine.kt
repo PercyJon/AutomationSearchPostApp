@@ -25,6 +25,7 @@ data class CommentEntryObservation(
     val hasFirstVideoTarget: Boolean = false,
     val hasVideoSurface: Boolean = false,
     val hasCommentEntry: Boolean = false,
+    val commentButton: NodeSnapshot? = null,
     val commentSurface: CommentSurfaceDetection? = null,
     val riskReason: String? = null,
 ) {
@@ -131,13 +132,16 @@ class CommentEntryStateMachine {
  */
 object CommentEntrySignalDetector {
     private val videoMarkers = listOf("视频", "播放", "暂停", "作品")
-    private val commentMarkers = listOf("评论", "条评论", "写评论")
 
     fun observe(context: ScreenContext): CommentEntryObservation {
         val page = PageDetector().detect(context).kind
         val normalizedTexts = (context.nodeText() + context.ocrText()).map(TextNormalizer::normalize)
         val hasVideoMarker = normalizedTexts.any { text -> videoMarkers.any(text::contains) }
-        val hasCommentEntry = normalizedTexts.any { text -> commentMarkers.any(text::contains) }
+        val commentButton = VideoCommentButtonDetector.find(context)
+        // Comment text in a caption is not permission to click. The state machine is only told
+        // that a comment entry exists when the semantic/structural speech-bubble selector found
+        // a clickable node in the video action rail.
+        val hasCommentEntry = commentButton != null
         val hasFirstVideoTarget = page == PageKind.USER_PROFILE && hasVideoMarker &&
             context.nodes.any { node ->
                 val normalizedClass = TextNormalizer.normalize(node.className)
@@ -156,6 +160,7 @@ object CommentEntrySignalDetector {
             hasFirstVideoTarget = hasFirstVideoTarget,
             hasVideoSurface = hasVideoSurface,
             hasCommentEntry = hasCommentEntry,
+            commentButton = commentButton,
             commentSurface = CommentSurfaceDetector.detect(context),
         )
     }
