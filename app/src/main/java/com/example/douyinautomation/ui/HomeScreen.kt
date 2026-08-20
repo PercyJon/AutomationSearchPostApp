@@ -801,24 +801,50 @@ private fun HomeDashboardContent(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 18.dp, vertical = 18.dp),
+                        .padding(horizontal = 18.dp, vertical = 14.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text("总览", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelLarge)
-                        Text("$totalTasks 个任务已运行", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                        Text("$handledCustomers 个客户已发送", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    }
-                    Box(contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(
-                            progress = completion,
-                            modifier = Modifier.height(92.dp),
-                            color = AutomationBlue,
-                            trackColor = AutomationBlueLight,
-                            strokeWidth = 9.dp,
+                        OverviewMetric(
+                            value = totalTasks.toString(),
+                            label = "个任务已运行",
+                            valueColor = AutomationBlue,
                         )
-                        Text("${(completion * 100).toInt()}%", color = AutomationBlue, fontWeight = FontWeight.Bold)
+                        OverviewMetric(
+                            value = handledCustomers.toString(),
+                            label = "个客户已发送",
+                            valueColor = AutomationSuccess,
+                        )
+                    }
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            "任务进展",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = FontWeight.Normal,
+                        )
+                        Box(contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(
+                                progress = completion,
+                                modifier = Modifier
+                                    .height(82.dp)
+                                    .width(82.dp),
+                                color = AutomationBlue,
+                                trackColor = AutomationBlueLight,
+                                strokeWidth = 5.dp,
+                            )
+                            Text(
+                                "${(completion * 100).toInt()}%",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = AutomationBlue,
+                                fontWeight = FontWeight.Normal,
+                            )
+                        }
                     }
                 }
             }
@@ -901,6 +927,31 @@ private fun HomeDashboardContent(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun OverviewMetric(
+    value: String,
+    label: String,
+    valueColor: Color,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            value,
+            style = MaterialTheme.typography.titleMedium,
+            color = valueColor,
+            fontWeight = FontWeight.Bold,
+        )
+        Text(
+            label,
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+            fontWeight = FontWeight.Normal,
+        )
     }
 }
 
@@ -1318,11 +1369,12 @@ private fun TodoTaskCard(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(MaterialTheme.shapes.small)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(AutomationBlueSurface)
                             .clickable(enabled = !isTaskActivePhase(activeState.phase)) {
                                 onToggleTask(task.id)
                             }
-                            .padding(vertical = 2.dp),
+                            .padding(horizontal = 8.dp, vertical = 7.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Checkbox(
@@ -1330,7 +1382,18 @@ private fun TodoTaskCard(
                             onCheckedChange = { onToggleTask(task.id) },
                             enabled = !isTaskActivePhase(activeState.phase),
                         )
-                        Column(modifier = Modifier.weight(1f)) {
+                        Box(
+                            modifier = Modifier
+                                .height(42.dp)
+                                .width(4.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(AutomationBlue),
+                        )
+                        Column(
+                            modifier = Modifier
+                                .padding(start = 10.dp)
+                                .weight(1f),
+                        ) {
                             Text(
                                 taskLabel,
                                 style = MaterialTheme.typography.bodyLarge,
@@ -1349,6 +1412,12 @@ private fun TodoTaskCard(
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
+                        Icon(
+                            Icons.Default.ListAlt,
+                            contentDescription = null,
+                            tint = AutomationBlue,
+                            modifier = Modifier.padding(start = 6.dp),
+                        )
                     }
                 }
                 Button(
