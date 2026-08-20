@@ -40,9 +40,15 @@ data class TaskDraft(
     val maxUsers: Int = DEFAULT_MAX_USERS,
     val messageTemplate: String? = null,
     val executionMode: TaskExecutionMode = TaskExecutionMode.SAFE_BLANK_PROBE,
+    /** Additive task discriminator; existing drafts remain profile-private-message tasks. */
+    val taskType: AutomationTaskType = AutomationTaskType.PROFILE_PRIVATE_MESSAGE,
+    /** Only used when [taskType] is COMMENT_PRIVATE_MESSAGE. */
+    val commentConfig: CommentPrivateMessageConfig? = null,
 ) {
     fun validationErrors(): List<String> = buildList {
-        if (presetIds.isEmpty() && customKeywords.none { it.isNotBlank() }) {
+        val usesCurrentProfile = taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE &&
+            commentConfig?.entryMode == CommentPrivateMessageEntryMode.CURRENT_PROFILE
+        if (!usesCurrentProfile && presetIds.isEmpty() && customKeywords.none { it.isNotBlank() }) {
             add("至少选择一个预设搜索词或填写自定义搜索词")
         }
         if (maxUsers !in 1..MAX_USERS) add("用户数量上限必须在 1-$MAX_USERS 之间")
@@ -50,6 +56,14 @@ data class TaskDraft(
             messageTemplate.isNullOrBlank()
         ) {
             add("真实发送模式需要消息模板")
+        }
+        if (taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE) {
+            val config = commentConfig
+            if (config == null) {
+                add("评论私信任务缺少评论处理配置")
+            } else {
+                addAll(config.validationErrors())
+            }
         }
     }
 
@@ -65,10 +79,14 @@ data class TaskDraft(
             region = region,
             baseKeywords = presetKeywords + customKeywords,
         )
-        require(queries.isNotEmpty()) { "任务没有可执行的搜索词" }
+        val usesCurrentProfile = taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE &&
+            commentConfig?.entryMode == CommentPrivateMessageEntryMode.CURRENT_PROFILE
+        if (!usesCurrentProfile) {
+            require(queries.isNotEmpty()) { "任务没有可执行的搜索词" }
+        }
         val resolvedTaskName = name.trim().ifBlank {
             val time = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.getDefault()).format(Date(nowMillis))
-            "${queries.first().query}-$time"
+            "${queries.firstOrNull()?.query ?: "评论私信"}-$time"
         }
         return TaskSnapshot(
             taskId = id,
@@ -82,6 +100,19 @@ data class TaskDraft(
             messageTemplate = messageTemplate?.trim()?.takeIf { it.isNotEmpty() },
             executionMode = executionMode,
             createdAtMillis = nowMillis,
+            taskType = taskType,
+            commentConfig = commentConfig
+                ?.takeIf { taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE }
+                ?.normalized()
+                ?.let { config ->
+                CommentPrivateMessageSnapshot(
+                    entryMode = config.entryMode,
+                    targetUser = config.targetUser,
+                    matchKeywords = config.matchKeywords,
+                    maxVideos = config.maxVideos,
+                    maxUsersPerVideo = config.maxUsersPerVideo,
+                )
+            },
         )
     }
 
@@ -103,6 +134,9 @@ data class TaskSnapshot(
     val messageTemplate: String?,
     val executionMode: TaskExecutionMode,
     val createdAtMillis: Long,
+    /** Existing snapshots default to the original profile private-message flow. */
+    val taskType: AutomationTaskType = AutomationTaskType.PROFILE_PRIVATE_MESSAGE,
+    val commentConfig: CommentPrivateMessageSnapshot? = null,
 )
 
 /**
@@ -162,6 +196,8 @@ data class TaskHistoryEntry(
     val messageTemplate: String? = null,
     val executionMode: TaskExecutionMode = TaskExecutionMode.SAFE_BLANK_PROBE,
     val errorMessage: String? = null,
+    val taskType: AutomationTaskType = AutomationTaskType.PROFILE_PRIVATE_MESSAGE,
+    val commentConfig: CommentPrivateMessageSnapshot? = null,
 )
 
 /**
@@ -173,7 +209,9 @@ fun TaskHistoryEntry.toRetrySnapshot(
     nowMillis: Long,
 ): TaskSnapshot? {
     val queries = searchQueries.map(String::trim).filter(String::isNotEmpty).distinct()
-    if (queries.isEmpty()) return null
+    val canStartFromCurrentProfile = taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE &&
+        commentConfig?.entryMode == CommentPrivateMessageEntryMode.CURRENT_PROFILE
+    if (queries.isEmpty() && !canStartFromCurrentProfile) return null
     return TaskSnapshot(
         taskId = newTaskId,
         taskName = "$taskName（重试）",
@@ -188,6 +226,8 @@ fun TaskHistoryEntry.toRetrySnapshot(
         messageTemplate = null,
         executionMode = TaskExecutionMode.SAFE_BLANK_PROBE,
         createdAtMillis = nowMillis,
+        taskType = taskType,
+        commentConfig = commentConfig,
     )
 }
 

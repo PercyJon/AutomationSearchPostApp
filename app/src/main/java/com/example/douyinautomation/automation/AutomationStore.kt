@@ -440,6 +440,8 @@ object AutomationStore {
                 messageTemplate = snapshot?.messageTemplate,
                 executionMode = snapshot?.executionMode ?: TaskExecutionMode.SAFE_BLANK_PROBE,
                 errorMessage = null,
+                taskType = snapshot?.taskType ?: AutomationTaskType.PROFILE_PRIVATE_MESSAGE,
+                commentConfig = snapshot?.commentConfig,
             )
             taskHistory = (taskHistory.filterNot { it.taskId == taskId } + historyEntry).takeLast(MAX_TASK_HISTORY)
             persistTaskHistoryLocked()
@@ -919,7 +921,61 @@ object AutomationStore {
         put("max_users", draft.maxUsers)
         put("message_template", draft.messageTemplate ?: JSONObject.NULL)
         put("execution_mode", draft.executionMode.name)
+        put("task_type", draft.taskType.name)
+        put("comment_config", draft.commentConfig?.toJson() ?: JSONObject.NULL)
     }
+
+    private fun CommentPrivateMessageConfig.toJson(): JSONObject = JSONObject().apply {
+        put("entry_mode", entryMode.name)
+        put("target_user", targetUser ?: JSONObject.NULL)
+        put("match_keywords", JSONArray(matchKeywords))
+        put("max_videos", maxVideos)
+        put("max_users_per_video", maxUsersPerVideo)
+    }
+
+    private fun JSONObject.toCommentPrivateMessageConfig(): CommentPrivateMessageConfig? = runCatching {
+        val mode = runCatching {
+            CommentPrivateMessageEntryMode.valueOf(
+                optString("entry_mode", CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE.name),
+            )
+        }.getOrDefault(CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE)
+        CommentPrivateMessageConfig(
+            entryMode = mode,
+            targetUser = optStringOrNull("target_user"),
+            matchKeywords = optJSONArray("match_keywords")?.toStringList().orEmpty(),
+            maxVideos = optInt("max_videos", CommentPrivateMessageConfig.DEFAULT_MAX_VIDEOS),
+            maxUsersPerVideo = optInt(
+                "max_users_per_video",
+                CommentPrivateMessageConfig.DEFAULT_MAX_USERS_PER_VIDEO,
+            ),
+        )
+    }.getOrNull()
+
+    private fun CommentPrivateMessageSnapshot.toJson(): JSONObject = JSONObject().apply {
+        put("entry_mode", entryMode.name)
+        put("target_user", targetUser ?: JSONObject.NULL)
+        put("match_keywords", JSONArray(matchKeywords))
+        put("max_videos", maxVideos)
+        put("max_users_per_video", maxUsersPerVideo)
+    }
+
+    private fun JSONObject.toCommentPrivateMessageSnapshot(): CommentPrivateMessageSnapshot? = runCatching {
+        val mode = runCatching {
+            CommentPrivateMessageEntryMode.valueOf(
+                optString("entry_mode", CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE.name),
+            )
+        }.getOrDefault(CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE)
+        CommentPrivateMessageSnapshot(
+            entryMode = mode,
+            targetUser = optStringOrNull("target_user"),
+            matchKeywords = optJSONArray("match_keywords")?.toStringList().orEmpty(),
+            maxVideos = optInt("max_videos", CommentPrivateMessageConfig.DEFAULT_MAX_VIDEOS),
+            maxUsersPerVideo = optInt(
+                "max_users_per_video",
+                CommentPrivateMessageConfig.DEFAULT_MAX_USERS_PER_VIDEO,
+            ),
+        )
+    }.getOrNull()
 
     private fun decodeTaskDraft(raw: String?): TaskDraft? = runCatching {
         if (raw.isNullOrBlank()) return null
@@ -936,6 +992,10 @@ object AutomationStore {
             executionMode = runCatching {
                 TaskExecutionMode.valueOf(root.optString("execution_mode"))
             }.getOrDefault(TaskExecutionMode.SAFE_BLANK_PROBE),
+            taskType = runCatching {
+                AutomationTaskType.valueOf(root.optString("task_type"))
+            }.getOrDefault(AutomationTaskType.PROFILE_PRIVATE_MESSAGE),
+            commentConfig = root.optJSONObject("comment_config")?.toCommentPrivateMessageConfig(),
         )
     }.getOrNull()
 
@@ -968,6 +1028,8 @@ object AutomationStore {
         put("message_template", messageTemplate ?: JSONObject.NULL)
         put("execution_mode", executionMode.name)
         put("created_at", createdAtMillis)
+        put("task_type", taskType.name)
+        put("comment_config", commentConfig?.toJson() ?: JSONObject.NULL)
     }
 
     private fun decodeCheckpoint(raw: String?): TaskCheckpoint? = runCatching {
@@ -986,6 +1048,10 @@ object AutomationStore {
             messageTemplate = if (snapshotJson.isNull("message_template")) null else snapshotJson.getString("message_template"),
             executionMode = TaskExecutionMode.valueOf(snapshotJson.getString("execution_mode")),
             createdAtMillis = snapshotJson.getLong("created_at"),
+            taskType = runCatching {
+                AutomationTaskType.valueOf(snapshotJson.optString("task_type"))
+            }.getOrDefault(AutomationTaskType.PROFILE_PRIVATE_MESSAGE),
+            commentConfig = snapshotJson.optJSONObject("comment_config")?.toCommentPrivateMessageSnapshot(),
         )
         val queryIndex = root.getInt("query_index")
         if (queryIndex !in snapshot.composedQueries.indices) return null
@@ -1030,6 +1096,8 @@ object AutomationStore {
         put("message_template", messageTemplate ?: JSONObject.NULL)
         put("execution_mode", executionMode.name)
         put("error_message", errorMessage ?: JSONObject.NULL)
+        put("task_type", taskType.name)
+        put("comment_config", commentConfig?.toJson() ?: JSONObject.NULL)
     }
 
     private fun decodeTaskHistory(raw: String?): List<TaskHistoryEntry> {
@@ -1066,6 +1134,10 @@ object AutomationStore {
                                 TaskExecutionMode.valueOf(item.optString("execution_mode"))
                             }.getOrDefault(TaskExecutionMode.SAFE_BLANK_PROBE),
                             errorMessage = item.optStringOrNull("error_message"),
+                            taskType = runCatching {
+                                AutomationTaskType.valueOf(item.optString("task_type"))
+                            }.getOrDefault(AutomationTaskType.PROFILE_PRIVATE_MESSAGE),
+                            commentConfig = item.optJSONObject("comment_config")?.toCommentPrivateMessageSnapshot(),
                         ),
                     )
                 }

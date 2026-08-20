@@ -1838,6 +1838,16 @@ private fun TaskHistoryEntry.toReusableDraft(): TaskDraft = TaskDraft(
     maxUsers = maxUsers,
     messageTemplate = messageTemplate,
     executionMode = executionMode,
+    taskType = taskType,
+    commentConfig = commentConfig?.let { config ->
+        com.example.douyinautomation.automation.CommentPrivateMessageConfig(
+            entryMode = config.entryMode,
+            targetUser = config.targetUser,
+            matchKeywords = config.matchKeywords,
+            maxVideos = config.maxVideos,
+            maxUsersPerVideo = config.maxUsersPerVideo,
+        )
+    },
 )
 
 @Composable
