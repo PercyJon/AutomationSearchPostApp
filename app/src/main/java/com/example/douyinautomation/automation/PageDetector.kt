@@ -38,6 +38,31 @@ class PageDetector {
             )
         }
 
+        // An opened live room exposes a close control in the upper-right and a share/forward
+        // control in the lower-right. It must be exited before the underlying live item is
+        // swiped away; never treat the room as a normal home or profile page.
+        if (LiveRoomSurfaceDetector.isOpenedRoom(context)) {
+            return PageDetection(
+                kind = PageKind.LIVE_ROOM_SESSION,
+                confidence = 0.95f,
+                reasons = listOf("Opened live room close/share control pair"),
+            )
+        }
+
+        // A live-feed item can expose a large “点击进入直播间” prompt. The action layer handles
+        // this page with a vertical swipe and never clicks the prompt.
+        val liveRoomSignals = matchingLiveRoomSignals(context)
+        if (liveRoomSignals.isNotEmpty() || LiveRoomSurfaceDetector.hasEntryPrompt(context)) {
+            val signals = liveRoomSignals.ifEmpty {
+                listOf(Signal("进入直播间", "live-room-structure", fromAccessibility = false))
+            }
+            return PageDetection(
+                kind = PageKind.LIVE_ROOM,
+                confidence = confidence(signals, base = 0.93f),
+                reasons = reasonsFor("Live-room entry prompt", signals),
+            )
+        }
+
         // A direct-message page requires composer evidence. "发私信" on a profile is an entry
         // button and must not be confused with an already-open chat.
         val editableNodes = context.nodes.filter { it.isEditable && it.isVisibleToUser }
@@ -296,6 +321,44 @@ class PageDetector {
             }
         }.distinct()
         return (accessibilitySignals + ocrSignals).distinct()
+    }
+
+    private fun matchingLiveRoomSignals(context: ScreenContext): List<Signal> {
+        val nodeSignals = context.nodes.asSequence()
+            .filter { it.isVisibleToUser && it.bounds.height > 0 }
+            .filter { node ->
+                val bounds = node.normalizedBounds(context.screenSize)
+                node.bounds == ScreenBounds.EMPTY || (bounds.top >= 0.18f && bounds.bottom <= 0.92f)
+            }
+            .flatMap { node ->
+                node.searchableText().asSequence().flatMap { value ->
+                    TextNormalizer.matchingTerms(value, DouyinLabels.liveRoomEntry).map { term ->
+                        Signal(term = term, sourceName = "accessibility", fromAccessibility = true)
+                    }
+                }
+            }
+            .distinct()
+            .toList()
+        val ocrSignals = context.ocrBlocks.asSequence()
+            .filter { block ->
+                block.bounds == ScreenBounds.EMPTY ||
+                    (block.bounds.top >= (context.screenSize.height * 0.18f).toInt() &&
+                        block.bounds.bottom <= (context.screenSize.height * 0.92f).toInt())
+            }
+            .flatMap { block ->
+                TextNormalizer.matchingTerms(block.text, DouyinLabels.liveRoomEntry).map { term ->
+                    Signal(term = term, sourceName = "OCR", fromAccessibility = false)
+                }
+            }
+            .distinct()
+            .toList()
+        val combinedOcr = context.ocrText().joinToString(separator = "")
+        val combinedSignal = if (TextNormalizer.matchesAny(combinedOcr, DouyinLabels.liveRoomEntry)) {
+            listOf(Signal(term = "进入直播间", sourceName = "OCR-combined", fromAccessibility = false))
+        } else {
+            emptyList()
+        }
+        return (nodeSignals + ocrSignals + combinedSignal).distinct()
     }
 
     private fun matchingAccessibilitySignals(context: ScreenContext, terms: Iterable<String>): List<Signal> =

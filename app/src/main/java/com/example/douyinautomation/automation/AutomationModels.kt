@@ -164,6 +164,10 @@ data class ScreenContext(
 enum class PageKind {
     OUTSIDE_TARGET,
     HOME,
+    /** A Douyin live-feed/live-room surface with an entry prompt; never click it. */
+    LIVE_ROOM,
+    /** An opened live room with close/share controls; exit first, then swipe the live item away. */
+    LIVE_ROOM_SESSION,
     SEARCH_ENTRY,
     SEARCH_RESULTS,
     USER_RESULTS,
@@ -270,6 +274,8 @@ object AutomationResumePolicy {
         )
 
         PageKind.OUTSIDE_TARGET,
+        PageKind.LIVE_ROOM,
+        PageKind.LIVE_ROOM_SESSION,
         PageKind.UNKNOWN,
         -> ResumeDecision(
             phase = null,
@@ -360,6 +366,8 @@ object DouyinLabels {
         "inbox",
     )
     val login = listOf("登录", "手机号登录", "log in", "sign in")
+    /** Strong live-feed markers; the generic “直播中” label alone is intentionally excluded. */
+    val liveRoomEntry = listOf("点击进入直播间", "进入直播间", "点击进入直播", "join live room")
     val captchaOrRisk = listOf(
         "验证码",
         "安全验证",

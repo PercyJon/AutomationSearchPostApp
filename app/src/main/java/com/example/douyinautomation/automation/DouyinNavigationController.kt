@@ -191,6 +191,14 @@ class DouyinNavigationController(
             pause("Douyin login is required; complete it manually before retrying")
             return
         }
+        if (detection.kind == PageKind.LIVE_ROOM_SESSION) {
+            exitLiveRoom(context)
+            return
+        }
+        if (detection.kind == PageKind.LIVE_ROOM) {
+            swipeLiveRoomAway()
+            return
+        }
         if (!confirmOcrBackedPage(context, detection)) return
 
         // Comment tasks reuse the already-validated search/profile navigation until a user
@@ -3661,6 +3669,51 @@ class DouyinNavigationController(
         return outcome
     }
 
+    /** Exit an already-open live room before the underlying live item is swiped away. */
+    private suspend fun exitLiveRoom(context: ScreenContext) {
+        val closeButton = LiveRoomSurfaceDetector.findCloseButton(context)
+        val outcome = if (closeButton != null) {
+            withLiveNode(closeButton) { node -> gestures.click(node, closeButton.bounds) }
+        } else if (service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)) {
+            ActionOutcome.success("global_back")
+        } else {
+            ActionOutcome.failure("无法执行返回操作")
+        }
+        logger.info(
+            "live_room_exited",
+            attributes = mapOf("success" to outcome.succeeded, "route" to outcome.route),
+        )
+        if (!outcome.succeeded) {
+            logger.warn("live_room_exit_failed", message = outcome.reason)
+            DebugToast.showForEvent("live_room_exit_failed")
+        } else {
+            DebugToast.showForEvent("live_room_exited")
+        }
+    }
+
+    /** Skip a live-feed item without ever clicking its “进入直播间” prompt. */
+    private suspend fun swipeLiveRoomAway() {
+        val outcome = swipeNormalizedGuarded(
+            startX = 0.86f,
+            startY = 0.84f,
+            endX = 0.86f,
+            endY = 0.22f,
+            durationMs = LIVE_ROOM_SWIPE_DURATION_MS,
+            tag = "live_room_recovery",
+        )
+        logger.info(
+            "live_room_swiped",
+            attributes = mapOf("success" to outcome.succeeded, "route" to outcome.route),
+        )
+        if (!outcome.succeeded) {
+            logger.warn("live_room_swipe_failed", message = outcome.reason)
+            DebugToast.showForEvent("live_room_swipe_failed")
+        } else {
+            DebugToast.showForEvent("live_room_swiped")
+            timeoutRecoveryAttempts = 0
+        }
+    }
+
     private suspend fun swipeNormalizedGuarded(
         startX: Float,
         startY: Float,
@@ -4211,6 +4264,7 @@ class DouyinNavigationController(
         const val USER_PAGE_SWIPE_START_Y = 0.76f
         const val USER_PAGE_SWIPE_END_Y = 0.38f
         const val USER_PAGE_SWIPE_DURATION_MS = 480L
+        const val LIVE_ROOM_SWIPE_DURATION_MS = 460L
         const val USER_RESULTS_TOP_RATIO = 0.14f
         const val USER_ROW_MIN_HEIGHT = 180
         const val USER_ROW_MAX_HEIGHT = 400

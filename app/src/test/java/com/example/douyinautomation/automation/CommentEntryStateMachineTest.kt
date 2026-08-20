@@ -8,6 +8,17 @@ class CommentEntryStateMachineTest {
     private val screen = ScreenSize(1080, 2400)
 
     @Test
+    fun `live room is exited then live item is swiped without opening it`() {
+        val machine = CommentEntryStateMachine()
+
+        val exit = machine.observe(CommentEntryObservation(PageKind.LIVE_ROOM_SESSION))
+        assertEquals(CommentEntryAction.EXIT_LIVE_ROOM, exit.action)
+
+        val swipe = machine.observe(CommentEntryObservation(PageKind.LIVE_ROOM))
+        assertEquals(CommentEntryAction.SWIPE_LIVE_ROOM, swipe.action)
+    }
+
+    @Test
     fun `profile observation opens first video only after structural target is present`() {
         val machine = CommentEntryStateMachine()
 

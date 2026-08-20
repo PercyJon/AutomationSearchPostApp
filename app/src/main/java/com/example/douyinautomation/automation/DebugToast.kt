@@ -52,6 +52,10 @@ object DebugToast {
         "startup_ad_timeout_recovery_wait" -> "调试提示：检测到开屏广告，继续等待后再操作"
         "system_overlay_detected" -> "调试提示：系统提示暂时遮挡，正在等待后重试"
         "transient_live_overlay_detected" -> "调试提示：直播提示暂时遮挡，等待消失后重试"
+        "live_room_exited" -> "调试提示：已退出直播间，准备划走直播内容"
+        "live_room_exit_failed" -> "调试提示：退出直播间失败，正在重试"
+        "live_room_swiped" -> "调试提示：检测到直播内容，已划走并继续"
+        "live_room_swipe_failed" -> "调试提示：直播内容划走失败，正在重试"
         "target_window_unavailable" -> "调试提示：抖音窗口暂不可用，正在等待恢复"
         "node_inspection_failed" -> "调试提示：无障碍节点读取异常"
         "ocr_page_probe_failed",

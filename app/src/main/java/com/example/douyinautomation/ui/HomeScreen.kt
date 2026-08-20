@@ -101,6 +101,9 @@ import com.example.douyinautomation.automation.AutomationPhase
 import com.example.douyinautomation.automation.AutomationStore
 import com.example.douyinautomation.automation.AuthConfig
 import com.example.douyinautomation.automation.AuthStore
+import com.example.douyinautomation.automation.AutomationTaskType
+import com.example.douyinautomation.automation.CommentPrivateMessageConfig
+import com.example.douyinautomation.automation.CommentPrivateMessageEntryMode
 import com.example.douyinautomation.automation.LicenseStatus
 import com.example.douyinautomation.automation.LocalSearchPresetRepository
 import com.example.douyinautomation.automation.QueryComposer
@@ -162,6 +165,7 @@ fun AppHomeScreen(
     var section by rememberSaveable(initialSection) { mutableStateOf(initialSection ?: HomeSection.HOME.name) }
     var detailTaskId by rememberSaveable { mutableStateOf<String?>(null) }
     var showCreateTask by rememberSaveable { mutableStateOf(false) }
+    var showCommentTask by rememberSaveable { mutableStateOf(false) }
     val context = androidx.compose.ui.platform.LocalContext.current
     var showRemoteTasks by remember(context) {
         mutableStateOf(RemoteTaskVisibilityStore.isEnabled(context))
@@ -195,12 +199,13 @@ fun AppHomeScreen(
     Scaffold(
         containerColor = AutomationPage,
         topBar = {
-            if (showCreateTask || selectedSection == HomeSection.RECORDS || selectedSection == HomeSection.SETTINGS || selectedSection == HomeSection.DIAGNOSTICS) {
+            if (showCreateTask || showCommentTask || selectedSection == HomeSection.RECORDS || selectedSection == HomeSection.SETTINGS || selectedSection == HomeSection.DIAGNOSTICS) {
                 TopAppBar(
                 title = {
                     Column {
                         Text(
                             when {
+                                showCommentTask -> "评论私信"
                                 showCreateTask -> "新建任务"
                                 selectedSection == HomeSection.TODO -> "待办"
                                 selectedSection == HomeSection.RECORDS -> "记录"
@@ -224,8 +229,11 @@ fun AppHomeScreen(
                     }
                 },
                 navigationIcon = {
-                    if (showCreateTask) {
-                        IconButton(onClick = { showCreateTask = false }) {
+                    if (showCreateTask || showCommentTask) {
+                        IconButton(onClick = {
+                            showCreateTask = false
+                            showCommentTask = false
+                        }) {
                             Icon(Icons.Default.ArrowBack, contentDescription = "返回首页")
                         }
                     }
@@ -238,7 +246,7 @@ fun AppHomeScreen(
             }
         },
         bottomBar = {
-            if (!showCreateTask) {
+            if (!showCreateTask && !showCommentTask) {
                 NavigationBar(containerColor = AutomationCard, tonalElevation = 0.dp) {
                     NavigationBarItem(
                         selected = selectedSection == HomeSection.HOME,
@@ -269,7 +277,23 @@ fun AppHomeScreen(
         },
     ) { padding ->
         when (selectedSection) {
-            HomeSection.HOME -> TaskDashboard(
+            HomeSection.HOME -> if (showCommentTask) {
+                CommentTaskScreen(
+                    padding = padding,
+                    presetCatalog = remember {
+                        SearchPresetCatalog(
+                            version = LocalSearchPresetRepository.BUILT_IN_VERSION,
+                            items = LocalSearchPresetRepository.BUILT_IN_PRESETS,
+                            updatedAtMillis = 0L,
+                            source = SearchPresetCatalog.Source.BUILT_IN,
+                        )
+                    },
+                    onClose = {
+                        showCommentTask = false
+                        showCreateTask = false
+                    },
+                )
+            } else TaskDashboard(
                 padding = padding,
                 initialKeyword = initialKeyword,
                 showCreateTask = showCreateTask,
@@ -277,9 +301,26 @@ fun AppHomeScreen(
                 showTodoOnly = false,
                 onCloseCreateTask = { showCreateTask = false },
                 onOpenCreateTask = { showCreateTask = true },
+                onOpenCommentTask = { showCommentTask = true },
                 onOpenTodo = { section = HomeSection.TODO.name },
             )
-            HomeSection.TODO -> TaskDashboard(
+            HomeSection.TODO -> if (showCommentTask) {
+                CommentTaskScreen(
+                    padding = padding,
+                    presetCatalog = remember {
+                        SearchPresetCatalog(
+                            version = LocalSearchPresetRepository.BUILT_IN_VERSION,
+                            items = LocalSearchPresetRepository.BUILT_IN_PRESETS,
+                            updatedAtMillis = 0L,
+                            source = SearchPresetCatalog.Source.BUILT_IN,
+                        )
+                    },
+                    onClose = {
+                        showCommentTask = false
+                        showCreateTask = false
+                    },
+                )
+            } else TaskDashboard(
                 padding = padding,
                 initialKeyword = initialKeyword,
                 showCreateTask = showCreateTask,
@@ -287,6 +328,7 @@ fun AppHomeScreen(
                 showTodoOnly = true,
                 onCloseCreateTask = { showCreateTask = false },
                 onOpenCreateTask = { showCreateTask = true },
+                onOpenCommentTask = { showCommentTask = true },
                 onOpenTodo = { section = HomeSection.TODO.name },
             )
 
@@ -318,6 +360,7 @@ private fun TaskDashboard(
     showTodoOnly: Boolean,
     onCloseCreateTask: () -> Unit,
     onOpenCreateTask: () -> Unit,
+    onOpenCommentTask: () -> Unit,
     onOpenTodo: () -> Unit,
 ) {
     val state by AutomationStore.uiState.collectAsState()
@@ -531,6 +574,7 @@ private fun TaskDashboard(
                     savedTasks = savedTasks,
                     presetCatalog = presetCatalog,
                     onOpenCreateTask = onOpenCreateTask,
+                    onOpenCommentTask = onOpenCommentTask,
                     onOpenTodo = onOpenTodo,
                 )
             }
@@ -791,11 +835,184 @@ private fun TaskDashboard(
 }
 
 @Composable
+private fun CommentTaskScreen(
+    padding: PaddingValues,
+    presetCatalog: SearchPresetCatalog,
+    onClose: () -> Unit,
+) {
+    val state by AutomationStore.uiState.collectAsState()
+    val scope = rememberCoroutineScope()
+    var entryMode by rememberSaveable { mutableStateOf(CommentPrivateMessageEntryMode.CURRENT_PROFILE) }
+    var targetUser by rememberSaveable { mutableStateOf("") }
+    var taskName by rememberSaveable { mutableStateOf("") }
+    var matchKeywords by rememberSaveable { mutableStateOf("") }
+    var maxVideos by rememberSaveable { mutableStateOf("1") }
+    var maxUsers by rememberSaveable { mutableStateOf("5") }
+    var message by rememberSaveable { mutableStateOf<String?>(null) }
+
+    val config = CommentPrivateMessageConfig(
+        entryMode = entryMode,
+        targetUser = targetUser.trim().takeIf { it.isNotEmpty() },
+        matchKeywords = matchKeywords.split('|'),
+        maxVideos = maxVideos.toIntOrNull() ?: 0,
+        maxUsersPerVideo = maxUsers.toIntOrNull() ?: 0,
+    )
+    val draft = TaskDraft(
+        id = java.util.UUID.randomUUID().toString(),
+        name = taskName,
+        customKeywords = if (entryMode == CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE) {
+            listOf(targetUser)
+        } else {
+            emptyList()
+        },
+        maxUsers = (maxUsers.toIntOrNull() ?: 0).coerceAtLeast(1),
+        executionMode = TaskExecutionMode.SAFE_BLANK_PROBE,
+        taskType = AutomationTaskType.COMMENT_PRIVATE_MESSAGE,
+        commentConfig = config,
+    )
+    val errors = draft.validationErrors()
+    val snapshot = runCatching {
+        draft.toSnapshot(presets = presetCatalog, nowMillis = System.currentTimeMillis())
+    }.getOrNull()
+    val canRun = state.serviceConnected && errors.isEmpty() && snapshot != null
+
+    Column(
+        modifier = Modifier
+            .padding(padding)
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = AutomationSpacing.Page, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text("评论区私信", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        Text(
+            "安全探测模式只提交一个空格，用于确认抖音是否允许发送；不会发送真实内容。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        SectionHeader("开始位置")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = entryMode == CommentPrivateMessageEntryMode.CURRENT_PROFILE,
+                onClick = { entryMode = CommentPrivateMessageEntryMode.CURRENT_PROFILE },
+                label = { Text("当前用户主页") },
+            )
+            FilterChip(
+                selected = entryMode == CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE,
+                onClick = { entryMode = CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE },
+                label = { Text("搜索指定用户") },
+            )
+        }
+        if (entryMode == CommentPrivateMessageEntryMode.CURRENT_PROFILE) {
+            Text(
+                "请先在抖音打开目标用户主页，再从本页点击开始。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            CompactOutlinedTextField(
+                value = targetUser,
+                onValueChange = { targetUser = it },
+                modifier = Modifier.fillMaxWidth().height(54.dp),
+                textStyle = MaterialTheme.typography.bodyLarge,
+                label = "目标用户",
+                placeholder = "输入用户名或搜索词",
+                singleLine = true,
+            )
+        }
+        SectionHeader("任务配置")
+        CompactOutlinedTextField(
+            value = taskName,
+            onValueChange = { taskName = it },
+            modifier = Modifier.fillMaxWidth().height(54.dp),
+            textStyle = MaterialTheme.typography.bodyLarge,
+            label = "任务名称（可选）",
+            placeholder = "不填则自动生成",
+            singleLine = true,
+        )
+        CompactOutlinedTextField(
+            value = matchKeywords,
+            onValueChange = { matchKeywords = it },
+            modifier = Modifier.fillMaxWidth().height(54.dp),
+            textStyle = MaterialTheme.typography.bodyLarge,
+            label = "评论匹配词（可选）",
+            placeholder = "多个词用 | 分隔；留空表示全部评论",
+            singleLine = true,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            CompactOutlinedTextField(
+                value = maxVideos,
+                onValueChange = { maxVideos = it.filter(Char::isDigit) },
+                modifier = Modifier.weight(1f).height(54.dp),
+                textStyle = MaterialTheme.typography.bodyLarge,
+                label = "视频数上限",
+                singleLine = true,
+            )
+            CompactOutlinedTextField(
+                value = maxUsers,
+                onValueChange = { maxUsers = it.filter(Char::isDigit) },
+                modifier = Modifier.weight(1f).height(54.dp),
+                textStyle = MaterialTheme.typography.bodyLarge,
+                label = "每个视频用户数",
+                singleLine = true,
+            )
+        }
+        if (errors.isNotEmpty()) {
+            Text(errors.first(), color = MaterialTheme.colorScheme.error)
+        }
+        message?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        Text(
+            "首次真机回归默认：1 个视频、最多 5 个评论用户。评论区不会滚动到底，以免长评论列表造成无界等待。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(
+                onClick = {
+                    scope.launch {
+                        withContext(Dispatchers.IO) { AutomationStore.saveSavedTask(draft) }
+                        onClose()
+                    }
+                },
+                enabled = errors.isEmpty(),
+                modifier = Modifier.weight(1f).height(50.dp),
+                shape = RoundedCornerShape(25.dp),
+            ) { Text("保存") }
+            Button(
+                onClick = {
+                    val prepared = snapshot
+                    if (prepared == null) {
+                        message = errors.firstOrNull() ?: "任务配置暂不可执行"
+                    } else {
+                        AutomationStore.send(
+                            AutomationCommand.Start(
+                                keyword = prepared.composedQueries.firstOrNull().orEmpty(),
+                                message = "",
+                                safetyProbe = true,
+                                taskSnapshot = prepared,
+                            ),
+                        )
+                        onClose()
+                    }
+                },
+                enabled = canRun,
+                modifier = Modifier.weight(1f).height(50.dp),
+                shape = RoundedCornerShape(25.dp),
+            ) { Text("立即开始") }
+        }
+    }
+}
+
+@Composable
 private fun HomeDashboardContent(
     state: com.example.douyinautomation.automation.AutomationUiState,
     savedTasks: List<TaskDraft>,
     presetCatalog: SearchPresetCatalog,
     onOpenCreateTask: () -> Unit,
+    onOpenCommentTask: () -> Unit,
     onOpenTodo: () -> Unit,
 ) {
     val history = state.taskHistory
@@ -911,7 +1128,7 @@ private fun HomeDashboardContent(
                     description = "评论区触达功能",
                     icon = Icons.Default.Forum,
                     color = Color(0xFFE83A55),
-                    onClick = {},
+                    onClick = onOpenCommentTask,
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -2024,6 +2241,8 @@ private fun resultDetailLine(label: String, value: String, subdued: Boolean = fa
 
 private fun recordPageLabel(page: PageKind?): String = when (page) {
     PageKind.HOME -> "抖音首页"
+    PageKind.LIVE_ROOM -> "直播内容（已划走）"
+    PageKind.LIVE_ROOM_SESSION -> "直播间（已退出）"
     PageKind.SEARCH_ENTRY -> "搜索页"
     PageKind.SEARCH_RESULTS -> "搜索结果页"
     PageKind.USER_RESULTS -> "用户列表页"

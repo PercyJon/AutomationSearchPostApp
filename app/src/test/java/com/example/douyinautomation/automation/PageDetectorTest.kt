@@ -9,6 +9,76 @@ class PageDetectorTest {
     private val detector = PageDetector()
 
     @Test
+    fun `live feed entry prompt is classified before home heuristics`() {
+        val context = contextOf(
+            NodeSnapshot(
+                text = "点击进入直播间",
+                bounds = ScreenBounds(260, 1200, 820, 1340),
+                isClickable = true,
+            ),
+            NodeSnapshot(text = "推荐", bounds = ScreenBounds(700, 120, 900, 220)),
+        )
+
+        val detection = detector.detect(context)
+
+        assertEquals(PageKind.LIVE_ROOM, detection.kind)
+        assertTrue(detection.reasons.any { it.contains("Live-room") })
+    }
+
+    @Test
+    fun `opened live room requires close and lower-right share controls`() {
+        val context = contextOf(
+            NodeSnapshot(
+                text = "关闭",
+                bounds = ScreenBounds(960, 90, 1050, 180),
+                isClickable = true,
+            ),
+            NodeSnapshot(
+                contentDescription = "分享",
+                bounds = ScreenBounds(920, 1900, 1040, 2040),
+                isClickable = true,
+            ),
+            NodeSnapshot(text = "直播间"),
+        )
+
+        assertEquals(PageKind.LIVE_ROOM_SESSION, detector.detect(context).kind)
+    }
+
+    @Test
+    fun `opened live room falls back to unlabelled close and share geometry`() {
+        val context = contextOf(
+            NodeSnapshot(
+                bounds = ScreenBounds(930, 80, 1008, 158),
+                isClickable = true,
+            ),
+            NodeSnapshot(
+                bounds = ScreenBounds(900, 1640, 980, 1720),
+                isClickable = true,
+            ),
+            NodeSnapshot(text = "说点什么..."),
+        )
+
+        assertEquals(PageKind.LIVE_ROOM_SESSION, detector.detect(context).kind)
+    }
+
+    @Test
+    fun `live feed controls without room composer are not treated as opened room`() {
+        val context = contextOf(
+            NodeSnapshot(
+                bounds = ScreenBounds(930, 80, 1008, 158),
+                isClickable = true,
+            ),
+            NodeSnapshot(
+                bounds = ScreenBounds(900, 1640, 980, 1720),
+                isClickable = true,
+            ),
+            NodeSnapshot(text = "直播中"),
+        )
+
+        assertFalse(detector.detect(context).kind == PageKind.LIVE_ROOM_SESSION)
+    }
+
+    @Test
     fun `captcha signal takes precedence over profile and direct message labels`() {
         val context = contextOf(
             NodeSnapshot(text = "抖音号：abc123"),

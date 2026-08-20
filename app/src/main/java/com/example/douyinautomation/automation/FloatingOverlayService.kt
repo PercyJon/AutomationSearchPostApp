@@ -35,8 +35,13 @@ import kotlinx.coroutines.launch
 class FloatingOverlayService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var windowManager: WindowManager? = null
-    private var overlayView: LinearLayout? = null
+    private var overlayView: View? = null
+    private var expandedView: LinearLayout? = null
+    private var collapsedView: TextView? = null
     private var windowParams: WindowManager.LayoutParams? = null
+    private var expandedX = 0
+    private var expandedY = 0
+    private var isCollapsed = false
     private var detailText: TextView? = null
     private var progressText: TextView? = null
     private var stageText: TextView? = null
@@ -53,10 +58,12 @@ class FloatingOverlayService : Service() {
             return
         }
         windowManager = getSystemService(WindowManager::class.java)
-        val view = buildOverlay()
+        // Start collapsed so the overlay never intercepts the first automation tap. The
+        // operator can expand it from the edge when progress or controls are needed.
+        val view = buildCollapsedOverlay()
         val params = WindowManager.LayoutParams(
-            dp(250),
-            WindowManager.LayoutParams.WRAP_CONTENT,
+            dp(COLLAPSED_SIZE_DP),
+            dp(COLLAPSED_SIZE_DP),
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
             } else {
@@ -68,7 +75,7 @@ class FloatingOverlayService : Service() {
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = dp(12)
+            x = (resources.displayMetrics.widthPixels - dp(COLLAPSED_SIZE_DP) - dp(8)).coerceAtLeast(0)
             y = dp(88)
         }
         runCatching { windowManager?.addView(view, params) }
@@ -82,6 +89,10 @@ class FloatingOverlayService : Service() {
                 return
             }
         overlayView = view
+        collapsedView = view
+        expandedX = dp(12)
+        expandedY = dp(88)
+        isCollapsed = true
         windowParams = params
         serviceScope.launch {
             AutomationStore.uiState.collectLatest { state ->
@@ -98,13 +109,21 @@ class FloatingOverlayService : Service() {
         }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int =
-        START_NOT_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // startIfAllowed is also called when a new task begins while this service is already
+        // alive. Re-collapse an expanded panel so a previous inspection cannot block taps.
+        if (intent?.action == ACTION_TASK_STARTED && !isCollapsed) {
+            collapseOverlay()
+        }
+        return START_NOT_STICKY
+    }
 
     override fun onDestroy() {
         serviceScope.cancel()
         overlayView?.let { view -> runCatching { windowManager?.removeView(view) } }
         overlayView = null
+        expandedView = null
+        collapsedView = null
         windowManager = null
         super.onDestroy()
     }
@@ -122,12 +141,28 @@ class FloatingOverlayService : Service() {
             }
             elevation = dp(8).toFloat()
         }
-        val header = TextView(this).apply {
+        val title = TextView(this).apply {
             text = "自动化进度"
             setTextColor(Color.rgb(26, 35, 52))
             textSize = 15f
             setPadding(0, 0, 0, dp(4))
             setOnTouchListener(DragTouchListener())
+        }
+        val collapseButton = TextView(this).apply {
+            text = "收起"
+            contentDescription = "收起自动化进度"
+            gravity = Gravity.CENTER
+            setTextColor(Color.rgb(45, 111, 226))
+            textSize = 11f
+            background = roundedBackground(Color.rgb(238, 244, 255), dp(10))
+            setPadding(dp(8), 0, dp(8), 0)
+            setOnClickListener { collapseOverlay() }
+        }
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(title, LinearLayout.LayoutParams(0, -1, 1f))
+            addView(collapseButton, LinearLayout.LayoutParams(dp(50), dp(26)))
         }
         stageText = TextView(this).apply {
             textSize = 12f
@@ -173,6 +208,93 @@ class FloatingOverlayService : Service() {
         card.addView(detailText, LinearLayout.LayoutParams(-1, dp(24)))
         card.addView(actions, LinearLayout.LayoutParams(-1, dp(40)))
         return card
+    }
+
+    private fun buildCollapsedOverlay(): TextView = TextView(this).apply {
+        text = "↗"
+        contentDescription = "展开自动化进度"
+        gravity = Gravity.CENTER
+        setTextColor(Color.WHITE)
+        textSize = 21f
+        background = roundedBackground(Color.rgb(45, 111, 226), dp(16))
+        elevation = dp(8).toFloat()
+        setOnClickListener { expandOverlay() }
+    }
+
+    private fun roundedBackground(color: Int, radius: Int): GradientDrawable =
+        GradientDrawable().apply {
+            setColor(color)
+            cornerRadius = radius.toFloat()
+        }
+
+    private fun collapseOverlay() {
+        if (isCollapsed) return
+        val manager = windowManager ?: return
+        val params = windowParams ?: return
+        val expanded = expandedView ?: return
+        expandedX = params.x
+        expandedY = params.y
+        val oldWidth = params.width
+        val oldHeight = params.height
+        val collapsed = buildCollapsedOverlay()
+        val collapsedSize = dp(COLLAPSED_SIZE_DP)
+        params.width = collapsedSize
+        params.height = collapsedSize
+        params.x = (resources.displayMetrics.widthPixels - collapsedSize - dp(8)).coerceAtLeast(0)
+        params.y = expandedY.coerceAtLeast(dp(12))
+        runCatching {
+            manager.removeView(expanded)
+            manager.addView(collapsed, params)
+            overlayView = collapsed
+            collapsedView = collapsed
+            isCollapsed = true
+        }.onFailure { error ->
+            AutomationStore.logger.error(
+                "floating_overlay_collapse_failed",
+                message = "悬浮窗收起失败，保持展开状态",
+                throwable = error,
+            )
+            params.width = oldWidth
+            params.height = oldHeight
+            params.x = expandedX
+            params.y = expandedY
+            runCatching { manager.addView(expanded, params) }
+        }
+    }
+
+    private fun expandOverlay() {
+        if (!isCollapsed) return
+        val manager = windowManager ?: return
+        val params = windowParams ?: return
+        val collapsed = collapsedView ?: return
+        val expanded = expandedView ?: buildOverlay().also { expandedView = it }
+        val oldWidth = params.width
+        val oldHeight = params.height
+        val oldX = params.x
+        val oldY = params.y
+        params.width = dp(EXPANDED_WIDTH_DP)
+        params.height = WindowManager.LayoutParams.WRAP_CONTENT
+        params.x = expandedX.coerceAtLeast(0)
+        params.y = expandedY.coerceAtLeast(dp(12))
+        runCatching {
+            manager.removeView(collapsed)
+            manager.addView(expanded, params)
+            overlayView = expanded
+            collapsedView = null
+            isCollapsed = false
+            updateOverlay(AutomationStore.uiState.value)
+        }.onFailure { error ->
+            AutomationStore.logger.error(
+                "floating_overlay_expand_failed",
+                message = "悬浮窗展开失败",
+                throwable = error,
+            )
+            params.width = oldWidth
+            params.height = oldHeight
+            params.x = oldX
+            params.y = oldY
+            runCatching { manager.addView(collapsed, params) }
+        }
     }
 
     private fun updateOverlay(state: AutomationUiState) {
@@ -247,6 +369,9 @@ class FloatingOverlayService : Service() {
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     companion object {
+        private const val EXPANDED_WIDTH_DP = 250
+        private const val COLLAPSED_SIZE_DP = 58
+
         fun startIfAllowed(context: Context) {
             if (!canDrawOverlays(context)) {
                 AutomationStore.logger.info("floating_overlay_waiting_for_permission")
@@ -254,7 +379,13 @@ class FloatingOverlayService : Service() {
             }
             // beginTask is reached from the foreground app/service command path. A regular service
             // avoids introducing a notification channel just for this compact operator window.
-            runCatching { context.startService(Intent(context, FloatingOverlayService::class.java)) }
+            runCatching {
+                context.startService(
+                    Intent(context, FloatingOverlayService::class.java).apply {
+                        action = ACTION_TASK_STARTED
+                    },
+                )
+            }
                 .onFailure { error ->
                     AutomationStore.logger.error("floating_overlay_start_failed", throwable = error)
                 }
@@ -275,5 +406,8 @@ class FloatingOverlayService : Service() {
 
         fun canDrawOverlays(context: Context): Boolean =
             Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(context)
+
+        private const val ACTION_TASK_STARTED =
+            "com.example.douyinautomation.action.FLOATING_TASK_STARTED"
     }
 }

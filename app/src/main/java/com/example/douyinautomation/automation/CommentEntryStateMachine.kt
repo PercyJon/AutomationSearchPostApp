@@ -3,6 +3,10 @@ package com.example.douyinautomation.automation
 /** Surface-level actions that the future comment runner may dispatch after a verified state. */
 enum class CommentEntryAction {
     NONE,
+    /** The opened room must be exited before the live item can be swiped away. */
+    EXIT_LIVE_ROOM,
+    /** The visible live item is skipped without opening the room. */
+    SWIPE_LIVE_ROOM,
     OPEN_FIRST_VIDEO,
     OPEN_COMMENTS,
     READ_COMMENTS,
@@ -53,6 +57,8 @@ class CommentEntryStateMachine {
     fun observe(observation: CommentEntryObservation): CommentEntryDecision {
         observation.riskReason?.let { return pause("检测到风险或验证码：$it") }
         when (observation.page) {
+            PageKind.LIVE_ROOM_SESSION -> return decision(CommentEntryAction.EXIT_LIVE_ROOM, "已进入直播间，准备退出")
+            PageKind.LIVE_ROOM -> return decision(CommentEntryAction.SWIPE_LIVE_ROOM, "检测到直播入口，准备划走")
             PageKind.HUMAN_INTERVENTION -> return pause("检测到风险或验证码页面")
             PageKind.LOGIN -> return pause("抖音需要登录后才能继续")
             PageKind.OUTSIDE_TARGET -> return pause("当前前台不是抖音")

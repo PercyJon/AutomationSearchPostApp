@@ -45,6 +45,8 @@ class CommentPrivateMessageRuntime(
     private var scrollPending = false
     private var lastViewportFingerprint: Int? = null
     private var scrollCount = 0
+    private var liveRoomExitCount = 0
+    private var liveRoomSwipeCount = 0
     private val processedCandidateKeys = LinkedHashSet<String>()
     private var activeCandidate: CommentUserCandidate? = null
 
@@ -61,6 +63,8 @@ class CommentPrivateMessageRuntime(
         scrollPending = false
         lastViewportFingerprint = null
         scrollCount = 0
+        liveRoomExitCount = 0
+        liveRoomSwipeCount = 0
         processedCandidateKeys.clear()
         activeCandidate = null
         // Search-target mode still traverses the existing launch/search/user-tab flow before the
@@ -94,6 +98,57 @@ class CommentPrivateMessageRuntime(
         val observation = CommentEntrySignalDetector.observe(context)
         val decision = stateMachine.observe(observation)
         when (decision.action) {
+            CommentEntryAction.EXIT_LIVE_ROOM -> {
+                if (liveRoomExitCount >= MAX_LIVE_ROOM_EXITS) {
+                    terminal(CommentRuntimeTerminal.Outcome.FAILED, "连续进入直播间且无法安全退出")
+                    return
+                }
+                liveRoomExitCount += 1
+                val closeButton = LiveRoomSurfaceDetector.findCloseButton(context)
+                val outcome = if (closeButton != null) {
+                    clickSnapshot(closeButton, "live_room_close")
+                } else if (service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)) {
+                    ActionOutcome.success("global_back")
+                } else {
+                    ActionOutcome.failure("无法执行返回操作")
+                }
+                logger.info(
+                    "live_room_exited",
+                    attributes = mapOf("success" to outcome.succeeded, "attempt" to liveRoomExitCount, "route" to outcome.route),
+                )
+                if (!outcome.succeeded) {
+                    terminal(CommentRuntimeTerminal.Outcome.FAILED, "退出直播间失败：${outcome.reason}")
+                } else {
+                    armTimeout("等待直播页面退出")
+                }
+                return
+            }
+            CommentEntryAction.SWIPE_LIVE_ROOM -> {
+                if (liveRoomSwipeCount >= MAX_LIVE_ROOM_SWIPES) {
+                    terminal(CommentRuntimeTerminal.Outcome.FAILED, "连续遇到直播内容，已达到安全划走上限")
+                    return
+                }
+                liveRoomSwipeCount += 1
+                val outcome = gestures.swipeNormalized(
+                    // Stay outside the expanded floating overlay and away from the right-side
+                    // live controls while crossing the feed surface.
+                    startX = 0.86f,
+                    startY = 0.84f,
+                    endX = 0.86f,
+                    endY = 0.22f,
+                    durationMs = LIVE_ROOM_SWIPE_DURATION_MS,
+                )
+                logger.info(
+                    "live_room_swiped",
+                    attributes = mapOf("success" to outcome.succeeded, "attempt" to liveRoomSwipeCount),
+                )
+                if (!outcome.succeeded) {
+                    terminal(CommentRuntimeTerminal.Outcome.FAILED, "划走直播内容失败：${outcome.reason}")
+                } else {
+                    armTimeout("等待直播内容划走")
+                }
+                return
+            }
             CommentEntryAction.PAUSE_FOR_MANUAL_HANDOFF -> {
                 terminal(CommentRuntimeTerminal.Outcome.PAUSED, decision.reason)
                 return
@@ -654,5 +709,8 @@ class CommentPrivateMessageRuntime(
         const val COMMENT_SURFACE_POLL_ATTEMPTS = 8
         /** Bounded regression scope; never scroll an unbounded long comment list. */
         const val MAX_COMMENT_SCROLLS = 20
+        const val MAX_LIVE_ROOM_EXITS = 3
+        const val MAX_LIVE_ROOM_SWIPES = 3
+        const val LIVE_ROOM_SWIPE_DURATION_MS = 460L
     }
 }
