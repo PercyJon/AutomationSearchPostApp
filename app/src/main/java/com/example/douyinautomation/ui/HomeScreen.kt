@@ -194,7 +194,7 @@ fun AppHomeScreen(
     Scaffold(
         containerColor = AutomationPage,
         topBar = {
-            if (showCreateTask || selectedSection == HomeSection.RECORDS || selectedSection == HomeSection.SETTINGS || selectedSection == HomeSection.DIAGNOSTICS || selectedSection == HomeSection.TODO) {
+            if (showCreateTask || selectedSection == HomeSection.RECORDS || selectedSection == HomeSection.SETTINGS || selectedSection == HomeSection.DIAGNOSTICS) {
                 TopAppBar(
                 title = {
                     Column {
@@ -902,6 +902,7 @@ private fun HomeDashboardContent(
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
                             .background(AutomationBlueSurface)
+                            .clickable(onClick = onOpenTodo)
                             .padding(horizontal = 14.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -922,7 +923,10 @@ private fun HomeDashboardContent(
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
-                        Icon(Icons.Default.ListAlt, contentDescription = null, tint = AutomationBlue)
+                        Checkbox(
+                            checked = false,
+                            onCheckedChange = { onOpenTodo() },
+                        )
                     }
                 }
             }
@@ -1304,61 +1308,44 @@ private fun TodoTaskCard(
     onToggleTask: (String) -> Unit,
     onStartSelected: () -> Unit,
 ) {
-    Card(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = AutomationSpacing.Page),
-        colors = CardDefaults.cardColors(containerColor = AutomationCard),
-        border = androidx.compose.foundation.BorderStroke(1.dp, AutomationDivider),
-        shape = MaterialTheme.shapes.large,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
+        Text("待办任务", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        if (isTaskActivePhase(activeState.phase)) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(AutomationBlueSurface, MaterialTheme.shapes.small)
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("待办任务", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text(
-                    if (selectedTaskIds.isEmpty()) "可多选" else "已选 ${selectedTaskIds.size} 个",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (isTaskActivePhase(activeState.phase)) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(AutomationBlueSurface, MaterialTheme.shapes.small)
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("正在执行", style = MaterialTheme.typography.labelMedium, color = AutomationBlueDark)
-                        Text(
-                            activeState.taskName ?: "当前任务",
-                            style = MaterialTheme.typography.bodyMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("正在执行", style = MaterialTheme.typography.labelMedium, color = AutomationBlueDark)
                     Text(
-                        "${activeState.taskHandledUserCount} 已处理",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = AutomationBlueDark,
+                        activeState.taskName ?: "当前任务",
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
+                Text(
+                    "${activeState.taskHandledUserCount} 已处理",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AutomationBlueDark,
+                )
             }
-            if (tasks.isEmpty()) {
+        }
+        if (tasks.isEmpty()) {
                 EmptyState(
                     title = "暂无待办任务",
                     detail = "保存任务后，可在这里勾选多个任务并按顺序执行。",
                 )
-            } else {
+        } else {
                 tasks.forEach { task ->
                     val taskLabel = task.name.trim().ifBlank { "未命名任务" }
                     val query = task.customKeywords.firstOrNull { it.isNotBlank() }
@@ -1412,12 +1399,6 @@ private fun TodoTaskCard(
                                 overflow = TextOverflow.Ellipsis,
                             )
                         }
-                        Icon(
-                            Icons.Default.ListAlt,
-                            contentDescription = null,
-                            tint = AutomationBlue,
-                            modifier = Modifier.padding(start = 6.dp),
-                        )
                     }
                 }
                 Button(
@@ -1430,7 +1411,6 @@ private fun TodoTaskCard(
                     Spacer(Modifier.width(4.dp))
                     Text("开始选中任务")
                 }
-            }
         }
     }
 }
