@@ -41,6 +41,7 @@ class DouyinNavigationController(
         scope = scope,
         logger = logger,
         inspector = inspector,
+        pageDetector = pageDetector,
         selector = selector,
         gestures = gestures,
         onTerminal = { terminal ->

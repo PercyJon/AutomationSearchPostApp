@@ -14,8 +14,8 @@ class CommentCandidateExtractorTest {
             context = ScreenContext(
                 screenSize = screen,
                 nodes = listOf(
-                    node("店主小王", 120, 520, 420, 575),
-                    node("价格和尺寸怎么说", 120, 590, 700, 655),
+                    node("店主小王", 120, 520, 420, 575, hierarchyPath = listOf(3, 2, 0)),
+                    node("价格和尺寸怎么说", 120, 590, 700, 655, hierarchyPath = listOf(3, 2, 1)),
                     node("写评论", 80, 2200, 400, 2260, isEditable = true),
                 ),
             ),
@@ -27,6 +27,7 @@ class CommentCandidateExtractorTest {
         assertEquals("店主小王", candidate.authorText)
         assertEquals(ScreenBounds(120, 520, 420, 575), candidate.authorBounds)
         assertEquals(candidate.authorBounds, candidate.interactionBounds)
+        assertEquals(listOf(3, 2, 0), candidate.interactionHierarchyPath)
         assertEquals(listOf("价格"), candidate.matchedKeywords)
         assertEquals(CommentTextSource.ACCESSIBILITY, candidate.source)
     }
@@ -45,8 +46,10 @@ class CommentCandidateExtractorTest {
         )
 
         assertEquals(1, extraction.candidates.size)
-        assertEquals(CommentTextSource.OCR, extraction.candidates.single().source)
-        assertEquals("家具达人", extraction.candidates.single().authorText)
+        val candidate = extraction.candidates.single()
+        assertEquals(CommentTextSource.OCR, candidate.source)
+        assertEquals("家具达人", candidate.authorText)
+        assertTrue(candidate.interactionHierarchyPath.isEmpty())
     }
 
     @Test
@@ -66,6 +69,7 @@ class CommentCandidateExtractorTest {
 
         assertTrue(extraction.candidates.any { it.commentText == "红木很好看" })
         assertFalse(extraction.candidates.any { it.commentText == "分享" })
+        assertFalse(extraction.candidates.any { it.commentText == "店主" })
     }
 
     @Test
@@ -100,7 +104,9 @@ class CommentCandidateExtractorTest {
         right: Int,
         bottom: Int,
         isEditable: Boolean = false,
+        hierarchyPath: List<Int> = emptyList(),
     ) = NodeSnapshot(
+        hierarchyPath = hierarchyPath,
         text = text,
         bounds = ScreenBounds(left, top, right, bottom),
         isEditable = isEditable,

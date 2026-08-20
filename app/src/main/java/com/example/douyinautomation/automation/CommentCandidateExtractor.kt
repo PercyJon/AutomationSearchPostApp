@@ -10,6 +10,7 @@ data class CommentTextFragment(
     val text: String,
     val bounds: ScreenBounds,
     val source: CommentTextSource,
+    val hierarchyPath: List<Int> = emptyList(),
 )
 
 /**
@@ -27,6 +28,8 @@ data class CommentUserCandidate(
     val matchedKeywords: List<String>,
     val identityKey: String,
     val source: CommentTextSource,
+    /** Live-node path for the author/name; empty when the candidate came from OCR only. */
+    val interactionHierarchyPath: List<Int> = emptyList(),
 )
 
 data class CommentCandidateExtraction(
@@ -59,7 +62,14 @@ object CommentCandidateExtractor {
                 isLikelyCommentText(fragment.text) &&
                 CommentKeywordMatcher.matches(fragment.text, terms)
         }
+        // With no match keywords every visible text row is eligible initially. Remove fragments
+        // that are themselves the author line for a nearby comment; otherwise an author name is
+        // treated as a second comment and P4-C may visit the same person twice.
+        val authorFragments = commentFragments.asSequence()
+            .mapNotNull { comment -> findAuthor(comment, fragments, context.screenSize.width) }
+            .toSet()
         val candidates = commentFragments.mapNotNull { comment ->
+            if (comment in authorFragments) return@mapNotNull null
             val author = findAuthor(comment, fragments, context.screenSize.width)
             val authorText = author?.text?.trim()?.takeIf(::isLikelyAuthorText)
             val identitySeed = authorText ?: "${comment.text}:${comment.bounds.centerX}:${comment.bounds.centerY}"
@@ -75,6 +85,8 @@ object CommentCandidateExtractor {
                 },
                 identityKey = key,
                 source = comment.source,
+                interactionHierarchyPath = author?.hierarchyPath?.takeIf { authorText != null }
+                    ?: comment.hierarchyPath,
             )
         }.distinctBy(CommentUserCandidate::identityKey)
         return CommentCandidateExtraction(candidates = candidates, fragments = fragments)
@@ -89,7 +101,12 @@ object CommentCandidateExtractor {
                 val value = node.text?.trim()?.takeIf(String::isNotEmpty)
                     ?: node.contentDescription?.trim()?.takeIf { node.text.isNullOrBlank() && it.isNotEmpty() }
                     ?: return@mapNotNull null
-                CommentTextFragment(value, node.bounds, CommentTextSource.ACCESSIBILITY)
+                CommentTextFragment(
+                    text = value,
+                    bounds = node.bounds,
+                    source = CommentTextSource.ACCESSIBILITY,
+                    hierarchyPath = node.hierarchyPath,
+                )
             }
             .toList()
         val nodeRegions = nodeFragments.map { it.bounds to IdentityTextCanonicalizer.normalize(it.text) }.toSet()
