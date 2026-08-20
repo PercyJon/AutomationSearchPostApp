@@ -261,6 +261,16 @@ class DouyinNavigationController(
         taskSnapshot: TaskSnapshot?,
         remoteResume: RemoteTaskResume?,
     ) {
+        // The comment task contract is intentionally introduced before its runtime controller.
+        // Never let a future saved/remote comment task fall through to the profile runner and
+        // click an unrelated search result. It will become an explicit P4 dispatch branch once
+        // the comment surface and overlay have passed their own regression tests.
+        if (taskSnapshot?.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE) {
+            val reason = "评论私信流程尚未启用，任务未执行"
+            logger.warn("comment_task_not_enabled", message = reason)
+            AutomationStore.publishFailure(reason)
+            return
+        }
         val sanitizedKeyword = taskSnapshot?.composedQueries?.firstOrNull()?.trim()
             ?.takeIf { it.isNotEmpty() }
             ?: searchKeyword.trim()
@@ -374,6 +384,12 @@ class DouyinNavigationController(
     private suspend fun startBatch(tasks: List<TaskSnapshot>) {
         if (taskActive) {
             logger.warn("start_batch_ignored_active")
+            return
+        }
+        if (tasks.any { it.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE }) {
+            val reason = "批量任务中包含尚未启用的评论私信任务，已停止本批次以避免误操作"
+            logger.warn("comment_task_batch_not_enabled", message = reason)
+            AutomationStore.publishFailure(reason)
             return
         }
         val validTasks = tasks.filter { snapshot ->
