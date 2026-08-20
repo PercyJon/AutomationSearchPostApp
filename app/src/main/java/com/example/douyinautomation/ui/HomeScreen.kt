@@ -110,6 +110,7 @@ import com.example.douyinautomation.automation.RemoteTaskResumePolicy
 import com.example.douyinautomation.automation.RemoteTaskVisibilityStore
 import com.example.douyinautomation.automation.RegionCatalog
 import com.example.douyinautomation.automation.BlockKeywordCatalog
+import com.example.douyinautomation.automation.FloatingOverlayService
 import com.example.douyinautomation.automation.PageKind
 import com.example.douyinautomation.automation.ProfileDisplayNameResolver
 import com.example.douyinautomation.automation.SearchPreset
@@ -2146,6 +2147,7 @@ private fun SettingsPage(
     onOpenDiagnostics: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+    var overlayAllowed by remember { mutableStateOf(FloatingOverlayService.canDrawOverlays(context)) }
     val licenseState by AuthStore.uiState.collectAsState()
     val scope = rememberCoroutineScope()
     val existingConfig = remember { AuthStore.currentConfig() }
@@ -2328,6 +2330,37 @@ private fun SettingsPage(
                 )
                 OutlinedButton(onClick = { openAccessibilitySettings(context) }) {
                     Text("无障碍服务设置")
+                }
+            }
+        }
+        SettingsSectionCard(title = "任务悬浮窗", icon = Icons.Default.Info) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("显示任务进度", fontWeight = FontWeight.Medium)
+                        Text(
+                            if (overlayAllowed) "已允许：启动任务后会显示在抖音上方" else "未允许：任务仍可执行，但不会显示悬浮窗",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    StatusBadge(
+                        if (overlayAllowed) "已开启" else "未开启",
+                        if (overlayAllowed) StatusTone.SUCCESS else StatusTone.WARNING,
+                    )
+                }
+                OutlinedButton(
+                    onClick = {
+                        FloatingOverlayService.openPermissionSettings(context)
+                        overlayAllowed = FloatingOverlayService.canDrawOverlays(context)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (overlayAllowed) "管理悬浮窗权限" else "开启悬浮窗权限")
                 }
             }
         }

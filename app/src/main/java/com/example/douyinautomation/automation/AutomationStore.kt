@@ -474,6 +474,9 @@ object AutomationStore {
                 taskHistory = taskHistory,
             )
         }
+        // The overlay is optional and starts only when the operator has granted Android's
+        // draw-over-other-apps permission. The task itself remains fully usable without it.
+        applicationContext?.let(FloatingOverlayService::startIfAllowed)
         logger.info(
             "task_started",
             attributes = buildMap {
@@ -1314,6 +1317,9 @@ object AutomationStore {
             syncRemoteStatus(status, errorCode = if (phase == AutomationPhase.FAILED) "LOCAL_AUTOMATION_FAILED" else null, errorMessage = error)
         }
         if (openRecords && phase in TERMINAL_PHASES) openRecordsTab()
+        if (phase in setOf(AutomationPhase.COMPLETED_TASK, AutomationPhase.FAILED, AutomationPhase.STOPPED)) {
+            applicationContext?.let(FloatingOverlayService::stop)
+        }
     }
 
     private fun AutomationPhase.toRemoteTaskStatus(): Int? = when (this) {
