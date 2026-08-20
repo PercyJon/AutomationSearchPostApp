@@ -35,6 +35,20 @@ class DouyinNavigationController(
     @Volatile private var ocr: MlKitOcrEngine?,
 ) {
     private val mutex = Mutex()
+    /** Isolated P4-B comment-surface runner; the existing profile runner remains unchanged. */
+    private val commentRuntime = CommentPrivateMessageRuntime(
+        service = service,
+        scope = scope,
+        logger = logger,
+        inspector = inspector,
+        selector = selector,
+        gestures = gestures,
+        onTerminal = { terminal ->
+            // Runtime timeouts happen on its watchdog coroutine. Queue terminal handling so the
+            // controller's single action mutex remains the only owner of task lifecycle fields.
+            scope.launch { mutex.withLock { finishCommentRuntime(terminal) } }
+        },
+    )
     private var phase = AutomationPhase.IDLE
     @Volatile private var taskActive = false
     private var keyword: String? = null
@@ -178,6 +192,17 @@ class DouyinNavigationController(
         }
         if (!confirmOcrBackedPage(context, detection)) return
 
+        // Comment tasks reuse the already-validated search/profile navigation until a user
+        // profile is reached, then switch to the isolated comment runtime. Never let the normal
+        // profile-to-DM branch click a private-message control for a comment task.
+        if (activeTaskSnapshot?.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE &&
+            phase == AutomationPhase.WAITING_FOR_PROFILE
+        ) {
+            timeoutJob?.cancel()
+            commentRuntime.onObserved(context, detection)
+            return
+        }
+
         when (phase) {
             AutomationPhase.WAITING_FOR_HOME -> when (detection.kind) {
                 PageKind.HOME -> openSearch(context)
@@ -261,20 +286,19 @@ class DouyinNavigationController(
         taskSnapshot: TaskSnapshot?,
         remoteResume: RemoteTaskResume?,
     ) {
-        // The comment task contract is intentionally introduced before its runtime controller.
-        // Never let a future saved/remote comment task fall through to the profile runner and
-        // click an unrelated search result. It will become an explicit P4 dispatch branch once
-        // the comment surface and overlay have passed their own regression tests.
-        if (taskSnapshot?.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE) {
-            val reason = "评论私信流程尚未启用，任务未执行"
-            logger.warn("comment_task_not_enabled", message = reason)
+        val commentConfig = taskSnapshot?.commentConfig
+            ?.takeIf { taskSnapshot.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE }
+        if (taskSnapshot?.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE && commentConfig == null) {
+            val reason = "评论私信任务缺少评论处理配置"
+            logger.warn("comment_task_invalid", message = reason)
             AutomationStore.publishFailure(reason)
             return
         }
+        val startsFromCurrentProfile = commentConfig?.entryMode == CommentPrivateMessageEntryMode.CURRENT_PROFILE
         val sanitizedKeyword = taskSnapshot?.composedQueries?.firstOrNull()?.trim()
             ?.takeIf { it.isNotEmpty() }
             ?: searchKeyword.trim()
-        if (sanitizedKeyword.isEmpty()) {
+        if (sanitizedKeyword.isEmpty() && !startsFromCurrentProfile) {
             AutomationStore.publishFailure("Enter a search keyword before starting the POC.")
             return
         }
@@ -350,6 +374,7 @@ class DouyinNavigationController(
         messageResultJob?.cancel()
         profilePostconditionJob?.cancel()
         initialObservationJob?.cancel()
+        commentRuntime.stop()
         // Create/switch the persisted task history entry before publishing the first phase.
         // In a queued batch, publishing LAUNCHING_TARGET while currentTaskId still points to
         // the previous task would regress its terminal COMPLETED status back to RUNNING.
@@ -357,6 +382,26 @@ class DouyinNavigationController(
         phase = AutomationPhase.LAUNCHING_TARGET
         AutomationStore.publishPhase(phase)
         logger.info("poc_started", attributes = mapOf("target" to TargetAppLauncher.DOUYIN_PACKAGE))
+
+        if (commentConfig != null) {
+            commentRuntime.start(requireNotNull(taskSnapshot?.commentConfig).let { config ->
+                CommentPrivateMessageSnapshot(
+                    entryMode = config.entryMode,
+                    targetUser = config.targetUser,
+                    matchKeywords = config.matchKeywords,
+                    maxVideos = config.maxVideos,
+                    maxUsersPerVideo = config.maxUsersPerVideo,
+                )
+            })
+            if (startsFromCurrentProfile) {
+                phase = AutomationPhase.WAITING_FOR_PROFILE
+                AutomationStore.publishPhase(phase)
+                logger.info("comment_current_profile_entry_waiting")
+                scheduleCurrentProfileCommentObservation()
+                return
+            }
+            logger.info("comment_search_entry_using_profile_navigation")
+        }
 
         when (val result = TargetAppLauncher.launch(service)) {
             LaunchResult.Started -> {
@@ -386,14 +431,10 @@ class DouyinNavigationController(
             logger.warn("start_batch_ignored_active")
             return
         }
-        if (tasks.any { it.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE }) {
-            val reason = "批量任务中包含尚未启用的评论私信任务，已停止本批次以避免误操作"
-            logger.warn("comment_task_batch_not_enabled", message = reason)
-            AutomationStore.publishFailure(reason)
-            return
-        }
         val validTasks = tasks.filter { snapshot ->
-            snapshot.composedQueries.any { it.isNotBlank() }
+            snapshot.composedQueries.any { it.isNotBlank() } ||
+                (snapshot.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE &&
+                    snapshot.commentConfig?.entryMode == CommentPrivateMessageEntryMode.CURRENT_PROFILE)
         }
         if (validTasks.isEmpty()) {
             AutomationStore.publishFailure("没有可执行的待办任务")
@@ -452,6 +493,47 @@ class DouyinNavigationController(
         }
         if (hasNext) {
             scheduleNextQueuedTask()
+        }
+    }
+
+    private fun finishCommentRuntime(terminal: CommentRuntimeTerminal) {
+        if (!taskActive || activeTaskSnapshot?.taskType != AutomationTaskType.COMMENT_PRIVATE_MESSAGE) return
+        timeoutJob?.cancel()
+        initialObservationJob?.cancel()
+        commentRuntime.stop()
+        taskActive = false
+        when (terminal.outcome) {
+            CommentRuntimeTerminal.Outcome.COMPLETED -> {
+                phase = AutomationPhase.COMPLETED_TASK
+                publishTaskTerminal(phase)
+                logger.info("comment_task_completed", message = terminal.reason)
+            }
+
+            CommentRuntimeTerminal.Outcome.FAILED -> {
+                phase = AutomationPhase.FAILED
+                publishTaskTerminal(phase, error = terminal.reason)
+                logger.error("comment_task_failed", message = terminal.reason)
+            }
+
+            CommentRuntimeTerminal.Outcome.PAUSED -> {
+                taskActive = true
+                pause(terminal.reason)
+            }
+        }
+    }
+
+    /** Polls an already-open profile for the CURRENT_PROFILE comment-task entry mode. */
+    private fun scheduleCurrentProfileCommentObservation() {
+        initialObservationJob?.cancel()
+        initialObservationJob = scope.launch {
+            repeat(INITIAL_OBSERVATION_ATTEMPTS) {
+                delay(INITIAL_OBSERVATION_INTERVAL_MS)
+                if (!taskActive || !commentRuntime.isRunning) return@launch
+                val context = currentWindowContext() ?: return@repeat
+                val detection = pageDetector.detect(context)
+                if (detection.kind == PageKind.OUTSIDE_TARGET) return@repeat
+                commentRuntime.onObserved(context, detection)
+            }
         }
     }
 
@@ -1146,12 +1228,21 @@ class DouyinNavigationController(
                 currentUserIdentityHash = identityHash
                 currentUserDisplayName = identity.displayName
                 currentUserDisplayNameSource = identity.source
-                AutomationStore.recordUserTaskStarted(
-                    identityHash = identityHash,
-                    remoteUserKey = identity.key,
-                    displayName = identity.displayName,
-                    messageContent = currentTaskMessageContent(),
-                )
+                if (activeTaskSnapshot?.taskType != AutomationTaskType.COMMENT_PRIVATE_MESSAGE) {
+                    AutomationStore.recordUserTaskStarted(
+                        identityHash = identityHash,
+                        remoteUserKey = identity.key,
+                        displayName = identity.displayName,
+                        messageContent = currentTaskMessageContent(),
+                    )
+                } else {
+                    // P4-B reads the target profile's comment surface; it does not yet create a
+                    // per-comment private-message record. Keep the profile runner's audit slot
+                    // empty so an unfinished comment read cannot appear as a sent DM.
+                    currentUserIdentityHash = null
+                    currentUserDisplayName = null
+                    currentUserDisplayNameSource = null
+                }
             } else {
                 currentUserIdentityHash = null
                 currentUserDisplayName = null
@@ -1429,6 +1520,13 @@ class DouyinNavigationController(
                             "nodes" to context.nodes.size,
                         ),
                     )
+                    // Comment tasks keep the profile-to-comment route in their isolated
+                    // runtime. The legacy profile postcondition must never click a private
+                    // message control for this task type.
+                    if (activeTaskSnapshot?.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE) {
+                        commentRuntime.onObserved(context, detection)
+                        return@withLock
+                    }
                     when (detection.kind) {
                         PageKind.USER_PROFILE -> openPrivateMessage(context)
                         PageKind.HUMAN_INTERVENTION -> pause("A verification or risk screen appeared before opening private messages; manual handoff required")
@@ -3927,6 +4025,7 @@ class DouyinNavigationController(
         profilePostconditionJob?.cancel()
         messageEntryPostconditionJob?.cancel()
         messageResultJob?.cancel()
+        commentRuntime.stop()
         taskActive = false
         phase = AutomationPhase.FAILED
         publishTaskTerminal(phase, error = reason)
@@ -3940,6 +4039,7 @@ class DouyinNavigationController(
         profilePostconditionJob?.cancel()
         messageEntryPostconditionJob?.cancel()
         messageResultJob?.cancel()
+        commentRuntime.stop()
         pausedPhase = phase.takeUnless {
             it == AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF || it == AutomationPhase.STOPPED
         }
@@ -3967,6 +4067,7 @@ class DouyinNavigationController(
         profilePostconditionJob?.cancel()
         messageEntryPostconditionJob?.cancel()
         messageResultJob?.cancel()
+        commentRuntime.stop()
         taskActive = false
         queuedTaskSnapshots.clear()
         if (currentUserIdentityHash != null) {

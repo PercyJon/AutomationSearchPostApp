@@ -59,6 +59,11 @@ object CommentPanelEndDetector {
         "没有更多内容",
         "没有更多",
     )
+    private val emptyPanelMarkers = listOf(
+        "期待你的评论",
+        "发条评论表达你的想法",
+        "暂无评论",
+    )
 
     fun detect(context: ScreenContext): CommentPanelEndDetection {
         val values = (context.nodeText() + context.ocrText())
@@ -67,10 +72,29 @@ object CommentPanelEndDetector {
         val marker = values.firstNotNullOfOrNull { value ->
             markers.firstOrNull(value::contains)
         }
+        if (marker != null) {
+            return CommentPanelEndDetection(reached = true, confidence = 0.96f, marker = marker)
+        }
+
+        // A video with no comments does not show the normal "no more" footer. Douyin instead
+        // renders “期待你的评论” together with a “去评论” button below the author activity
+        // row. Require both signals so a caption or an unrelated action labelled “去评论” does
+        // not complete a normal comment list by itself.
+        val emptyPanelMarker = values.firstOrNull { value ->
+            emptyPanelMarkers.any(value::contains)
+        }
+        val hasGoCommentAction = values.any { value -> value.contains("去评论") }
+        if (emptyPanelMarker != null && hasGoCommentAction) {
+            return CommentPanelEndDetection(
+                reached = true,
+                confidence = 0.94f,
+                marker = "${emptyPanelMarker}/去评论",
+            )
+        }
         return CommentPanelEndDetection(
-            reached = marker != null,
-            confidence = if (marker == null) 0.05f else 0.96f,
-            marker = marker,
+            reached = false,
+            confidence = 0.05f,
+            marker = null,
         )
     }
 }

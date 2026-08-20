@@ -23,6 +23,8 @@ enum class CommentEntryStage {
 data class CommentEntryObservation(
     val page: PageKind,
     val hasFirstVideoTarget: Boolean = false,
+    /** The semantically selected first-video node; its bounds are only a final gesture fallback. */
+    val firstVideoTarget: NodeSnapshot? = null,
     val hasVideoSurface: Boolean = false,
     val hasCommentEntry: Boolean = false,
     val commentButton: NodeSnapshot? = null,
@@ -142,27 +144,54 @@ object CommentEntrySignalDetector {
         // that a comment entry exists when the semantic/structural speech-bubble selector found
         // a clickable node in the video action rail.
         val hasCommentEntry = commentButton != null
-        val hasFirstVideoTarget = page == PageKind.USER_PROFILE && hasVideoMarker &&
-            context.nodes.any { node ->
-                val normalizedClass = TextNormalizer.normalize(node.className)
-                val imageLike = normalizedClass.contains("imageview") ||
-                    normalizedClass.contains("surfaceview") ||
-                    normalizedClass.contains("textureview")
-                val inContentRegion = node.normalizedBounds(context.screenSize).top >= 0.24f
-                node.isVisibleToUser && node.isClickable && imageLike &&
-                    node.bounds.width >= MIN_VIDEO_EDGE && node.bounds.height >= MIN_VIDEO_EDGE &&
-                    inContentRegion
-            }
+        val firstVideoTarget = firstVideoTarget(context, page, hasVideoMarker)
+        val hasFirstVideoTarget = firstVideoTarget != null
         val hasVideoSurface = page == PageKind.UNKNOWN && hasVideoMarker &&
             context.nodes.any { it.isVisibleToUser && it.bounds.width >= MIN_VIDEO_EDGE }
         return CommentEntryObservation(
             page = page,
             hasFirstVideoTarget = hasFirstVideoTarget,
+            firstVideoTarget = firstVideoTarget,
             hasVideoSurface = hasVideoSurface,
             hasCommentEntry = hasCommentEntry,
             commentButton = commentButton,
             commentSurface = CommentSurfaceDetector.detect(context),
         )
+    }
+
+    /**
+     * Selects the first video card from the profile using structure, not a fixed screen point.
+     * Larger cards rank first and the lower profile content region excludes the avatar/header.
+     */
+    fun firstVideoTarget(context: ScreenContext): NodeSnapshot? {
+        val page = PageDetector().detect(context).kind
+        val normalizedTexts = (context.nodeText() + context.ocrText()).map(TextNormalizer::normalize)
+        val hasVideoMarker = normalizedTexts.any { text -> videoMarkers.any(text::contains) }
+        return firstVideoTarget(context, page, hasVideoMarker)
+    }
+
+    private fun firstVideoTarget(
+        context: ScreenContext,
+        page: PageKind,
+        hasVideoMarker: Boolean,
+    ): NodeSnapshot? {
+        if (page != PageKind.USER_PROFILE || !hasVideoMarker) return null
+        return context.nodes.asSequence()
+            .filter { node ->
+                val normalizedClass = TextNormalizer.normalize(node.className)
+                val imageLike = normalizedClass.contains("imageview") ||
+                    normalizedClass.contains("surfaceview") ||
+                    normalizedClass.contains("textureview")
+                val normalizedBounds = node.normalizedBounds(context.screenSize)
+                node.isVisibleToUser && node.isClickable && imageLike &&
+                    node.bounds.width >= MIN_VIDEO_EDGE && node.bounds.height >= MIN_VIDEO_EDGE &&
+                    normalizedBounds.top >= 0.24f
+            }
+            .sortedWith(
+                compareBy<NodeSnapshot> { it.normalizedBounds(context.screenSize).top }
+                    .thenByDescending { it.bounds.width.toLong() * it.bounds.height.toLong() },
+            )
+            .firstOrNull()
     }
 
     private const val MIN_VIDEO_EDGE = 80

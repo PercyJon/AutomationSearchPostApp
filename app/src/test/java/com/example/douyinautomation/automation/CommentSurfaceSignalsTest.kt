@@ -69,6 +69,36 @@ class CommentSurfaceSignalsTest {
     }
 
     @Test
+    fun `zero comment panel is terminal and its author activity row is not a candidate`() {
+        val context = ScreenContext(
+            screenSize = screen,
+            nodes = listOf(
+                NodeSnapshot(text = "Horizon G. 作者", bounds = ScreenBounds(120, 820, 430, 870)),
+                NodeSnapshot(text = "发布了作品 2020-5-21", bounds = ScreenBounds(120, 880, 620, 940)),
+                NodeSnapshot(text = "期待你的评论", bounds = ScreenBounds(300, 1450, 700, 1520)),
+                NodeSnapshot(text = "发条评论表达你的想法", bounds = ScreenBounds(280, 1530, 760, 1590)),
+                NodeSnapshot(text = "去评论", bounds = ScreenBounds(320, 1630, 540, 1700), isClickable = true),
+                NodeSnapshot(text = "写评论", bounds = ScreenBounds(40, 2200, 500, 2260), isEditable = true),
+            ),
+        )
+
+        val end = CommentPanelEndDetector.detect(context)
+        assertTrue(end.reached)
+        assertTrue(end.marker.orEmpty().contains("期待你的评论"))
+        assertTrue(end.marker.orEmpty().contains("去评论"))
+        assertTrue(CommentCandidateExtractor.extract(context, emptyList()).candidates.isEmpty())
+    }
+
+    @Test
+    fun `empty comment prompt without go-comment action is not terminal`() {
+        val context = ScreenContext(
+            screenSize = screen,
+            nodes = listOf(NodeSnapshot(text = "期待你的评论", bounds = ScreenBounds(300, 1450, 700, 1520))),
+        )
+        assertFalse(CommentPanelEndDetector.detect(context).reached)
+    }
+
+    @Test
     fun `comment entry observation carries the verified button`() {
         val button = node(
             text = "评论",

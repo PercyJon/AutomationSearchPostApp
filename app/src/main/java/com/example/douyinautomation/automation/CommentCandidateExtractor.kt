@@ -132,13 +132,19 @@ object CommentCandidateExtractor {
         // Short comments such as “价格” or “多少钱” are valid matches, so do not discard them
         // merely because they could also look like a short display name. The future controller
         // will still require a comment-container/post-condition before opening a profile.
-        isUsefulFragment(value) && value.trim().length <= 500
+        isUsefulFragment(value) && value.trim().length <= 500 &&
+            !TextNormalizer.normalize(value).contains("发布了作品") &&
+            !TextNormalizer.normalize(value).contains("发条评论表达你的想法") &&
+            !TextNormalizer.normalize(value).contains("期待你的评论") &&
+            !TextNormalizer.normalize(value).contains("去评论") &&
+            !TextNormalizer.normalize(value).endsWith("作者")
 
     private fun isLikelyAuthorText(value: String): Boolean {
         val normalized = TextNormalizer.normalize(value)
         if (normalized.length !in MIN_TEXT_LENGTH..MAX_AUTHOR_LENGTH) return false
         if (isUiNoise(normalized)) return false
         if (normalized.contains("回复") || normalized.contains("点赞") || normalized.contains("分钟前")) return false
+        if (normalized.endsWith("作者")) return false
         if (normalized.endsWith("评论") || normalized.endsWith("条回复")) return false
         // A comment is often a sentence; short names may contain punctuation, but not a full
         // sentence ending in common Chinese/ASCII punctuation.

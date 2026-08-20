@@ -117,4 +117,33 @@ class CommentEntryStateMachineTest {
         assertEquals(PageKind.USER_PROFILE, observation.page)
         assertTrue(observation.hasFirstVideoTarget)
     }
+
+    @Test
+    fun `signal detector exposes the selected first video node`() {
+        val first = NodeSnapshot(
+            hierarchyPath = listOf(2, 0),
+            className = "android.widget.ImageView",
+            bounds = ScreenBounds(40, 900, 520, 1420),
+            isClickable = true,
+        )
+        val second = first.copy(
+            hierarchyPath = listOf(2, 1),
+            bounds = ScreenBounds(540, 1000, 1000, 1300),
+        )
+        val context = ScreenContext(
+            screenSize = screen,
+            packageName = "com.ss.android.ugc.aweme",
+            nodes = listOf(
+                NodeSnapshot(text = "作品 33"),
+                NodeSnapshot(text = "发私信", isClickable = true),
+                NodeSnapshot(text = "抖音号：demo"),
+                second,
+                first,
+            ),
+        )
+
+        val observation = CommentEntrySignalDetector.observe(context)
+
+        assertEquals(first.hierarchyPath, observation.firstVideoTarget?.hierarchyPath)
+    }
 }
