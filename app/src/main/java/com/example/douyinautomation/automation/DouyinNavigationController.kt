@@ -997,7 +997,7 @@ class DouyinNavigationController(
                 return@repeat
             }
             initialBlindBackAttempts = 0
-            val detection = pageDetector.detect(current)
+            val detection = normalizeInitialHomeDetection(current)
             logger.info(
                 "initial_surface_recovery_probe",
                 attributes = mapOf("attempt" to attempt + 1, "page" to detection.kind.name),
@@ -1008,10 +1008,15 @@ class DouyinNavigationController(
                     return
                 }
                 PageKind.SEARCH_ENTRY -> {
-                    if (!requireHome) {
-                        enterKeyword(current)
-                        return
-                    }
+                    // A focused search-entry surface is already a clean, editable search page.
+                    // enterKeyword overwrites any default/stale text and verifies the requested
+                    // keyword before submitting, so it is safe even for comment tasks that
+                    // demand normalization back to home. Pressing BACK from a focused search
+                    // field only dismisses the keyboard and can exhaust the recovery budget
+                    // without ever reaching HOME (observed on device: UNKNOWN→USER_PROFILE→
+                    // USER_RESULTS→SEARCH_RESULTS→SEARCH_ENTRY, then BACK failed to leave it).
+                    enterKeyword(current)
+                    return
                 }
                 PageKind.SEARCH_RESULTS -> {
                     if (!requireHome && selector.select(current, DouyinSelectors.searchInput).node != null) {
@@ -1041,7 +1046,7 @@ class DouyinNavigationController(
         // otherwise the loop would reject a valid home page without ever observing it.
         val finalContext = currentWindowContext() ?: recentInitialTargetContext()
         if (finalContext != null) {
-            val finalDetection = pageDetector.detect(finalContext)
+            val finalDetection = normalizeInitialHomeDetection(finalContext)
             logger.info(
                 "initial_surface_recovery_final_probe",
                 attributes = mapOf("page" to finalDetection.kind.name),
@@ -1051,7 +1056,10 @@ class DouyinNavigationController(
                     openSearch(finalContext)
                     return
                 }
-                PageKind.SEARCH_ENTRY -> if (!requireHome) {
+                PageKind.SEARCH_ENTRY -> {
+                    // See the matching loop branch: a search-entry surface is already a clean,
+                    // editable search page, so enter the keyword directly instead of pressing
+                    // BACK past a focused input that only dismisses the keyboard.
                     enterKeyword(finalContext)
                     return
                 }
@@ -4976,5 +4984,24 @@ class DouyinNavigationController(
     private fun hasInitialSearchSelectorCandidate(context: ScreenContext): Boolean =
         selector.select(context, DouyinSelectors.searchEntry).node != null ||
             selector.select(context, DouyinSelectors.searchEntryStructural).node != null
+
+    /**
+     * Startup recovery must classify a sparse HOME tree exactly like the observation loop does:
+     * an UNKNOWN page that still exposes the semantic search entry (and no overlay) is HOME.
+     * Without this normalization the recovery loop keeps pressing BACK past a home surface that
+     * [PageDetector] reported as UNKNOWN, over-navigating into search/profile/results and failing
+     * the otherwise-fine launch.
+     */
+    private fun normalizeInitialHomeDetection(context: ScreenContext): PageDetection {
+        val detected = pageDetector.detect(context)
+        if (detected.kind != PageKind.UNKNOWN) return detected
+        if (TransientOverlayDetector.find(context) != null) return detected
+        if (!hasInitialSearchSelectorCandidate(context)) return detected
+        return PageDetection(
+            kind = PageKind.HOME,
+            confidence = 0.78f,
+            reasons = listOf("Semantic home search-entry candidate found during recovery"),
+        )
+    }
 
 }

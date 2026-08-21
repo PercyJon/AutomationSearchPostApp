@@ -166,6 +166,7 @@ fun AppHomeScreen(
     initialSection: String? = null,
     initialCommentTask: Boolean = false,
     autoStartCommentP0: Boolean = false,
+    commentP0LaunchToken: Int = 0,
 ) {
     var section by rememberSaveable(initialSection) { mutableStateOf(initialSection ?: HomeSection.HOME.name) }
     var detailTaskId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -177,6 +178,26 @@ fun AppHomeScreen(
     }
     LaunchedEffect(initialSection) {
         initialSection?.let { section = it }
+    }
+    // A re-delivered OPEN_COMMENT_P0 intent raises the launch token; re-show the comment task even
+    // though showCommentTask (rememberSaveable) was persisted as false after the previous onClose().
+    LaunchedEffect(commentP0LaunchToken) {
+        com.example.douyinautomation.automation.AutomationStore.logger.info(
+            "p0_launch_show_comment_effect",
+            attributes = mapOf(
+                "token" to commentP0LaunchToken,
+                "autoStart" to autoStartCommentP0,
+                "showBefore" to showCommentTask,
+            ),
+        )
+        if (autoStartCommentP0 && commentP0LaunchToken > 0) {
+            // A previous onClose() (or an openRecordsTab() recreate) may leave the persisted
+            // section on RECORDS/TODO. CommentTaskScreen is only composed from the HOME/TODO
+            // branches, so force the section back to HOME before re-showing it. Without this the
+            // re-delivered debug intent re-arms the latch but never composes the runner.
+            section = HomeSection.HOME.name
+            showCommentTask = true
+        }
     }
     val selectedSection = HomeSection.valueOf(section)
 
@@ -294,6 +315,7 @@ fun AppHomeScreen(
                         )
                     },
                     autoStartP0 = autoStartCommentP0,
+                    autoStartToken = commentP0LaunchToken,
                     onClose = {
                         showCommentTask = false
                         showCreateTask = false
@@ -322,6 +344,7 @@ fun AppHomeScreen(
                         )
                     },
                     autoStartP0 = autoStartCommentP0,
+                    autoStartToken = commentP0LaunchToken,
                     onClose = {
                         showCommentTask = false
                         showCreateTask = false
@@ -846,6 +869,7 @@ private fun CommentTaskScreen(
     padding: PaddingValues,
     presetCatalog: SearchPresetCatalog,
     autoStartP0: Boolean = false,
+    autoStartToken: Int = 0,
     onClose: () -> Unit,
 ) {
     val state by AutomationStore.uiState.collectAsState()
@@ -916,7 +940,12 @@ private fun CommentTaskScreen(
     // service's command collector. Auto-start must wait for that collector, otherwise the
     // one-shot debug command can be emitted into a SharedFlow with no subscriber.
     val canRun = state.serviceCommandReady && errors.isEmpty() && snapshot != null
-    var autoStartTriggered by rememberSaveable { mutableStateOf(false) }
+    // A monotonically increasing launch token identifies each distinct debug intent. Keying the
+    // latch on the token (rather than a rememberSaveable boolean) re-arms auto-start when a new
+    // OPEN_COMMENT_P0 intent arrives at an already-running MainActivity, which previously required
+    // a force-stop workaround because rememberSaveable survived recreate().
+    val autoStartLatchToken = if (autoStartP0) autoStartToken else 0
+    var autoStartTriggeredForToken by rememberSaveable { mutableStateOf(0) }
 
     fun startPreparedTask(prepared: com.example.douyinautomation.automation.TaskSnapshot?) {
         if (prepared == null) {
@@ -935,9 +964,20 @@ private fun CommentTaskScreen(
     }
     // Development-only direct runner: no separate business logic is used. It invokes exactly
     // the same prepared snapshot/start command as the visible “立即开始” control.
-    LaunchedEffect(autoStartP0, canRun) {
-        if (autoStartP0 && !autoStartTriggered && canRun) {
-            autoStartTriggered = true
+    LaunchedEffect(autoStartLatchToken, canRun) {
+        com.example.douyinautomation.automation.AutomationStore.logger.info(
+            "p0_autostart_effect",
+            attributes = mapOf(
+                "token" to autoStartLatchToken,
+                "triggeredFor" to autoStartTriggeredForToken,
+                "canRun" to canRun,
+                "ready" to state.serviceCommandReady,
+                "errors" to errors.size,
+                "snapshot" to (snapshot != null),
+            ),
+        )
+        if (autoStartLatchToken != 0 && autoStartTriggeredForToken != autoStartLatchToken && canRun) {
+            autoStartTriggeredForToken = autoStartLatchToken
             startPreparedTask(snapshot)
         }
     }

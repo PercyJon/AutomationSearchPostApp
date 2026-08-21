@@ -27,8 +27,15 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         openRecordsTab = intent.getBooleanExtra(EXTRA_OPEN_RECORDS, false)
         openCommentP0 = BuildConfig.DEBUG && intent.getBooleanExtra(EXTRA_OPEN_COMMENT_P0, false)
+        // The launch nonce lives in the companion object so it survives recreate().  A process-cold
+        // start assigns the initial token exactly once; re-delivered intents advance it in onNewIntent.
+        if (openCommentP0 && commentP0LaunchNonce == 0) commentP0LaunchNonce = 1
         AuthStore.initialize(this)
         AutomationStore.initialize(this)
+        AutomationStore.logger.info(
+            "p0_launch_oncreate",
+            attributes = mapOf("nonce" to commentP0LaunchNonce, "open" to openCommentP0),
+        )
         seedMultiTaskFixtureIfRequested(intent)
 
         setContent {
@@ -39,6 +46,7 @@ class MainActivity : ComponentActivity() {
                         initialSection = if (openRecordsTab) "RECORDS" else null,
                         initialCommentTask = openCommentP0,
                         autoStartCommentP0 = openCommentP0,
+                        commentP0LaunchToken = commentP0LaunchNonce,
                     )
                 }
             }
@@ -60,6 +68,11 @@ class MainActivity : ComponentActivity() {
         }
         if (BuildConfig.DEBUG && intent.getBooleanExtra(EXTRA_OPEN_COMMENT_P0, false)) {
             openCommentP0 = true
+            commentP0LaunchNonce += 1
+            AutomationStore.logger.info(
+                "p0_launch_new_intent",
+                attributes = mapOf("nonce" to commentP0LaunchNonce),
+            )
             recreate()
         }
     }
@@ -108,6 +121,11 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
+        /** Monotonic token identifying each distinct OPEN_COMMENT_P0 debug launch. Static so it
+         * survives recreate() (an instance field resets to 0 and re-arms the latch incorrectly). */
+        @Volatile
+        private var commentP0LaunchNonce: Int = 0
+
         /** Debug-device convenience for Unicode test data; production flow remains operator-driven. */
         const val EXTRA_PREFILL_KEYWORD = "com.example.douyinautomation.PREFILL_KEYWORD"
         const val EXTRA_OPEN_RECORDS = "com.example.douyinautomation.OPEN_RECORDS"
