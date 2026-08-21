@@ -45,9 +45,12 @@ class CommentPrivateMessageRuntime(
     private var scrollPending = false
     private var lastViewportFingerprint: Int? = null
     private var scrollCount = 0
+    private var videoIndex = 0
     private var liveRoomExitCount = 0
     private var liveRoomSwipeCount = 0
     private val processedCandidateKeys = LinkedHashSet<String>()
+    /** Task-level identity ledger; prevents the same commenter being probed again on another video. */
+    private val processedTaskCandidateKeys = LinkedHashSet<String>()
     private var activeCandidate: CommentUserCandidate? = null
 
     val isRunning: Boolean get() = running
@@ -63,9 +66,11 @@ class CommentPrivateMessageRuntime(
         scrollPending = false
         lastViewportFingerprint = null
         scrollCount = 0
+        videoIndex = 0
         liveRoomExitCount = 0
         liveRoomSwipeCount = 0
         processedCandidateKeys.clear()
+        processedTaskCandidateKeys.clear()
         activeCandidate = null
         // Search-target mode still traverses the existing launch/search/user-tab flow before the
         // runtime receives a profile observation. Give that bounded entry route a longer guard;
@@ -89,6 +94,7 @@ class CommentPrivateMessageRuntime(
         config = null
         ledger.clear()
         processedCandidateKeys.clear()
+        processedTaskCandidateKeys.clear()
         activeCandidate = null
     }
 
@@ -207,14 +213,17 @@ class CommentPrivateMessageRuntime(
         timeoutJob?.cancel()
         val end = CommentPanelEndDetector.detect(context)
         if (end.reached) {
-            terminal(CommentRuntimeTerminal.Outcome.COMPLETED, "评论区已读取到底部：${end.marker.orEmpty()}")
+            advanceAfterVideo("评论区已读取到底部：${end.marker.orEmpty()}")
             return
         }
 
         val terms = config?.matchKeywords.orEmpty()
         val extraction = CommentCandidateExtractor.extract(context, terms)
         val newCandidates = extraction.candidates
-            .filterNot { candidate -> processedCandidateKeys.contains(candidate.identityKey) }
+            .filterNot { candidate ->
+                processedCandidateKeys.contains(candidate.identityKey) ||
+                    processedTaskCandidateKeys.contains(candidate.identityKey)
+            }
         val update = ledger.add(extraction)
         logger.info(
             "comment_viewport_read",
@@ -232,6 +241,7 @@ class CommentPrivateMessageRuntime(
         val remaining = (maxUsers - processedCandidateKeys.size).coerceAtLeast(0)
         for (candidate in newCandidates.take(remaining)) {
             processedCandidateKeys += candidate.identityKey
+            processedTaskCandidateKeys += candidate.identityKey
             activeCandidate = candidate
             val result = processCommentCandidate(candidate, context)
             activeCandidate = null
@@ -239,7 +249,7 @@ class CommentPrivateMessageRuntime(
             if (!result) return
         }
         if (processedCandidateKeys.size >= maxUsers) {
-            terminal(CommentRuntimeTerminal.Outcome.COMPLETED, "已完成每个视频的评论用户上限探测")
+            advanceAfterVideo("已完成当前视频的评论用户上限探测")
             return
         }
         if (scrollCount >= MAX_COMMENT_SCROLLS) {
@@ -256,6 +266,64 @@ class CommentPrivateMessageRuntime(
         scrollPending = true
         scrollCount += 1
         armTimeout("等待评论区下一页")
+    }
+
+    /**
+     * Finishes one video and moves to the next one without returning to the profile grid. The
+     * comment sheet is closed first, then a single bounded feed swipe selects the next video.
+     * The state machine is re-armed only after the previous video has been fully accounted for.
+     */
+    private suspend fun advanceAfterVideo(reason: String) {
+        val snapshot = config
+            ?: return terminal(CommentRuntimeTerminal.Outcome.FAILED, "评论任务配置已丢失")
+        val completedVideo = videoIndex + 1
+        if (completedVideo >= snapshot.maxVideos) {
+            logger.info(
+                "comment_video_batch_completed",
+                attributes = mapOf("video_count" to completedVideo, "reason" to reason),
+            )
+            terminal(CommentRuntimeTerminal.Outcome.COMPLETED, reason)
+            return
+        }
+
+        timeoutJob?.cancel()
+        val closed = service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+        if (!closed) {
+            terminal(CommentRuntimeTerminal.Outcome.FAILED, "关闭当前视频评论区失败，无法继续下一个视频")
+            return
+        }
+        delay(RETURN_TO_COMMENT_DELAY_MS)
+
+        videoIndex = completedVideo
+        ledger.clear()
+        processedCandidateKeys.clear()
+        lastViewportFingerprint = null
+        scrollPending = false
+        scrollCount = 0
+        activeCandidate = null
+        stateMachine.prepareNextVideo()
+
+        val swipe = gestures.swipeNormalized(
+            startX = 0.50f,
+            startY = 0.84f,
+            endX = 0.50f,
+            endY = 0.28f,
+            durationMs = NEXT_VIDEO_SWIPE_DURATION_MS,
+        )
+        logger.info(
+            "comment_next_video_swiped",
+            attributes = mapOf(
+                "video_index" to videoIndex,
+                "video_total" to snapshot.maxVideos,
+                "success" to swipe.succeeded,
+                "reason" to reason,
+            ),
+        )
+        if (!swipe.succeeded) {
+            terminal(CommentRuntimeTerminal.Outcome.FAILED, "切换下一个视频失败：${swipe.reason.orEmpty()}")
+            return
+        }
+        armTimeout("等待下一个视频")
     }
 
     /**
@@ -712,5 +780,6 @@ class CommentPrivateMessageRuntime(
         const val MAX_LIVE_ROOM_EXITS = 3
         const val MAX_LIVE_ROOM_SWIPES = 3
         const val LIVE_ROOM_SWIPE_DURATION_MS = 460L
+        const val NEXT_VIDEO_SWIPE_DURATION_MS = 520L
     }
 }

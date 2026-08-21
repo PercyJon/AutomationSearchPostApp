@@ -54,6 +54,23 @@ class CommentEntryStateMachineTest {
     }
 
     @Test
+    fun `next video transition reopens the route from a verified video surface`() {
+        val machine = CommentEntryStateMachine()
+
+        machine.prepareNextVideo()
+        val decision = machine.observe(
+            CommentEntryObservation(
+                page = PageKind.UNKNOWN,
+                hasVideoSurface = true,
+                hasCommentEntry = true,
+            ),
+        )
+
+        assertEquals(CommentEntryStage.WAITING_FOR_COMMENTS, decision.stage)
+        assertEquals(CommentEntryAction.OPEN_COMMENTS, decision.action)
+    }
+
+    @Test
     fun `comment surface readiness is required before reading`() {
         val machine = CommentEntryStateMachine()
         machine.observe(CommentEntryObservation(PageKind.USER_PROFILE, hasFirstVideoTarget = true))

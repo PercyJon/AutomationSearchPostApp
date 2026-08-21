@@ -121,6 +121,15 @@ class CommentEntryStateMachine {
         stage = CommentEntryStage.WAITING_FOR_PROFILE
     }
 
+    /**
+     * Re-arms the route after the current video's comment sheet has been closed and the next
+     * video has been selected. The next observation must still confirm both the video surface
+     * and its comment entry before opening the panel again.
+     */
+    fun prepareNextVideo() {
+        stage = CommentEntryStage.WAITING_FOR_VIDEO
+    }
+
     private fun pause(reason: String): CommentEntryDecision {
         stage = CommentEntryStage.PAUSED_FOR_MANUAL_HANDOFF
         return decision(CommentEntryAction.PAUSE_FOR_MANUAL_HANDOFF, reason)
