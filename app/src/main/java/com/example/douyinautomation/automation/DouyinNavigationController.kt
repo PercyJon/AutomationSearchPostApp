@@ -1912,6 +1912,8 @@ class DouyinNavigationController(
                 "ocr_blocks" to firstContext.ocrBlocks.size,
                 "account_markers" to firstAnalysis.accountMarkerCount,
                 "matched" to (first != null),
+                "failure_reason" to (firstAnalysis.failureReason?.name ?: "none"),
+                "follow_diagnostics" to firstAnalysis.followDiagnostics,
             ),
         )
         if (first == null) return null
@@ -1941,6 +1943,8 @@ class DouyinNavigationController(
                 "account_markers" to secondAnalysis.accountMarkerCount,
                 "matched" to (second != null),
                 "stable" to stable,
+                "failure_reason" to (secondAnalysis.failureReason?.name ?: "none"),
+                "follow_diagnostics" to secondAnalysis.followDiagnostics,
             ),
         )
         if (!stable) return null

@@ -366,6 +366,28 @@ object CommentCandidateExtractor {
             kotlin.math.abs(avatar.centerX - anchor.centerX) <= horizontalTolerance
     }
 
+    /**
+     * True when [anchor]'s visual row still carries visible text. The runtime uses this to tell
+     * an excluded-but-present leading row (most commonly the video author's own comment, whose
+     * author label ends with “作者”) from a partially virtualized first row whose paired name or
+     * comment text is absent from the accessibility tree. The former must be skipped; the latter
+     * must stop the probe to avoid opening the wrong commenter.
+     */
+    fun hasRowText(context: ScreenContext, anchor: ScreenBounds): Boolean {
+        val rowHeight = anchor.height.coerceAtLeast(1)
+        val bandTop = anchor.top - rowHeight / 2
+        val bandBottom = anchor.bottom + rowHeight / 2
+        fun overlaps(bounds: ScreenBounds): Boolean =
+            bounds.centerY >= bandTop && bounds.centerY <= bandBottom
+        val hasNodeText = context.nodes.asSequence()
+            .filter { it.isVisibleToUser && it.bounds != ScreenBounds.EMPTY }
+            .any { node -> !node.text.isNullOrBlank() && overlaps(node.bounds) }
+        if (hasNodeText) return true
+        return context.ocrBlocks.asSequence()
+            .filter { it.bounds != ScreenBounds.EMPTY && it.text.isNotBlank() }
+            .any { block -> overlaps(block.bounds) }
+    }
+
     /** Re-resolves the avatar from a fresh tree before an interaction. */
     fun resolveAvatarTarget(context: ScreenContext, candidate: CommentUserCandidate): NodeSnapshot? {
         val path = candidate.avatarHierarchyPath

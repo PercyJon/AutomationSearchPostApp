@@ -447,6 +447,49 @@ class CommentCandidateExtractorTest {
     }
 
     @Test
+    fun `leading excluded author row carries text while a virtualized row does not`() {
+        // The video author's own comment: the “作者” label excludes the row from candidates, but
+        // the row still exposes visible text beside the avatar and may safely be skipped.
+        val authorContext = ScreenContext(
+            screenSize = screen,
+            nodes = listOf(
+                NodeSnapshot(
+                    className = "android.widget.ImageView",
+                    contentDescription = "用户头像",
+                    bounds = ScreenBounds(48, 940, 156, 1048),
+                ),
+                node("店主小王·作者", 180, 948, 420, 1000),
+                node("作者的评论内容", 180, 1010, 700, 1080),
+            ),
+        )
+        assertTrue(
+            CommentCandidateExtractor.hasRowText(
+                authorContext,
+                ScreenBounds(48, 940, 156, 1048),
+            ),
+        )
+
+        // A partially virtualized first row exposes the avatar but no text; it must still be
+        // treated as unresolved rather than skipped.
+        val virtualizedContext = ScreenContext(
+            screenSize = screen,
+            nodes = listOf(
+                NodeSnapshot(
+                    className = "android.widget.ImageView",
+                    contentDescription = "用户头像",
+                    bounds = ScreenBounds(48, 940, 156, 1048),
+                ),
+            ),
+        )
+        assertFalse(
+            CommentCandidateExtractor.hasRowText(
+                virtualizedContext,
+                ScreenBounds(48, 940, 156, 1048),
+            ),
+        )
+    }
+
+    @Test
     fun `comment surface requires more than incidental comment label`() {
         val video = CommentSurfaceDetector.detect(
             ScreenContext(

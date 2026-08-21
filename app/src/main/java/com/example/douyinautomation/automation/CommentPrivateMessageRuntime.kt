@@ -340,17 +340,34 @@ class CommentPrivateMessageRuntime(
         if (firstAvatar != null && firstCandidate != null &&
             !CommentCandidateExtractor.belongsToAvatarRow(firstCandidate, firstAvatar)
         ) {
-            logger.warn(
-                "comment_first_row_unresolved",
-                message = "首条评论未形成完整的头像、昵称和评论结构；未点击后续评论用户",
-                attributes = mapOf(
-                    "first_avatar_top" to firstAvatar.top,
-                    "first_candidate_top" to candidateTop(firstCandidate),
-                    "candidate_count" to extraction.candidates.size,
-                ),
-            )
-            terminal(CommentRuntimeTerminal.Outcome.FAILED, "首条评论信息不完整，为避免误点已停止本次安全探测")
-            return
+            // The topmost avatar does not anchor the first *valid* candidate. Two distinct
+            // situations produce this: (1) the leading row is present in the tree but was
+            // deliberately excluded (the video author's own comment with a “作者” label), or
+            // (2) the first row is only partially virtualized so its text is absent. Only (2)
+            // is unsafe: it would silently open the second commenter instead of the first.
+            if (CommentCandidateExtractor.hasRowText(context, firstAvatar)) {
+                logger.warn(
+                    "comment_leading_row_skipped",
+                    message = "首条头像对应的是被排除的行（如作者本人评论），跳过并处理下一条有效评论",
+                    attributes = mapOf(
+                        "first_avatar_top" to firstAvatar.top,
+                        "first_candidate_top" to candidateTop(firstCandidate),
+                        "candidate_count" to extraction.candidates.size,
+                    ),
+                )
+            } else {
+                logger.warn(
+                    "comment_first_row_unresolved",
+                    message = "首条评论未形成完整的头像、昵称和评论结构；未点击后续评论用户",
+                    attributes = mapOf(
+                        "first_avatar_top" to firstAvatar.top,
+                        "first_candidate_top" to candidateTop(firstCandidate),
+                        "candidate_count" to extraction.candidates.size,
+                    ),
+                )
+                terminal(CommentRuntimeTerminal.Outcome.FAILED, "首条评论信息不完整，为避免误点已停止本次安全探测")
+                return
+            }
         }
         val newCandidates = extraction.candidates
             .filterNot { candidate ->

@@ -62,10 +62,16 @@ object TransientOverlayDetector {
         // must span a substantial portion of the display; small live badges are not overlays.
         return candidates.firstOrNull { match ->
             val screenWidth = context.screenSize.width
+            val screenHeight = context.screenSize.height
             val wideEnough = match.bounds.width >= (screenWidth * MIN_OVERLAY_WIDTH_RATIO).toInt()
             val spansViewport = match.bounds.left <= (screenWidth * MAX_OVERLAY_SIDE_MARGIN_RATIO).toInt() &&
                 match.bounds.right >= (screenWidth * (1f - MAX_OVERLAY_SIDE_MARGIN_RATIO)).toInt()
-            wideEnough && spansViewport
+            // A full-screen live-stream card also spans the viewport and carries an entry label,
+            // but it is the feed content itself rather than a banner drawn over the top controls.
+            // It must be swiped away (LIVE_ROOM) instead of being waited on as a transient
+            // overlay, so exclude nodes that occupy most of the screen height.
+            val notFullScreenCard = match.bounds.height < (screenHeight * MAX_OVERLAY_HEIGHT_RATIO).toInt()
+            wideEnough && spansViewport && notFullScreenCard
         }
     }
 
@@ -112,6 +118,9 @@ object TransientOverlayDetector {
     // banner, by contrast, spans almost the whole viewport (possibly with a small side margin).
     private const val MIN_OVERLAY_WIDTH_RATIO = 0.75f
     private const val MAX_OVERLAY_SIDE_MARGIN_RATIO = 0.12f
+    // A transient banner sits in the top region; a full-screen live feed card occupies the whole
+    // display and must be excluded from the overlay definition.
+    private const val MAX_OVERLAY_HEIGHT_RATIO = 0.60f
     private const val STARTUP_AD_TOP_REGION_RATIO = 0.55f
     private const val STARTUP_AD_MIN_WIDTH_RATIO = 0.60f
 }

@@ -85,6 +85,56 @@ class OcrUserResultRowDetectorTest {
         assertFalse(first.agreesWith(changedAccount!!))
     }
 
+    @Test
+    fun `accepts a truncated follow pill rendered as a single guan glyph`() {
+        // Real device observation: the first result card's right-side follow pill is rendered
+        // small enough that OCR reports only the "关" glyph at 42px wide, below the historical
+        // 48px minimum and missing the full "关注" label.
+        val context = userResultsContext(
+            block("Designer", 276, 430, 590, 479),
+            block("粉丝：2.0万", 276, 492, 490, 536),
+            block("抖音号：donganchuang", 276, 550, 696, 596),
+            block("关", 848, 483, 890, 528),
+        )
+
+        val analysis = OcrUserResultRowDetector.analyzeFirstVisible(context)
+        val match = analysis.match
+
+        assertEquals(1, analysis.accountMarkerCount)
+        assertNotNull(match)
+        assertEquals(
+            StructuralUserRowMatch.Source.OCR_ASSISTED_STABLE,
+            match!!.asStructuralMatch().source,
+        )
+        val identity = UserResultIdentityExtractor.extract(context, match.asStructuralMatch())
+        assertEquals("donganchuang", identity?.accountHandle)
+    }
+
+    @Test
+    fun `accepts a wide follow-column block that embeds a follow glyph`() {
+        // ML Kit may report the right-side follow pill merged with its padding as a single wider
+        // block. The strict width cap rejects it, so the detector must fall back to a broader
+        // right-column block that still carries a follow signal inside the card's vertical band.
+        val context = userResultsContext(
+            block("Designer", 276, 430, 590, 479),
+            block("粉丝：2.0万", 276, 492, 490, 536),
+            block("抖音号：donganchuang", 276, 550, 696, 596),
+            block("关注", 830, 478, 980, 533),
+        )
+
+        val analysis = OcrUserResultRowDetector.analyzeFirstVisible(context)
+        val match = analysis.match
+
+        assertEquals(1, analysis.accountMarkerCount)
+        assertNotNull(match)
+        assertEquals(
+            StructuralUserRowMatch.Source.OCR_ASSISTED_STABLE,
+            match!!.asStructuralMatch().source,
+        )
+        val identity = UserResultIdentityExtractor.extract(context, match.asStructuralMatch())
+        assertEquals("donganchuang", identity?.accountHandle)
+    }
+
     private fun userResultsContext(vararg blocks: OcrTextBlock): ScreenContext = ScreenContext(
         screenSize = ScreenSize(1080, 2412),
         packageName = "com.ss.android.ugc.aweme",

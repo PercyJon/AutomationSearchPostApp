@@ -79,6 +79,23 @@ class TransientOverlayDetectorTest {
     }
 
     @Test
+    fun `full-screen live stream card is not a transient overlay`() {
+        val context = ScreenContext(
+            screenSize = ScreenSize(1080, 2412),
+            nodes = listOf(
+                NodeSnapshot(
+                    contentDescription = "点击进入直播间按钮",
+                    isVisibleToUser = true,
+                    isClickable = true,
+                    bounds = ScreenBounds(0, 0, 1080, 2265),
+                ),
+            ),
+        )
+
+        assertFalse(TransientOverlayDetector.isBlocking(context))
+    }
+
+    @Test
     fun `live badge on a two column content card does not block`() {
         val context = ScreenContext(
             screenSize = ScreenSize(1080, 2412),

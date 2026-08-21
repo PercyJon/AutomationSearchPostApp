@@ -48,10 +48,24 @@ data class OcrUserResultRowMatch(
     }
 }
 
+/** Which filter rejected the first visible card, for on-device failure-stage diagnostics. */
+enum class OcrUserResultRowFailure {
+    NO_ACCOUNT_MARKER,
+    NO_TITLE,
+    NO_FOLLOWER_METADATA,
+    NO_FOLLOW_LABEL,
+    ROW_HEIGHT_OUT_OF_RANGE,
+    NO_ACCOUNT_PROOF,
+}
+
 data class OcrUserResultRowAnalysis(
     val match: OcrUserResultRowMatch?,
     /** Count only; safe to emit in diagnostics without exposing recognised account text. */
     val accountMarkerCount: Int,
+    /** Non-null only when [match] is null; identifies the first filter that rejected the card. */
+    val failureReason: OcrUserResultRowFailure? = null,
+    /** Sanitised geometry of the follow-column OCR blocks, for on-device failure diagnostics. */
+    val followDiagnostics: String = "",
 )
 
 object OcrUserResultRowDetector {
@@ -71,7 +85,11 @@ object OcrUserResultRowDetector {
             .sortedBy { block -> block.bounds.top }
             .toList()
         val firstAccount = accountMarkers.firstOrNull()
-            ?: return OcrUserResultRowAnalysis(match = null, accountMarkerCount = 0)
+            ?: return OcrUserResultRowAnalysis(
+                match = null,
+                accountMarkerCount = 0,
+                failureReason = OcrUserResultRowFailure.NO_ACCOUNT_MARKER,
+            )
 
         // The earliest account line anchors the first visible result. Never walk forward to a
         // later card if this one is incomplete: P0 is explicitly limited to the first user.
@@ -89,7 +107,11 @@ object OcrUserResultRowDetector {
             // [OcrTextBlock], so accept that block only when a non-metadata display-name line is
             // present inside the same tightly bounded card.
             ?: firstAccount.takeIf { block -> containsEmbeddedDisplayName(block.text) }
-            ?: return OcrUserResultRowAnalysis(match = null, accountMarkerCount = accountMarkers.size)
+            ?: return OcrUserResultRowAnalysis(
+                match = null,
+                accountMarkerCount = accountMarkers.size,
+                failureReason = OcrUserResultRowFailure.NO_TITLE,
+            )
 
         val hasFollowerMetadata = context.ocrBlocks.any { block ->
             isUsable(block.bounds) &&
@@ -99,7 +121,11 @@ object OcrUserResultRowDetector {
                 TextNormalizer.normalize(block.text).contains("粉丝")
         }
         if (!hasFollowerMetadata) {
-            return OcrUserResultRowAnalysis(match = null, accountMarkerCount = accountMarkers.size)
+            return OcrUserResultRowAnalysis(
+                match = null,
+                accountMarkerCount = accountMarkers.size,
+                failureReason = OcrUserResultRowFailure.NO_FOLLOWER_METADATA,
+            )
         }
 
         val rowTop = max(contentTop, title.bounds.top - max(TITLE_TOP_PADDING_PX, title.bounds.height))
@@ -107,16 +133,37 @@ object OcrUserResultRowDetector {
             contentBottom,
             firstAccount.bounds.bottom + max(ROW_BOTTOM_PADDING_PX, title.bounds.height),
         )
-        val follow = context.ocrBlocks.asSequence()
+        val followColumn = context.ocrBlocks
             .filter { block -> isUsable(block.bounds) }
             .filter { block -> block.bounds.left >= screenWidth * FOLLOW_LEFT_RATIO }
+        val followDiagnostics = followColumn
+            .sortedBy { block -> block.bounds.top }
+            .joinToString(";") { block ->
+                "l=${block.bounds.left},t=${block.bounds.top},w=${block.bounds.width}," +
+                    "h=${block.bounds.height},y=${block.bounds.centerY},f=${containsFollowSignal(block.text)}"
+            }
+        val follow = followColumn.asSequence()
             .filter { block -> block.bounds.width in MIN_FOLLOW_WIDTH_PX..(screenWidth * MAX_FOLLOW_WIDTH_RATIO).toInt() }
             .filter { block -> block.bounds.height <= screenHeight * MAX_FOLLOW_HEIGHT_RATIO }
             .filter { block -> isFollowLabel(block.text) }
             .filter { block -> block.bounds.centerY in rowTop.toFloat()..provisionalRowBottom.toFloat() }
             .sortedBy { block -> abs(block.bounds.centerY - firstAccount.bounds.centerY) }
             .firstOrNull()
-            ?: return OcrUserResultRowAnalysis(match = null, accountMarkerCount = accountMarkers.size)
+            // ML Kit can merge the follow pill with surrounding padding into one wider block,
+            // which the strict width cap then rejects. Accept a broader right-column block that
+            // still carries a follow-label glyph inside the card's vertical band.
+            ?: followColumn.asSequence()
+                .filter { block -> block.bounds.height <= screenHeight * MAX_FOLLOW_HEIGHT_RATIO }
+                .filter { block -> block.bounds.centerY in rowTop.toFloat()..provisionalRowBottom.toFloat() }
+                .filter { block -> containsFollowSignal(block.text) }
+                .sortedBy { block -> abs(block.bounds.centerY - firstAccount.bounds.centerY) }
+                .firstOrNull()
+            ?: return OcrUserResultRowAnalysis(
+                match = null,
+                accountMarkerCount = accountMarkers.size,
+                failureReason = OcrUserResultRowFailure.NO_FOLLOW_LABEL,
+                followDiagnostics = followDiagnostics,
+            )
 
         val rowBottom = min(
             contentBottom,
@@ -129,11 +176,16 @@ object OcrUserResultRowDetector {
             bottom = rowBottom,
         )
         if (rowBounds.height !in minRowHeight(screenHeight)..maxRowHeight(screenHeight)) {
-            return OcrUserResultRowAnalysis(match = null, accountMarkerCount = accountMarkers.size)
+            return OcrUserResultRowAnalysis(
+                match = null,
+                accountMarkerCount = accountMarkers.size,
+                failureReason = OcrUserResultRowFailure.ROW_HEIGHT_OUT_OF_RANGE,
+            )
         }
         val proof = accountProof(firstAccount.text) ?: return OcrUserResultRowAnalysis(
             match = null,
             accountMarkerCount = accountMarkers.size,
+            failureReason = OcrUserResultRowFailure.NO_ACCOUNT_PROOF,
         )
         return OcrUserResultRowAnalysis(
             match = OcrUserResultRowMatch(
@@ -178,7 +230,19 @@ object OcrUserResultRowDetector {
         .map(TextNormalizer::normalize)
         .any(::isLikelyDisplayName)
 
-    private fun isFollowLabel(value: String): Boolean = TextNormalizer.normalize(value) in FOLLOW_LABELS
+    private fun isFollowLabel(value: String): Boolean {
+        val normalized = TextNormalizer.normalize(value)
+        if (normalized in FOLLOW_LABELS) return true
+        // The right-side follow pill is rendered at small sizes where ML Kit/Vision OCR can
+        // truncate "关注" down to a single "关" glyph. Treat that lone glyph as a valid
+        // follow-label signal while still rejecting unrelated single characters.
+        return normalized == "关"
+    }
+
+    private fun containsFollowSignal(value: String): Boolean {
+        val normalized = TextNormalizer.normalize(value)
+        return FOLLOW_LABELS.any(normalized::contains) || "关" in normalized
+    }
 
     private fun minRowHeight(screenHeight: Int): Int = max(MIN_ROW_HEIGHT_PX, (screenHeight * MIN_ROW_HEIGHT_RATIO).toInt())
 
@@ -192,7 +256,7 @@ object OcrUserResultRowDetector {
     private const val MAX_FOLLOW_WIDTH_RATIO = 0.30f
     private const val MAX_FOLLOW_HEIGHT_RATIO = 0.09f
     private const val MAX_TEXT_COLUMN_DRIFT_RATIO = 0.16f
-    private const val MIN_FOLLOW_WIDTH_PX = 48
+    private const val MIN_FOLLOW_WIDTH_PX = 32
     private const val TITLE_BOTTOM_TOLERANCE_PX = 16
     private const val MIN_TITLE_DISTANCE_PX = 120
     private const val TITLE_TOP_PADDING_PX = 28

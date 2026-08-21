@@ -26,6 +26,28 @@ class PageDetectorTest {
     }
 
     @Test
+    fun `full-screen live stream card is classified as live room`() {
+        val context = ScreenContext(
+            packageName = "com.ss.android.ugc.aweme",
+            screenSize = ScreenSize(1080, 2412),
+            nodes = listOf(
+                NodeSnapshot(
+                    contentDescription = "点击进入直播间按钮",
+                    bounds = ScreenBounds(0, 0, 1080, 2265),
+                    isVisibleToUser = true,
+                    isClickable = true,
+                ),
+                NodeSnapshot(text = "推荐", bounds = ScreenBounds(0, 2260, 160, 2380)),
+            ),
+        )
+
+        val detection = detector.detect(context)
+
+        assertEquals(PageKind.LIVE_ROOM, detection.kind)
+        assertTrue(detection.reasons.any { it.contains("Live-room") })
+    }
+
+    @Test
     fun `opened live room requires close and lower-right share controls`() {
         val context = contextOf(
             NodeSnapshot(

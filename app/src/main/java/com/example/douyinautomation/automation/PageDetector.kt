@@ -56,9 +56,14 @@ class PageDetector {
         // A live-feed item can expose a large “点击进入直播间” prompt. The action layer handles
         // this page with a vertical swipe and never clicks the prompt.
         val liveRoomSignals = matchingLiveRoomSignals(context)
-        if (liveRoomSignals.isNotEmpty() || LiveRoomSurfaceDetector.hasEntryPrompt(context)) {
+        val fullScreenLiveCard = LiveRoomSurfaceDetector.hasFullScreenLiveCard(context)
+        if (liveRoomSignals.isNotEmpty() || LiveRoomSurfaceDetector.hasEntryPrompt(context) || fullScreenLiveCard) {
             val signals = liveRoomSignals.ifEmpty {
-                listOf(Signal("进入直播间", "live-room-structure", fromAccessibility = false))
+                if (fullScreenLiveCard) {
+                    listOf(Signal("进入直播间", "live-room-fullscreen-card", fromAccessibility = true))
+                } else {
+                    listOf(Signal("进入直播间", "live-room-structure", fromAccessibility = false))
+                }
             }
             return PageDetection(
                 kind = PageKind.LIVE_ROOM,

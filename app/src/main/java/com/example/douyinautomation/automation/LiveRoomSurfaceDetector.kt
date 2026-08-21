@@ -83,6 +83,24 @@ object LiveRoomSurfaceDetector {
         return nodePrompt || ocrPrompt || TextNormalizer.matchesAny(combined, DouyinLabels.liveRoomEntry)
     }
 
+    /**
+     * A full-screen live-stream card in the home feed exposes a “点击进入直播间” entry that spans
+     * nearly the whole viewport. Its top edge is at (or near) 0, so the bounded entry-prompt
+     * window in [hasEntryPrompt] never matches it. The action layer must swipe such a card away
+     * to reach the next normal video instead of waiting on it as a transient overlay.
+     */
+    fun hasFullScreenLiveCard(context: ScreenContext): Boolean =
+        context.nodes.any { node ->
+            if (!node.isVisibleToUser || node.bounds.height <= 0) return@any false
+            val bounds = node.normalizedBounds(context.screenSize)
+            val spansViewport = bounds.left <= FULL_SCREEN_LEFT_MARGIN_RATIO &&
+                bounds.right >= (1f - FULL_SCREEN_LEFT_MARGIN_RATIO) &&
+                bounds.width >= FULL_SCREEN_WIDTH_RATIO
+            val coversHeight = bounds.height >= FULL_SCREEN_HEIGHT_RATIO || bounds.bottom >= 0.90f
+            spansViewport && coversHeight &&
+                TextNormalizer.matchesAny(node.searchableText().joinToString(" "), DouyinLabels.liveRoomEntry)
+        }
+
     private fun hasUnlabelledCloseControl(context: ScreenContext): Boolean =
         context.nodes.any { node ->
             val bounds = node.normalizedBounds(context.screenSize)
@@ -106,4 +124,8 @@ object LiveRoomSurfaceDetector {
 
     private fun aspectRatio(node: NodeSnapshot): Float =
         node.bounds.width.toFloat() / node.bounds.height.coerceAtLeast(1)
+
+    private const val FULL_SCREEN_LEFT_MARGIN_RATIO = 0.12f
+    private const val FULL_SCREEN_WIDTH_RATIO = 0.75f
+    private const val FULL_SCREEN_HEIGHT_RATIO = 0.75f
 }
