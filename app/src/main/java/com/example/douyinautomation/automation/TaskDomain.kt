@@ -111,6 +111,7 @@ data class TaskDraft(
                     matchKeywords = config.matchKeywords,
                     maxVideos = config.maxVideos,
                     maxUsersPerVideo = config.maxUsersPerVideo,
+                    skipPinnedVideos = config.skipPinnedVideos,
                 )
             },
         )

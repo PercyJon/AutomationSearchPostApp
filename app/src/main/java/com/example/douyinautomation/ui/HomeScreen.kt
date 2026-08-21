@@ -96,6 +96,7 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
+import com.example.douyinautomation.BuildConfig
 import com.example.douyinautomation.automation.AutomationCommand
 import com.example.douyinautomation.automation.AutomationPhase
 import com.example.douyinautomation.automation.AutomationStore
@@ -156,16 +157,20 @@ private enum class HomeSection {
     DIAGNOSTICS,
 }
 
+private const val COMMENT_P0_REGRESSION_SEED = "comment-p0-designer-1-1"
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AppHomeScreen(
     initialKeyword: String = "",
     initialSection: String? = null,
+    initialCommentTask: Boolean = false,
+    autoStartCommentP0: Boolean = false,
 ) {
     var section by rememberSaveable(initialSection) { mutableStateOf(initialSection ?: HomeSection.HOME.name) }
     var detailTaskId by rememberSaveable { mutableStateOf<String?>(null) }
     var showCreateTask by rememberSaveable { mutableStateOf(false) }
-    var showCommentTask by rememberSaveable { mutableStateOf(false) }
+    var showCommentTask by rememberSaveable { mutableStateOf(initialCommentTask) }
     val context = androidx.compose.ui.platform.LocalContext.current
     var showRemoteTasks by remember(context) {
         mutableStateOf(RemoteTaskVisibilityStore.isEnabled(context))
@@ -288,6 +293,7 @@ fun AppHomeScreen(
                             source = SearchPresetCatalog.Source.BUILT_IN,
                         )
                     },
+                    autoStartP0 = autoStartCommentP0,
                     onClose = {
                         showCommentTask = false
                         showCreateTask = false
@@ -315,6 +321,7 @@ fun AppHomeScreen(
                             source = SearchPresetCatalog.Source.BUILT_IN,
                         )
                     },
+                    autoStartP0 = autoStartCommentP0,
                     onClose = {
                         showCommentTask = false
                         showCreateTask = false
@@ -490,7 +497,7 @@ private fun TaskDashboard(
             nowMillis = System.currentTimeMillis(),
         )
     }.getOrNull()
-    val canStart = state.serviceConnected && queries.isNotEmpty() && draftErrors.isEmpty()
+    val canStart = state.serviceCommandReady && queries.isNotEmpty() && draftErrors.isEmpty()
     val canSave = queries.isNotEmpty() && draftErrors.isEmpty()
     val fixedTodoLayout = !showCreateTask && showTodoOnly && !showRemoteTasks
 
@@ -551,7 +558,7 @@ private fun TaskDashboard(
                     }
                     Button(
                         onClick = startSelected,
-                        enabled = state.serviceConnected && selectedSavedTaskIds.isNotEmpty() && !isTaskActivePhase(state.phase),
+                        enabled = state.serviceCommandReady && selectedSavedTaskIds.isNotEmpty() && !isTaskActivePhase(state.phase),
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = AutomationSpacing.Page, vertical = 8.dp),
@@ -581,7 +588,7 @@ private fun TaskDashboard(
             if (showTodoOnly && showRemoteTasks && (remoteTasks.isNotEmpty() || licenseState.status != LicenseStatus.NOT_CONFIGURED)) {
                 RemoteTaskCard(
                     tasks = remoteTasks,
-                    serviceConnected = state.serviceConnected,
+                    serviceConnected = state.serviceCommandReady,
                     startingTaskId = remoteStartingTaskId,
                     refreshInFlight = remoteRefreshInFlight,
                     lastRefreshAtMillis = remoteRefreshAtMillis,
@@ -838,17 +845,47 @@ private fun TaskDashboard(
 private fun CommentTaskScreen(
     padding: PaddingValues,
     presetCatalog: SearchPresetCatalog,
+    autoStartP0: Boolean = false,
     onClose: () -> Unit,
 ) {
     val state by AutomationStore.uiState.collectAsState()
     val scope = rememberCoroutineScope()
-    var entryMode by rememberSaveable { mutableStateOf(CommentPrivateMessageEntryMode.CURRENT_PROFILE) }
-    var targetUser by rememberSaveable { mutableStateOf("") }
+    // The debug APK starts with the bounded P0 regression contract already filled in.  This
+    // removes repeated form entry/screenshots from every device run; release users still start
+    // with an empty, editable configuration.
+    val useP0RegressionDefaults = BuildConfig.DEBUG
+    var entryMode by rememberSaveable {
+        mutableStateOf(
+            if (useP0RegressionDefaults) {
+                CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE
+            } else {
+                CommentPrivateMessageEntryMode.CURRENT_PROFILE
+            },
+        )
+    }
+    var targetUser by rememberSaveable { mutableStateOf(if (useP0RegressionDefaults) "designer" else "") }
     var taskName by rememberSaveable { mutableStateOf("") }
     var matchKeywords by rememberSaveable { mutableStateOf("") }
     var maxVideos by rememberSaveable { mutableStateOf("1") }
-    var maxUsers by rememberSaveable { mutableStateOf("5") }
+    var maxUsers by rememberSaveable { mutableStateOf(if (useP0RegressionDefaults) "1" else "5") }
+    var skipPinnedVideos by rememberSaveable { mutableStateOf(false) }
     var message by rememberSaveable { mutableStateOf<String?>(null) }
+    // A versioned one-time seed also handles an existing debug install whose saved Compose state
+    // predates this regression preset. It never changes values again after the operator edits
+    // the form in the current development build.
+    var regressionSeedVersion by rememberSaveable { mutableStateOf("") }
+    LaunchedEffect(useP0RegressionDefaults, regressionSeedVersion) {
+        if (useP0RegressionDefaults && regressionSeedVersion != COMMENT_P0_REGRESSION_SEED) {
+            entryMode = CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE
+            targetUser = "designer"
+            taskName = ""
+            matchKeywords = ""
+            maxVideos = "1"
+            maxUsers = "1"
+            skipPinnedVideos = false
+            regressionSeedVersion = COMMENT_P0_REGRESSION_SEED
+        }
+    }
 
     val config = CommentPrivateMessageConfig(
         entryMode = entryMode,
@@ -856,6 +893,7 @@ private fun CommentTaskScreen(
         matchKeywords = matchKeywords.split('|'),
         maxVideos = maxVideos.toIntOrNull() ?: 0,
         maxUsersPerVideo = maxUsers.toIntOrNull() ?: 0,
+        skipPinnedVideos = skipPinnedVideos,
     )
     val draft = TaskDraft(
         id = java.util.UUID.randomUUID().toString(),
@@ -874,7 +912,35 @@ private fun CommentTaskScreen(
     val snapshot = runCatching {
         draft.toSnapshot(presets = presetCatalog, nowMillis = System.currentTimeMillis())
     }.getOrNull()
-    val canRun = state.serviceConnected && errors.isEmpty() && snapshot != null
+    // The system setting may say that accessibility is enabled before Android has created the
+    // service's command collector. Auto-start must wait for that collector, otherwise the
+    // one-shot debug command can be emitted into a SharedFlow with no subscriber.
+    val canRun = state.serviceCommandReady && errors.isEmpty() && snapshot != null
+    var autoStartTriggered by rememberSaveable { mutableStateOf(false) }
+
+    fun startPreparedTask(prepared: com.example.douyinautomation.automation.TaskSnapshot?) {
+        if (prepared == null) {
+            message = errors.firstOrNull() ?: "任务配置暂不可执行"
+        } else {
+            AutomationStore.send(
+                AutomationCommand.Start(
+                    keyword = prepared.composedQueries.firstOrNull().orEmpty(),
+                    message = "",
+                    safetyProbe = true,
+                    taskSnapshot = prepared,
+                ),
+            )
+            onClose()
+        }
+    }
+    // Development-only direct runner: no separate business logic is used. It invokes exactly
+    // the same prepared snapshot/start command as the visible “立即开始” control.
+    LaunchedEffect(autoStartP0, canRun) {
+        if (autoStartP0 && !autoStartTriggered && canRun) {
+            autoStartTriggered = true
+            startPreparedTask(snapshot)
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -902,6 +968,21 @@ private fun CommentTaskScreen(
                 onClick = { entryMode = CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE },
                 label = { Text("搜索指定用户") },
             )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("跳过置顶视频", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    "开启后会跳过带有“置顶”标记的视频，优先处理最新的普通作品。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = skipPinnedVideos, onCheckedChange = { skipPinnedVideos = it })
         }
         if (entryMode == CommentPrivateMessageEntryMode.CURRENT_PROFILE) {
             Text(
@@ -962,7 +1043,7 @@ private fun CommentTaskScreen(
         }
         message?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         Text(
-            "首次真机回归默认：1 个视频、最多 5 个评论用户。评论区不会滚动到底，以免长评论列表造成无界等待。",
+            "首次真机回归默认：1 个视频、最多 1 个评论用户。评论区不会滚动到底，以免长评论列表造成无界等待。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -983,20 +1064,7 @@ private fun CommentTaskScreen(
             ) { Text("保存") }
             Button(
                 onClick = {
-                    val prepared = snapshot
-                    if (prepared == null) {
-                        message = errors.firstOrNull() ?: "任务配置暂不可执行"
-                    } else {
-                        AutomationStore.send(
-                            AutomationCommand.Start(
-                                keyword = prepared.composedQueries.firstOrNull().orEmpty(),
-                                message = "",
-                                safetyProbe = true,
-                                taskSnapshot = prepared,
-                            ),
-                        )
-                        onClose()
-                    }
+                    startPreparedTask(snapshot)
                 },
                 enabled = canRun,
                 modifier = Modifier.weight(1f).height(50.dp),
@@ -2064,6 +2132,7 @@ private fun TaskHistoryEntry.toReusableDraft(): TaskDraft = TaskDraft(
             matchKeywords = config.matchKeywords,
             maxVideos = config.maxVideos,
             maxUsersPerVideo = config.maxUsersPerVideo,
+            skipPinnedVideos = config.skipPinnedVideos,
         )
     },
 )

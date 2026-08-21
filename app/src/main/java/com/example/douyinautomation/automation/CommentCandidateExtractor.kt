@@ -14,10 +14,10 @@ data class CommentTextFragment(
 )
 
 /**
- * A comment whose author can be opened from a text region. The extractor intentionally returns
- * the author/name bounds, not an avatar bounds, so a live avatar cannot send the runner into a
- * live room. If the author is not exposed, [interactionBounds] falls back to the comment text
- * region and the future controller must verify the resulting profile before messaging.
+ * A comment whose author can be opened from the comment-row avatar. The avatar is preferred over
+ * text because the name and action controls can be exposed as neighboring accessibility nodes;
+ * text remains metadata for identity/deduplication. OCR-only fixtures may retain the author bounds
+ * for deterministic unit tests, but the real runtime refuses to tap without a verified avatar.
  */
 data class CommentUserCandidate(
     val authorText: String?,
@@ -30,11 +30,21 @@ data class CommentUserCandidate(
     val source: CommentTextSource,
     /** Live-node path for the author/name; empty when the candidate came from OCR only. */
     val interactionHierarchyPath: List<Int> = emptyList(),
+    /** The circular avatar that Douyin uses to open the commenter profile. */
+    val avatarBounds: ScreenBounds? = null,
+    /** Live-node path for [avatarBounds], when Accessibility exposes the avatar node. */
+    val avatarHierarchyPath: List<Int> = emptyList(),
 )
 
 data class CommentCandidateExtraction(
     val candidates: List<CommentUserCandidate>,
     val fragments: List<CommentTextFragment>,
+    /**
+     * The first left-side avatar below the comments-count header.  This is deliberately exposed
+     * to the runtime so it can refuse a later candidate when the first visible comment row was
+     * only partially exposed by Douyin's accessibility tree.
+     */
+    val firstVisibleCommentAvatar: ScreenBounds? = null,
 ) {
     val matchedCount: Int get() = candidates.size
 }
@@ -56,9 +66,16 @@ object CommentCandidateExtractor {
     ): CommentCandidateExtraction {
         val fragments = collectFragments(context)
         val terms = CommentKeywordMatcher.normalizeKeywords(matchKeywords)
+        // The location/check-in header and the centered “270条评论” count are part of the
+        // comment sheet chrome, not user comments.  When the count exposes bounds, use its
+        // bottom edge as a hard content boundary so a split/atypical location label cannot be
+        // promoted to an author/comment pair by geometry alone.
+        val commentContentTop = commentCountBottom(context)
+        val firstVisibleCommentAvatar = firstCommentAvatar(context, commentContentTop)
         val commentFragments = fragments.filter { fragment ->
             fragment.bounds != ScreenBounds.EMPTY &&
                 fragment.bounds.top >= (context.screenSize.height * HEADER_EXCLUSION_RATIO).toInt() &&
+                (commentContentTop == null || fragment.bounds.top >= commentContentTop) &&
                 isLikelyCommentText(fragment.text) &&
                 CommentKeywordMatcher.matches(fragment.text, terms)
         }
@@ -68,38 +85,77 @@ object CommentCandidateExtractor {
         val authorFragments = commentFragments.asSequence()
             .mapNotNull { comment -> findAuthor(comment, fragments, context.screenSize.width) }
             .toSet()
+        val avatarSignalsAvailable = context.nodes.any(::isAvatarLikeNode)
         val candidates = commentFragments.mapNotNull { comment ->
             if (comment in authorFragments) return@mapNotNull null
             val author = findAuthor(comment, fragments, context.screenSize.width)
             val authorText = author?.text?.trim()?.takeIf(::isLikelyAuthorText)
-            val identitySeed = authorText ?: "${comment.text}:${comment.bounds.centerX}:${comment.bounds.centerY}"
+            // A location/metadata row (for example “5小时前 · 广东”) has no author line and
+            // must never become a message target. Real comments have the two-line author/comment
+            // structure shown by Douyin, so a missing author is a hard rejection.
+            if (author == null || authorText == null) return@mapNotNull null
+            // When the accessibility tree exposes avatar images, require the avatar to be to the
+            // left of the author/comment pair. This rejects the top location row even if OCR or a
+            // custom text node made it look like a comment. If no image nodes are exposed (pure
+            // OCR fixture), retain the author/comment geometry fallback.
+            val avatar = findNearbyAvatar(author, comment, context)
+            if (avatarSignalsAvailable && avatar == null) {
+                return@mapNotNull null
+            }
+            val identitySeed = authorText
             val key = "comment-user:${IdentityTextCanonicalizer.normalize(identitySeed)}"
             CommentUserCandidate(
                 authorText = authorText,
                 commentText = comment.text.trim(),
-                authorBounds = authorText?.let { author?.bounds },
+                authorBounds = author.bounds,
                 commentBounds = comment.bounds,
-                interactionBounds = authorText?.let { author?.bounds } ?: comment.bounds,
+                // The avatar is the explicit, stable profile-entry affordance. Keep the author
+                // bounds only for OCR-only fixtures; the runtime requires a real avatar node.
+                interactionBounds = avatar?.bounds ?: author.bounds,
                 matchedKeywords = terms.filter { term ->
                     IdentityTextCanonicalizer.normalize(comment.text).contains(term)
                 },
                 identityKey = key,
                 source = comment.source,
-                interactionHierarchyPath = author?.hierarchyPath?.takeIf { authorText != null }
-                    ?: comment.hierarchyPath,
+                interactionHierarchyPath = avatar?.hierarchyPath ?: author.hierarchyPath,
+                avatarBounds = avatar?.bounds,
+                avatarHierarchyPath = avatar?.hierarchyPath.orEmpty(),
             )
-        }.distinctBy(CommentUserCandidate::identityKey)
-        return CommentCandidateExtraction(candidates = candidates, fragments = fragments)
+        }
+            // Accessibility traversal order reflects view hierarchy construction, not visual row
+            // order.  On several Douyin builds that order is bottom-to-top, which made a bounded
+            // one-user run start from the last visible comment.  The task contract is always the
+            // first complete comment row below the sheet header, so order candidates explicitly
+            // by their visual row before the runtime applies its configured limit.
+            .sortedWith(
+                compareBy<CommentUserCandidate> { candidate ->
+                    minOf(
+                        candidate.avatarBounds?.top ?: Int.MAX_VALUE,
+                        candidate.authorBounds?.top ?: candidate.commentBounds.top,
+                        candidate.commentBounds.top,
+                    )
+                }.thenBy { candidate ->
+                    candidate.avatarBounds?.left ?: candidate.authorBounds?.left ?: candidate.commentBounds.left
+                }.thenBy { candidate ->
+                    if (candidate.source == CommentTextSource.ACCESSIBILITY) 0 else 1
+                },
+            )
+            .distinctBy(CommentUserCandidate::identityKey)
+        return CommentCandidateExtraction(
+            candidates = candidates,
+            fragments = fragments,
+            firstVisibleCommentAvatar = firstVisibleCommentAvatar,
+        )
     }
 
     private fun collectFragments(context: ScreenContext): List<CommentTextFragment> {
         val nodeFragments = context.nodes.asSequence()
             .filter { it.isVisibleToUser && it.bounds != ScreenBounds.EMPTY }
             .mapNotNull { node ->
-                // Text is authoritative. Content descriptions are accepted only when no text is
-                // present, preventing image/button accessibility labels from becoming authors.
+                // Only visible text nodes are comment fragments. Content descriptions belong to
+                // image/buttons (for example “赞0，未选中”, “踩，已选中”, and the location pin) and
+                // must never be promoted to a user name or comment body.
                 val value = node.text?.trim()?.takeIf(String::isNotEmpty)
-                    ?: node.contentDescription?.trim()?.takeIf { node.text.isNullOrBlank() && it.isNotEmpty() }
                     ?: return@mapNotNull null
                 CommentTextFragment(
                     text = value,
@@ -154,13 +210,18 @@ object CommentCandidateExtractor {
             !TextNormalizer.normalize(value).contains("发条评论表达你的想法") &&
             !TextNormalizer.normalize(value).contains("期待你的评论") &&
             !TextNormalizer.normalize(value).contains("去评论") &&
+            !isCommentMetadata(value) &&
             !TextNormalizer.normalize(value).endsWith("作者")
 
     private fun isLikelyAuthorText(value: String): Boolean {
         val normalized = TextNormalizer.normalize(value)
         if (normalized.length !in MIN_TEXT_LENGTH..MAX_AUTHOR_LENGTH) return false
         if (isUiNoise(normalized)) return false
-        if (normalized.contains("回复") || normalized.contains("点赞") || normalized.contains("分钟前")) return false
+        if (isCommentMetadata(normalized)) return false
+        if (normalized.contains("回复") || normalized.contains("点赞") ||
+            normalized.contains("分钟前") || normalized.contains("小时前") ||
+            normalized.contains("昨天") || normalized.contains("刚刚")
+        ) return false
         if (normalized.endsWith("作者")) return false
         if (normalized.endsWith("评论") || normalized.endsWith("条回复")) return false
         // A comment is often a sentence; short names may contain punctuation, but not a full
@@ -176,11 +237,225 @@ object CommentCandidateExtractor {
             normalized.contains("展开") ||
             normalized.contains("收起") ||
             normalized.contains("发私信") ||
-            normalized.contains("关注") ||
-            normalized.contains("分享") ||
-            normalized.contains("收藏") ||
-            normalized.contains("作品") ||
-            normalized.contains("视频")
+            normalized.contains("已选中") ||
+            normalized.contains("未选中") ||
+            normalized == "赞" || normalized.startsWith("赞0") ||
+            normalized == "踩" || normalized.startsWith("踩,") ||
+            // Do not reject real comments merely because they mention “视频/作品/关注”.
+            // These are UI-noise labels only when the whole short fragment is the label.
+            normalized == "作品" ||
+            normalized == "视频" ||
+            normalized == "关注" ||
+            normalized == "分享" ||
+            normalized == "收藏"
+    }
+
+    private fun isCommentMetadata(value: String): Boolean {
+        val normalized = TextNormalizer.normalize(value)
+        if (normalized.contains("小时前") || normalized.contains("分钟前") ||
+            normalized.contains("昨天") || normalized == "刚刚" ||
+            normalized == "打卡" || normalized.endsWith("人打卡") ||
+            normalized == "免费开放" || normalized.endsWith("人浏览") ||
+            normalized.endsWith("人参与") ||
+            normalized.matches(Regex("\\d+条评论")) ||
+            normalized.contains("已选中") || normalized.contains("未选中") ||
+            normalized == "赞" || normalized.startsWith("赞0") ||
+            normalized == "踩" || normalized.startsWith("踩,") ||
+            normalized == "点赞" || normalized == "不喜欢" ||
+            normalized == "喜欢" || normalized == "回复" ||
+            normalized.matches(Regex("\\d{4}[-/.]\\d{1,2}[-/.]\\d{1,2}.*"))
+        ) return true
+        // The top location card is rendered as a city/address pair (often with a vertical bar)
+        // followed by a second line such as “8076人打卡”. It is not an author/comment row even
+        // though the location pin is an ImageView and can look like an avatar to a loose matcher.
+        if ((normalized.contains("|") || normalized.contains("｜")) &&
+            (normalized.contains("市") || normalized.contains("区") ||
+                normalized.contains("县") || normalized.contains("街") ||
+                normalized.contains("路") || normalized.contains("镇"))
+        ) return true
+        // Douyin's location line is rendered as time · region. A normal comment may contain a
+        // middle dot, but not together with the time metadata marker.
+        return normalized.contains("·") &&
+            (normalized.contains("前") || normalized.matches(Regex(".*\\d{1,2}:\\d{2}.*")))
+    }
+
+    private fun commentCountBottom(context: ScreenContext): Int? {
+        val nodeBottoms = context.nodes.asSequence()
+            .filter { it.isVisibleToUser && it.bounds != ScreenBounds.EMPTY }
+            // The count is a centered header marker near the top of the sheet. Restricting its
+            // search region prevents a later comment/caption that happens to contain “条评论”
+            // from moving the content boundary below real rows.
+            .filter { node ->
+                node.bounds.top <= (context.screenSize.height * 0.55f).toInt() &&
+                    node.bounds.centerX >= context.screenSize.width * 0.18f &&
+                    node.bounds.centerX <= context.screenSize.width * 0.82f
+            }
+            .filter { node ->
+                node.searchableText().any { text ->
+                    TextNormalizer.normalize(text).replace(" ", "")
+                        .matches(Regex("\\d+条评论"))
+                }
+            }
+            .map { it.bounds.bottom }
+        val ocrBottoms = context.ocrBlocks.asSequence()
+            .filter { it.bounds != ScreenBounds.EMPTY }
+            .filter { block ->
+                block.bounds.top <= (context.screenSize.height * 0.55f).toInt() &&
+                    block.bounds.centerX >= context.screenSize.width * 0.18f &&
+                    block.bounds.centerX <= context.screenSize.width * 0.82f
+            }
+            .filter { block ->
+                TextNormalizer.normalize(block.text).replace(" ", "")
+                    .matches(Regex("\\d+条评论"))
+            }
+            .map { it.bounds.bottom }
+        return (nodeBottoms + ocrBottoms).maxOrNull()
+    }
+
+    private fun findNearbyAvatar(
+        author: CommentTextFragment,
+        comment: CommentTextFragment,
+        context: ScreenContext,
+    ): NodeSnapshot? {
+        val textLeft = minOf(author.bounds.left, comment.bounds.left)
+        val rowTop = minOf(author.bounds.top, comment.bounds.top)
+        val rowBottom = maxOf(author.bounds.bottom, comment.bounds.bottom)
+        // A row avatar ends just before the text column.  The earlier 8%-of-screen allowance
+        // was large enough to admit a right-side action image (or an image embedded in the
+        // comment body) when it happened to be closer to the author text than the real avatar.
+        // Keep this overlap deliberately tiny; a genuine avatar is always wholly on the left.
+        val horizontalAllowance = (context.screenSize.width * 0.025f).toInt().coerceIn(12, 28)
+        return context.nodes
+            .asSequence()
+            .filter(::isAvatarLikeNode)
+            .filter { avatar -> isRowAvatar(avatar, textLeft, rowTop, rowBottom, horizontalAllowance) }
+            .minByOrNull { avatar ->
+                kotlin.math.abs(avatar.bounds.centerX - textLeft) +
+                    kotlin.math.abs(avatar.bounds.centerY - (rowTop + rowBottom) / 2f)
+            }
+    }
+
+    /**
+     * Finds the first avatar-shaped node in the actual comment content region.  We only create
+     * this anchor after the centered “N条评论” boundary is available: without that boundary a
+     * profile/avatar above the sheet could be mistaken for a row and incorrectly block all work.
+     */
+    private fun firstCommentAvatar(context: ScreenContext, commentContentTop: Int?): ScreenBounds? {
+        val contentTop = commentContentTop ?: return null
+        val leftLimit = (context.screenSize.width * 0.30f).toInt()
+        return context.nodes.asSequence()
+            .filter(::isAvatarLikeNode)
+            .filter { avatar ->
+                avatar.bounds.top >= contentTop &&
+                    avatar.bounds.centerX <= leftLimit
+            }
+            .sortedWith(
+                compareBy<NodeSnapshot> { it.bounds.top }
+                    .thenBy { it.bounds.left },
+            )
+            .map(NodeSnapshot::bounds)
+            .firstOrNull()
+    }
+
+    /** True only when the candidate is attached to the same visual row as [anchor]. */
+    fun belongsToAvatarRow(candidate: CommentUserCandidate, anchor: ScreenBounds): Boolean {
+        val avatar = candidate.avatarBounds ?: return false
+        val verticalTolerance = maxOf(anchor.height, avatar.height) * 0.75f
+        val horizontalTolerance = maxOf(anchor.width, avatar.width) * 0.50f
+        return kotlin.math.abs(avatar.centerY - anchor.centerY) <= verticalTolerance &&
+            kotlin.math.abs(avatar.centerX - anchor.centerX) <= horizontalTolerance
+    }
+
+    /** Re-resolves the avatar from a fresh tree before an interaction. */
+    fun resolveAvatarTarget(context: ScreenContext, candidate: CommentUserCandidate): NodeSnapshot? {
+        val path = candidate.avatarHierarchyPath
+        val expected = candidate.avatarBounds ?: return null
+        val textLeft = minOf(
+            candidate.authorBounds?.left ?: Int.MAX_VALUE,
+            candidate.commentBounds.left,
+        )
+        val rowTop = minOf(
+            candidate.authorBounds?.top ?: candidate.commentBounds.top,
+            candidate.commentBounds.top,
+        )
+        val rowBottom = maxOf(
+            candidate.authorBounds?.bottom ?: candidate.commentBounds.bottom,
+            candidate.commentBounds.bottom,
+        )
+        if (path.isNotEmpty()) {
+            context.nodes.firstOrNull { node ->
+                node.hierarchyPath == path &&
+                    isRowAvatar(node, textLeft, rowTop, rowBottom, avatarTextOverlap(expected))
+            }?.let { return it }
+        }
+        return context.nodes.asSequence()
+            .filter(::isAvatarLikeNode)
+            .filter { node ->
+                isRowAvatar(node, textLeft, rowTop, rowBottom, avatarTextOverlap(expected)) &&
+                    kotlin.math.abs(node.bounds.centerX - expected.centerX) <= expected.width * 1.5f &&
+                    kotlin.math.abs(node.bounds.centerY - expected.centerY) <= expected.height * 1.5f
+            }
+            .minByOrNull { node ->
+                kotlin.math.abs(node.bounds.centerX - expected.centerX) +
+                    kotlin.math.abs(node.bounds.centerY - expected.centerY)
+            }
+    }
+
+    /**
+     * A comment-row avatar is the only safe click target for the comment flow.  Keep this
+     * geometry deliberately strict: it must be a near-square image on the left of the author and
+     * comment, aligned with that row.  This excludes the location pin, like/dislike controls,
+     * reply controls, and the comment sheet's empty-state artwork.
+     */
+    private fun isRowAvatar(
+        node: NodeSnapshot,
+        textLeft: Int,
+        rowTop: Int,
+        rowBottom: Int,
+        horizontalAllowance: Int,
+    ): Boolean {
+        val bounds = node.bounds
+        val rowHeight = (rowBottom - rowTop).coerceAtLeast(1)
+        val verticalAllowance = maxOf(bounds.height * 0.55f, rowHeight * 0.9f)
+        return bounds.left < textLeft &&
+            bounds.right <= textLeft + horizontalAllowance &&
+            bounds.centerY >= rowTop - verticalAllowance &&
+            bounds.centerY <= rowBottom + verticalAllowance &&
+            bounds.width <= rowHeight * 2.1f &&
+            bounds.height <= rowHeight * 2.1f
+    }
+
+    /** Fresh-tree relocation must retain the same narrow left-of-text geometry as extraction. */
+    private fun avatarTextOverlap(expected: ScreenBounds): Int =
+        (expected.width / 4).coerceIn(8, 28)
+
+    private fun isAvatarLikeNode(node: NodeSnapshot): Boolean {
+        if (!node.isVisibleToUser || node.bounds == ScreenBounds.EMPTY) return false
+        val normalizedClass = TextNormalizer.normalize(node.className)
+        val normalizedId = TextNormalizer.normalize(node.viewIdResourceName)
+        val semanticLabels = node.searchableText()
+            .joinToString(" ")
+            .let(TextNormalizer::normalize)
+        // The location pin in the sheet header is also an ImageView.  It must never satisfy
+        // the avatar signal used to validate a comment row, even when the surrounding text is
+        // split into nodes and cannot be recognized by the metadata text rules alone.
+        if (semanticLabels.contains("位置") || semanticLabels.contains("定位") ||
+            semanticLabels.contains("地址") || semanticLabels.contains("打卡") ||
+            semanticLabels.contains("location") || semanticLabels.contains("place") ||
+            semanticLabels.contains("poi") || semanticLabels.contains("map") ||
+            normalizedId.contains("location") || normalizedId.contains("place") ||
+            normalizedId.contains("poi") || normalizedId.contains("map")
+        ) return false
+        val imageLike = normalizedClass.contains("imageview") ||
+            normalizedClass.contains("avatar") ||
+            normalizedId.contains("avatar") ||
+            normalizedId.contains("head")
+        if (!imageLike) return false
+        val width = node.bounds.width
+        val height = node.bounds.height
+        if (width !in 24..180 || height !in 24..180) return false
+        val ratio = width.toFloat() / height.toFloat()
+        return ratio in 0.65f..1.35f
     }
 
     private val UI_NOISE = setOf(

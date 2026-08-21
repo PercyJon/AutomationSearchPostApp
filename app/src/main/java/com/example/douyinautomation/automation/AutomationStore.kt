@@ -81,6 +81,8 @@ enum class AutomationPhase {
 
 data class AutomationUiState(
     val serviceConnected: Boolean = false,
+    /** True only after the bound accessibility service has subscribed to [commands]. */
+    val serviceCommandReady: Boolean = false,
     val serviceStatusKnown: Boolean = false,
     val phase: AutomationPhase = AutomationPhase.IDLE,
     val lastPage: PageDetection? = null,
@@ -120,8 +122,9 @@ data class AutomationUiState(
 
 /**
  * Process-local bridge between the Compose diagnostics surface and the enabled accessibility
- * service. Commands are only accepted once Android has connected the service; this prevents the
- * app UI from appearing to control a service that the user has not explicitly enabled.
+ * service. [serviceConnected] means Android reports that the service is enabled; command actions
+ * additionally wait for [AutomationUiState.serviceCommandReady], which is set only after the
+ * bound service has installed its command collector.
  */
 object AutomationStore {
     val logger = DiagnosticLogger(logTag = "DyinPoc")
@@ -338,6 +341,9 @@ object AutomationStore {
         if (!_uiState.value.serviceConnected) {
             return "请先开启无障碍服务"
         }
+        if (!_uiState.value.serviceCommandReady) {
+            return "无障碍服务正在连接，请稍后再试"
+        }
         val snapshot = history.toRetrySnapshot(
             newTaskId = UUID.randomUUID().toString(),
             nowMillis = System.currentTimeMillis(),
@@ -382,7 +388,10 @@ object AutomationStore {
     fun resumeTask(checkpoint: TaskCheckpoint): String {
         beginTaskInternal(
             taskId = checkpoint.taskId,
-            keyword = checkpoint.snapshot.composedQueries[checkpoint.queryIndex],
+            // CURRENT_PROFILE comment tasks intentionally have no search query.  A service
+            // rebind must be able to restore that frozen task contract without indexing an
+            // empty query list (the older path crashed/left the task in an invalid state).
+            keyword = checkpoint.snapshot.composedQueries.getOrNull(checkpoint.queryIndex).orEmpty(),
             snapshot = checkpoint.snapshot,
             queryIndex = checkpoint.queryIndex,
             resetRecords = false,
@@ -934,6 +943,7 @@ object AutomationStore {
         put("match_keywords", JSONArray(matchKeywords))
         put("max_videos", maxVideos)
         put("max_users_per_video", maxUsersPerVideo)
+        put("skip_pinned_videos", skipPinnedVideos)
     }
 
     private fun JSONObject.toCommentPrivateMessageConfig(): CommentPrivateMessageConfig? = runCatching {
@@ -951,6 +961,7 @@ object AutomationStore {
                 "max_users_per_video",
                 CommentPrivateMessageConfig.DEFAULT_MAX_USERS_PER_VIDEO,
             ),
+            skipPinnedVideos = optBoolean("skip_pinned_videos", false),
         )
     }.getOrNull()
 
@@ -960,6 +971,7 @@ object AutomationStore {
         put("match_keywords", JSONArray(matchKeywords))
         put("max_videos", maxVideos)
         put("max_users_per_video", maxUsersPerVideo)
+        put("skip_pinned_videos", skipPinnedVideos)
     }
 
     private fun JSONObject.toCommentPrivateMessageSnapshot(): CommentPrivateMessageSnapshot? = runCatching {
@@ -977,6 +989,7 @@ object AutomationStore {
                 "max_users_per_video",
                 CommentPrivateMessageConfig.DEFAULT_MAX_USERS_PER_VIDEO,
             ),
+            skipPinnedVideos = optBoolean("skip_pinned_videos", false),
         )
     }.getOrNull()
 
@@ -1194,10 +1207,17 @@ object AutomationStore {
         if (isNull(key)) null else optString(key).takeIf(String::isNotBlank)
 
     fun send(command: AutomationCommand) {
-        if (!_uiState.value.serviceConnected) {
+        val serviceState = _uiState.value
+        if (!serviceState.serviceConnected) {
             val reason = "Enable the accessibility service before running this command."
             logger.warn("command_rejected", message = reason, attributes = mapOf("command" to command.name()))
             publishFailure(reason)
+            return
+        }
+        if (!serviceState.serviceCommandReady) {
+            val reason = "无障碍服务正在连接，请稍后再试"
+            logger.warn("command_rejected_service_connecting", message = reason, attributes = mapOf("command" to command.name()))
+            publishCommandRejection(reason)
             return
         }
         if (!_commands.tryEmit(command)) {
@@ -1210,6 +1230,7 @@ object AutomationStore {
         _uiState.update {
             it.copy(
                 serviceConnected = true,
+                serviceCommandReady = true,
                 serviceStatusKnown = true,
                 phase = if (it.phase == AutomationPhase.IDLE) AutomationPhase.SERVICE_READY else it.phase,
                 lastError = null,
@@ -1221,7 +1242,12 @@ object AutomationStore {
         // AccessibilityService can be briefly destroyed and rebound during an APK update or
         // a screenshot request. Keep the last known connection while the activity's scheduled
         // refreshes verify the new binding; this avoids a misleading "not connected" flash.
-        _uiState.update { it.copy(serviceStatusKnown = false) }
+        _uiState.update { it.copy(serviceStatusKnown = false, serviceCommandReady = false) }
+    }
+
+    /** A rejected UI command must not turn an already-running task into a failed task. */
+    private fun publishCommandRejection(reason: String) {
+        _uiState.update { current -> current.copy(lastError = reason) }
     }
 
     /**
@@ -1270,6 +1296,9 @@ object AutomationStore {
         _uiState.update { current ->
             current.copy(
                 serviceConnected = targetEnabled,
+                // Settings can report an enabled service before Android binds its process. Keep
+                // command readiness false until onServiceConnected has installed the collector.
+                serviceCommandReady = current.serviceCommandReady && targetEnabled,
                 serviceStatusKnown = true,
                 phase = if (targetEnabled && current.phase == AutomationPhase.IDLE) {
                     AutomationPhase.SERVICE_READY

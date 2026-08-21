@@ -30,7 +30,11 @@ class PageDetector {
         }
 
         val loginSignals = matchingSignals(context, DouyinLabels.login)
-        if (loginSignals.isNotEmpty()) {
+        // Search result cards and promotional overlays can expose a standalone “登录” action.
+        // That weak label is not sufficient to interrupt an in-progress task: a real login page
+        // also exposes a specific login label or the controls of a credential/verification form.
+        // This prevents a normal 用户 tab from being paused as a false login screen.
+        if (isLoginSurface(context, loginSignals)) {
             return PageDetection(
                 kind = PageKind.LOGIN,
                 confidence = confidence(loginSignals, base = 0.82f),
@@ -180,7 +184,7 @@ class PageDetector {
         // stronger post-condition, so do not classify such a page as SEARCH_ENTRY merely because
         // the query field remains editable. This prevents the submit watchdog from tapping the
         // Search button repeatedly after results have already opened.
-        val earlyResultTabSignals = matchingSignals(context, SEARCH_RESULT_TABS)
+        val earlyResultTabSignals = matchingResultTabSignals(context)
         val hasResultTabs = earlyResultTabSignals.distinctBy(Signal::term).size >= 2
         if (editableSearch && !hasResultTabs) {
             return PageDetection(
@@ -195,7 +199,7 @@ class PageDetector {
         // and other weak signals but cannot authorize the tab transition by itself.
         val userTabSignals = matchingVisibleUserTabSignals(context)
         val selectedUserTabSignals = matchingSelectedUserTabSignals(context)
-        val resultTabSignals = matchingSignals(context, SEARCH_RESULT_TABS)
+        val resultTabSignals = matchingResultTabSignals(context)
         val userRowSignals = matchingSignals(context, USER_ROW_HINTS)
         val structuralUserRowSignals = if (StructuralUserRowDetector.find(context) != null) {
             listOf(Signal(term = "关注按钮", sourceName = "accessibility-structure", fromAccessibility = true))
@@ -258,11 +262,32 @@ class PageDetector {
         val hasAccessibilityProfileStructure = accessibilityProfileSignals.size >= 2 ||
             (accessibilityProfileSignals.isNotEmpty() && accessibilityProfileEntry.isNotEmpty())
         val hasOcrProfileStructure = profileMessageEntry.isNotEmpty() && profileFollowSignals.isNotEmpty()
-        if (hasAccessibilityProfileStructure || hasOcrProfileStructure) {
-            val reasons = if (hasAccessibilityProfileStructure) {
-                accessibilityProfileSignals + accessibilityProfileEntry
-            } else {
-                profileSignals + profileMessageEntry + accessibilityFollowSignals
+        // Current Douyin builds frequently render the profile header on a custom canvas. In that
+        // case the paper-plane action has no text/contentDescription and the semantic tree may
+        // expose only the follow button. The previous profile rule then missed a perfectly valid
+        // profile and the broad bottom-navigation labels made the same screen look like HOME.
+        // Accept a second, conservative profile signature: a real follow action plus at least two
+        // identity/stat anchors (or one account-id anchor and one stat anchor). Feed captions can
+        // contain an isolated “获赞/粉丝”, so a single weak OCR label is intentionally insufficient.
+        val profileIdentityTerms = (accessibilityProfileSignals + profileSignals)
+            .map(Signal::term)
+            .distinct()
+        val strongIdentityCount = profileIdentityTerms.count { term ->
+            term in PROFILE_ACCOUNT_IDENTITY_LABELS
+        }
+        val statIdentityCount = profileIdentityTerms.count { term ->
+            term in PROFILE_STAT_IDENTITY_LABELS
+        }
+        val hasProfileHeaderFallback = profileFollowSignals.isNotEmpty() &&
+            (
+                profileIdentityTerms.distinct().size >= 2 &&
+                    (strongIdentityCount > 0 || statIdentityCount >= 2)
+                )
+        if (hasAccessibilityProfileStructure || hasOcrProfileStructure || hasProfileHeaderFallback) {
+            val reasons = when {
+                hasAccessibilityProfileStructure -> accessibilityProfileSignals + accessibilityProfileEntry
+                hasOcrProfileStructure -> profileSignals + profileMessageEntry + accessibilityFollowSignals
+                else -> profileSignals + profileFollowSignals
             }
             return PageDetection(
                 kind = PageKind.USER_PROFILE,
@@ -303,6 +328,33 @@ class PageDetector {
         if (packageName.isNullOrBlank()) return true
         val normalized = TextNormalizer.normalize(packageName)
         return TARGET_PACKAGE_MARKERS.any(normalized::contains)
+    }
+
+    private fun isLoginSurface(context: ScreenContext, loginSignals: List<Signal>): Boolean {
+        if (loginSignals.isEmpty()) return false
+
+        val strongLoginLabels = setOf("手机号登录", "log in", "sign in")
+        if (loginSignals.any { TextNormalizer.normalize(it.term) in strongLoginLabels }) {
+            return true
+        }
+
+        val formMarkers = context.nodes.asSequence()
+            .filter(NodeSnapshot::isVisibleToUser)
+            .flatMap { node ->
+                node.searchableText().asSequence().flatMap { value ->
+                    LOGIN_FORM_MARKERS.asSequence()
+                        .filter { marker -> TextNormalizer.matchesAny(value, listOf(marker)) }
+                }
+            }
+            .map(TextNormalizer::normalize)
+            .distinct()
+            .toList()
+        val hasEditableFormField = context.nodes.any { node ->
+            node.isVisibleToUser && node.isEditable &&
+                !nodeMatches(node, DouyinLabels.search)
+        }
+
+        return formMarkers.size >= 2 || (formMarkers.isNotEmpty() && hasEditableFormField)
     }
 
     private fun matchingSignals(context: ScreenContext, terms: Iterable<String>): List<Signal> {
@@ -367,6 +419,37 @@ class PageDetector {
                 Signal(term = term, sourceName = "accessibility", fromAccessibility = true)
             }
         }.distinct()
+
+    /**
+     * Search-result tabs are a narrow, top-of-screen semantic surface.  Do not use the broad
+     * substring matcher here: profile pages legitimately expose content descriptions such as
+     * “用户头像”, and video cards may contain “视频” in captions.  Either can otherwise make a
+     * profile look like a search-results page and leave the controller waiting forever.
+     */
+    private fun matchingResultTabSignals(context: ScreenContext): List<Signal> {
+        val topLimit = (context.screenSize.height * RESULT_TAB_TOP_RATIO).toInt()
+        val normalizedTerms = SEARCH_RESULT_TABS.map(TextNormalizer::normalize).toSet()
+        val accessibility = context.nodes.asSequence()
+            .filter { it.isVisibleToUser && it.bounds.top <= topLimit && it.bounds.height > 0 }
+            .flatMap { node ->
+                node.searchableText().asSequence()
+                    .map(TextNormalizer::normalize)
+                    .filter { it in normalizedTerms }
+                    .map { normalized ->
+                        Signal(term = normalized, sourceName = "accessibility-result-tab", fromAccessibility = true)
+                    }
+            }
+            .distinct()
+            .toList()
+        val ocr = context.ocrBlocks.asSequence()
+            .filter { it.bounds == ScreenBounds.EMPTY || it.bounds.top <= topLimit }
+            .map { TextNormalizer.normalize(it.text) }
+            .filter { it in normalizedTerms }
+            .map { normalized -> Signal(term = normalized, sourceName = "OCR-result-tab", fromAccessibility = false) }
+            .distinct()
+            .toList()
+        return (accessibility + ocr).distinct()
+    }
 
     private fun matchingMessageSendFailureSignals(context: ScreenContext): List<Signal> {
         val accessibilitySignals = context.nodeText().flatMap { value ->
@@ -470,7 +553,17 @@ class PageDetector {
         const val MAX_REASONS = 4
         const val BOTTOM_COMPOSER_TOP_RATIO = 0.72f
         const val OCR_COMPOSER_TOP_RATIO = 0.65f
+        const val RESULT_TAB_TOP_RATIO = 0.45f
         val TARGET_PACKAGE_MARKERS = listOf("com.ss.android.ugc.aweme", "douyin", "aweme")
+        val LOGIN_FORM_MARKERS = listOf(
+            "手机号",
+            "密码",
+            "验证码",
+            "短信验证码",
+            "一键登录",
+            "同意并继续",
+            "本机号码",
+        )
         val DIRECT_MESSAGE_HEADERS = listOf("私信", "聊天", "messages", "direct message", "chat")
         val OCR_CONVERSATION_COMPOSER_MARKERS = listOf(
             "点击发送",
@@ -496,6 +589,14 @@ class PageDetector {
             "douyin id",
             "likes",
         )
+        val PROFILE_ACCOUNT_IDENTITY_LABELS = setOf(
+            "抖音号",
+            "ip属地",
+            "店铺账号",
+            "商家认证账号",
+            "douyin id",
+        )
+        val PROFILE_STAT_IDENTITY_LABELS = setOf("获赞", "粉丝", "likes", "followers")
         val FOLLOW_ACTIONS = listOf("关注", "follow", "已关注", "following")
         val SEARCH_RESULT_TABS = listOf("综合", "视频", "用户", "all", "videos", "users", "accounts")
         val USER_ROW_HINTS = listOf("粉丝", "followers", "共同关注", "followed by")

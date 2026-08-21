@@ -20,11 +20,13 @@ class MainActivity : ComponentActivity() {
     private val statusHandler = Handler(Looper.getMainLooper())
     private val statusRefresh = Runnable { AutomationStore.refreshServiceStatus(this) }
     private var openRecordsTab: Boolean = false
+    private var openCommentP0: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         openRecordsTab = intent.getBooleanExtra(EXTRA_OPEN_RECORDS, false)
+        openCommentP0 = BuildConfig.DEBUG && intent.getBooleanExtra(EXTRA_OPEN_COMMENT_P0, false)
         AuthStore.initialize(this)
         AutomationStore.initialize(this)
         seedMultiTaskFixtureIfRequested(intent)
@@ -35,6 +37,8 @@ class MainActivity : ComponentActivity() {
                     AppHomeScreen(
                         initialKeyword = intent.getStringExtra(EXTRA_PREFILL_KEYWORD).orEmpty(),
                         initialSection = if (openRecordsTab) "RECORDS" else null,
+                        initialCommentTask = openCommentP0,
+                        autoStartCommentP0 = openCommentP0,
                     )
                 }
             }
@@ -51,6 +55,11 @@ class MainActivity : ComponentActivity() {
         }
         if (intent.getBooleanExtra(EXTRA_OPEN_RECORDS, false)) {
             openRecordsTab = true
+            recreate()
+            return
+        }
+        if (BuildConfig.DEBUG && intent.getBooleanExtra(EXTRA_OPEN_COMMENT_P0, false)) {
+            openCommentP0 = true
             recreate()
         }
     }
@@ -103,5 +112,7 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_PREFILL_KEYWORD = "com.example.douyinautomation.PREFILL_KEYWORD"
         const val EXTRA_OPEN_RECORDS = "com.example.douyinautomation.OPEN_RECORDS"
         const val EXTRA_SEED_MULTI_TASK_TESTS = "com.example.douyinautomation.SEED_MULTI_TASK_TESTS"
+        /** Debug-only P0 regression shortcut; it reuses the visible “立即开始” task path. */
+        const val EXTRA_OPEN_COMMENT_P0 = "com.example.douyinautomation.OPEN_COMMENT_P0"
     }
 }

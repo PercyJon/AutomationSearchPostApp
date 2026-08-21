@@ -7,6 +7,12 @@ enum class CommentEntryAction {
     EXIT_LIVE_ROOM,
     /** The visible live item is skipped without opening the room. */
     SWIPE_LIVE_ROOM,
+    /** Select the profile's Works tab before looking for a video thumbnail. */
+    OPEN_WORKS_TAB,
+    /** Confirm the newest sort option after tapping the Works tab opened its sort menu. */
+    DISMISS_WORKS_SORT,
+    /** The profile has no accessible works (including a private account); return to the list. */
+    SKIP_PROFILE,
     OPEN_FIRST_VIDEO,
     OPEN_COMMENTS,
     READ_COMMENTS,
@@ -29,6 +35,15 @@ data class CommentEntryObservation(
     val hasFirstVideoTarget: Boolean = false,
     /** The semantically selected first-video node; its bounds are only a final gesture fallback. */
     val firstVideoTarget: NodeSnapshot? = null,
+    /** Profile tab that exposes the user's video works. */
+    val worksTabTarget: NodeSnapshot? = null,
+    /** The transient sort-menu option shown after the Works tab is tapped. */
+    val worksSortLatestTarget: NodeSnapshot? = null,
+    val worksTabSelected: Boolean = false,
+    /** True for private accounts or profiles that explicitly show an empty works state. */
+    val profileHasNoWorks: Boolean = false,
+    /** Applied only when selecting a profile thumbnail. */
+    val skipPinnedVideos: Boolean = false,
     val hasVideoSurface: Boolean = false,
     val hasCommentEntry: Boolean = false,
     val commentButton: NodeSnapshot? = null,
@@ -53,6 +68,7 @@ data class CommentEntryDecision(
 class CommentEntryStateMachine {
     var stage: CommentEntryStage = CommentEntryStage.WAITING_FOR_PROFILE
         private set
+    private var worksTabVisited = false
 
     fun observe(observation: CommentEntryObservation): CommentEntryDecision {
         observation.riskReason?.let { return pause("检测到风险或验证码：$it") }
@@ -65,7 +81,10 @@ class CommentEntryStateMachine {
             // PageDetector V0 intentionally has no video/comment page kind yet. UNKNOWN is
             // accepted only when the dedicated structural detector has already supplied a
             // video surface or a verified comment panel; incidental unknown pages still pause.
-            PageKind.UNKNOWN -> if (!observation.hasVideoSurface && observation.commentSurface == null) {
+            PageKind.UNKNOWN -> if (!observation.hasVideoSurface &&
+                observation.commentSurface == null &&
+                observation.worksSortLatestTarget == null
+            ) {
                 return pause("当前页面无法确认，暂不执行点击")
             }
             else -> Unit
@@ -75,6 +94,16 @@ class CommentEntryStateMachine {
             CommentEntryStage.WAITING_FOR_PROFILE -> {
                 if (observation.page != PageKind.USER_PROFILE) {
                     decision(CommentEntryAction.NONE, "等待确认用户主页")
+                } else if (observation.profileHasNoWorks) {
+                    decision(CommentEntryAction.SKIP_PROFILE, "用户没有可处理的作品或账号为私密账号")
+                } else if (
+                    observation.worksTabTarget != null &&
+                        !observation.worksTabSelected &&
+                        !worksTabVisited
+                ) {
+                    worksTabVisited = true
+                    stage = CommentEntryStage.WAITING_FOR_VIDEO
+                    decision(CommentEntryAction.OPEN_WORKS_TAB, "先切换到作品标签")
                 } else if (observation.hasFirstVideoTarget) {
                     stage = CommentEntryStage.WAITING_FOR_VIDEO
                     decision(CommentEntryAction.OPEN_FIRST_VIDEO, "已确认主页，准备打开第一个视频")
@@ -84,7 +113,13 @@ class CommentEntryStateMachine {
             }
 
             CommentEntryStage.WAITING_FOR_VIDEO -> {
-                if (observation.hasVideoSurface && observation.hasCommentEntry) {
+                if (observation.worksSortLatestTarget != null) {
+                    decision(CommentEntryAction.DISMISS_WORKS_SORT, "作品标签已打开排序菜单，确认最新作品")
+                } else if (observation.profileHasNoWorks) {
+                    decision(CommentEntryAction.SKIP_PROFILE, "作品标签没有可处理的视频")
+                } else if (observation.hasFirstVideoTarget) {
+                    decision(CommentEntryAction.OPEN_FIRST_VIDEO, "已确认作品标签，准备打开第一个视频")
+                } else if (observation.hasVideoSurface && observation.hasCommentEntry) {
                     stage = CommentEntryStage.WAITING_FOR_COMMENTS
                     decision(CommentEntryAction.OPEN_COMMENTS, "已确认视频页面，准备打开评论区")
                 } else {
@@ -119,6 +154,7 @@ class CommentEntryStateMachine {
 
     fun reset() {
         stage = CommentEntryStage.WAITING_FOR_PROFILE
+        worksTabVisited = false
     }
 
     /**
@@ -145,28 +181,56 @@ class CommentEntryStateMachine {
 /**
  * Detects only the structural signals needed by P4-A. It does not choose a fixed pixel or click
  * an avatar. A clickable image-like node in the lower profile region is accepted as the first
- * video target only when the profile exposes a “作品/视频” anchor as well.
+ * video target only when the profile exposes a “作品/视频” anchor as well. Some Douyin builds
+ * expose the thumbnail ImageView as non-clickable while its own bounds still receive the tap;
+ * those nodes are accepted and GestureEngine will try the node action before its node bounds.
  */
 object CommentEntrySignalDetector {
     private val videoMarkers = listOf("视频", "播放", "暂停", "作品")
 
-    fun observe(context: ScreenContext): CommentEntryObservation {
+    fun observe(
+        context: ScreenContext,
+        skipPinnedVideos: Boolean = false,
+    ): CommentEntryObservation {
         val page = PageDetector().detect(context).kind
         val normalizedTexts = (context.nodeText() + context.ocrText()).map(TextNormalizer::normalize)
         val hasVideoMarker = normalizedTexts.any { text -> videoMarkers.any(text::contains) }
+        val profileHasNoWorks = page == PageKind.USER_PROFILE && hasNoWorksSignal(normalizedTexts)
+        val worksTabTarget = worksTabTarget(context)
+        val worksSortLatestTarget = worksSortLatestTarget(context)
+        val worksTabSelected = worksTabTarget?.isSelected ?: true
         val commentButton = VideoCommentButtonDetector.find(context)
         // Comment text in a caption is not permission to click. The state machine is only told
         // that a comment entry exists when the semantic/structural speech-bubble selector found
         // a clickable node in the video action rail.
         val hasCommentEntry = commentButton != null
-        val firstVideoTarget = firstVideoTarget(context, page, hasVideoMarker)
+        val firstVideoTarget = firstVideoTarget(
+            context,
+            page,
+            hasVideoMarker,
+            worksTabSelected,
+            skipPinnedVideos,
+        )
         val hasFirstVideoTarget = firstVideoTarget != null
-        val hasVideoSurface = page == PageKind.UNKNOWN && hasVideoMarker &&
-            context.nodes.any { it.isVisibleToUser && it.bounds.width >= MIN_VIDEO_EDGE }
+        // The action rail itself is stronger evidence than incidental caption/OCR text: the
+        // detector only returns a semantic “评论” control on the right rail, or the second item
+        // of a verified three-or-more-icon action rail. Some custom-rendered video pages expose
+        // neither “播放” nor a full-width video node, so requiring those weaker visual markers
+        // made a genuine video wait until its watchdog expired even though its comment button
+        // was already safely actionable.
+        val hasVideoSurface = page == PageKind.UNKNOWN && (
+            commentButton != null ||
+                (hasVideoMarker && context.nodes.any { it.isVisibleToUser && it.bounds.width >= MIN_VIDEO_EDGE })
+            )
         return CommentEntryObservation(
             page = page,
             hasFirstVideoTarget = hasFirstVideoTarget,
             firstVideoTarget = firstVideoTarget,
+            worksTabTarget = worksTabTarget,
+            worksSortLatestTarget = worksSortLatestTarget,
+            worksTabSelected = worksTabSelected,
+            profileHasNoWorks = profileHasNoWorks,
+            skipPinnedVideos = skipPinnedVideos,
             hasVideoSurface = hasVideoSurface,
             hasCommentEntry = hasCommentEntry,
             commentButton = commentButton,
@@ -182,26 +246,69 @@ object CommentEntrySignalDetector {
         val page = PageDetector().detect(context).kind
         val normalizedTexts = (context.nodeText() + context.ocrText()).map(TextNormalizer::normalize)
         val hasVideoMarker = normalizedTexts.any { text -> videoMarkers.any(text::contains) }
-        return firstVideoTarget(context, page, hasVideoMarker)
+        val worksTabSelected = worksTabTarget(context)?.isSelected ?: true
+        return firstVideoTarget(context, page, hasVideoMarker, worksTabSelected, false)
     }
 
     private fun firstVideoTarget(
         context: ScreenContext,
         page: PageKind,
         hasVideoMarker: Boolean,
+        worksTabSelected: Boolean,
+        skipPinnedVideos: Boolean,
     ): NodeSnapshot? {
-        if (page != PageKind.USER_PROFILE || !hasVideoMarker) return null
+        if (page != PageKind.USER_PROFILE || !hasVideoMarker || !worksTabSelected) return null
         return context.nodes.asSequence()
             .filter { node ->
                 val normalizedClass = TextNormalizer.normalize(node.className)
+                val normalizedId = TextNormalizer.normalize(node.viewIdResourceName)
                 val imageLike = normalizedClass.contains("imageview") ||
                     normalizedClass.contains("surfaceview") ||
                     normalizedClass.contains("textureview")
+                // Current Douyin exposes a video thumbnail as a non-clickable ImageView below a
+                // clickable `qb-` tile container.  During transitions the child can also report
+                // isVisibleToUser=false even though its container is actionable.  Keep the
+                // semantic/structural checks, but do not discard that valid pair merely because
+                // the custom-rendered child has a transient visibility flag.
+                val videoResource = normalizedId.contains(":id/cover") ||
+                    normalizedId.endsWith("/cover") ||
+                    normalizedId.contains("cover") ||
+                    normalizedId.contains("qb-")
+                val hasVisibleClickableContainer = context.nodes.any { container ->
+                    container.isClickable &&
+                        container.isVisibleToUser &&
+                        isStrictAncestor(container.hierarchyPath, node.hierarchyPath) &&
+                        container.normalizedBounds(context.screenSize).contains(
+                            node.normalizedBounds(context.screenSize),
+                        )
+                }
                 val normalizedBounds = node.normalizedBounds(context.screenSize)
-                node.isVisibleToUser && node.isClickable && imageLike &&
+                (imageLike || videoResource) &&
+                    (node.isVisibleToUser || hasVisibleClickableContainer || videoResource) &&
                     node.bounds.width >= MIN_VIDEO_EDGE && node.bounds.height >= MIN_VIDEO_EDGE &&
                     normalizedBounds.top >= 0.24f
             }
+            .map { node ->
+                // Prefer the clickable tile container when the thumbnail itself is only a
+                // visual child.  The live-node resolver can then perform a semantic click before
+                // falling back to the container's current bounds.
+                if (node.isClickable) {
+                    node
+                } else {
+                    context.nodes.asSequence()
+                        .filter { container ->
+                            container.isClickable &&
+                                isStrictAncestor(container.hierarchyPath, node.hierarchyPath) &&
+                                container.normalizedBounds(context.screenSize).contains(
+                                    node.normalizedBounds(context.screenSize),
+                                )
+                        }
+                        .minByOrNull { it.bounds.width.toLong() * it.bounds.height.toLong() }
+                        ?: node
+                }
+            }
+            .distinctBy(NodeSnapshot::hierarchyPath)
+            .filterNot { node -> skipPinnedVideos && isPinnedTile(node, context) }
             .sortedWith(
                 compareBy<NodeSnapshot> { it.normalizedBounds(context.screenSize).top }
                     .thenByDescending { it.bounds.width.toLong() * it.bounds.height.toLong() },
@@ -209,5 +316,200 @@ object CommentEntrySignalDetector {
             .firstOrNull()
     }
 
+    /**
+     * Finds the Works tab by semantic text/content-description and promotes its nearest
+     * clickable ancestor when the visible label is a non-clickable child. No tab coordinates are
+     * stored; bounds are retained only on the selected live node for the action fallback.
+     */
+    private fun worksTabTarget(context: ScreenContext): NodeSnapshot? {
+        // A profile with only one content tab is already on Works. Clicking it would open the
+        // “最新/最热” sort popup on current Douyin builds, so only expose a switch target when a
+        // second tab (商品/橱窗/直播/…) is present.
+        if (!hasMultipleProfileTabs(context)) return null
+        val labels = context.nodes.filter { node ->
+            node.isVisibleToUser &&
+                node.searchableText().any { TextNormalizer.normalize(it).contains("作品") }
+        }
+        val target = labels.asSequence()
+            .mapNotNull { labeled ->
+                if (labeled.isClickable) labeled
+                else context.nodes
+                    .asSequence()
+                    .filter { candidate ->
+                        candidate.isClickable &&
+                            candidate.isVisibleToUser &&
+                            isStrictAncestor(candidate.hierarchyPath, labeled.hierarchyPath)
+                    }
+                    .maxByOrNull { it.hierarchyPath.size }
+            }
+            .filter { it.normalizedBounds(context.screenSize).top in 0.35f..0.90f }
+            .maxWithOrNull(
+                compareBy<NodeSnapshot> { it.isSelected }
+                    .thenByDescending { it.bounds.width.toLong() * it.bounds.height.toLong() },
+            )
+        return target?.let { selectedTarget ->
+            // Accessibility exposes the selected state on current Douyin builds. Some ROM/app
+            // combinations put the state only in the tab's spoken description (for example
+            // “当前作品按最新发布排序”) or on a child label, so preserve those semantic signals
+            // as an equivalent to the visible black label/underline + down-triangle state.
+            selectedTarget.copy(
+                isSelected = selectedTarget.isSelected ||
+                    hasSelectedWorksSignal(selectedTarget, context),
+            )
+        }
+    }
+
+    private fun hasSelectedWorksSignal(
+        tab: NodeSnapshot,
+        context: ScreenContext,
+    ): Boolean {
+        fun selectedMarker(value: String): Boolean {
+            val normalized = TextNormalizer.normalize(value)
+            return normalized.contains("当前作品") ||
+                normalized.contains("已选") ||
+                normalized.contains("选中") ||
+                normalized.contains("按最新发布排序") ||
+                normalized.contains("按最热发布排序") ||
+                normalized.contains("展开排序") ||
+                normalized.contains("▼") ||
+                normalized.contains("▾")
+        }
+        return tab.searchableText().any(::selectedMarker) || context.nodes.any { child ->
+            isStrictAncestor(tab.hierarchyPath, child.hierarchyPath) &&
+                child.searchableText().any(::selectedMarker)
+        }
+    }
+
+    private fun hasMultipleProfileTabs(context: ScreenContext): Boolean = profileTabLabels(context)
+        // ActionBar$Tab exposes the same label again through its android:id/text1 child. The
+        // child is not a second tab; counting both was the reason a one-tab “作品 41” profile
+        // incorrectly emitted OPEN_WORKS_TAB and opened Douyin's 最新/最热 menu.
+        .distinctBy { profileTabIdentity(it, context) }
+        .size >= 2
+
+    /**
+     * Returns one snapshot per real profile tab, not every descendant carrying the tab label.
+     * Current Douyin builds expose an [androidx.appcompat.app.ActionBar$Tab] root and an
+     * [android:id/text1] child with identical text/content-description. Prefer the tab root so
+     * the eventual action has a clickable semantic target; collapse the child when a root is
+     * present. The fallback still works with reduced fixture trees that only contain text nodes.
+     */
+    private fun profileTabLabels(context: ScreenContext): List<NodeSnapshot> {
+        val candidates = context.nodes.filter { node ->
+            if (!node.isVisibleToUser) return@filter false
+            val bounds = node.normalizedBounds(context.screenSize)
+            if (bounds.top !in 0.35f..0.90f) return@filter false
+            node.searchableText().any(::isProfileTabText)
+        }
+        if (candidates.isEmpty()) return emptyList()
+
+        val roots = candidates.filter(::isProfileTabRoot)
+        val source = if (roots.isNotEmpty()) roots else candidates
+        return source
+            .filterNot { candidate ->
+                // If a tab root and its label child are both candidates, keep the root only.
+                candidates.any { possibleRoot ->
+                    possibleRoot !== candidate &&
+                        isProfileTabRoot(possibleRoot) &&
+                        isStrictAncestor(possibleRoot.hierarchyPath, candidate.hierarchyPath) &&
+                        sameProfileTabLabel(possibleRoot, candidate)
+                }
+            }
+            .distinctBy { profileTabIdentity(it, context) }
+    }
+
+    private fun isProfileTabRoot(node: NodeSnapshot): Boolean {
+        val normalizedClass = TextNormalizer.normalize(node.className)
+        val normalizedId = TextNormalizer.normalize(node.viewIdResourceName)
+        return normalizedClass.contains("actionbar\$tab") ||
+            normalizedClass.contains("tablayout\$tab") ||
+            (node.isClickable && node.childCount > 0 && normalizedId != "android:id/text1")
+    }
+
+    private fun isProfileTabText(raw: String): Boolean {
+        val text = TextNormalizer.normalize(raw)
+        return PROFILE_TAB_LABELS.any { label ->
+            text == label ||
+                text.startsWith("$label ") ||
+                text.startsWith("$label,") ||
+                text.startsWith("$label，")
+        }
+    }
+
+    private fun sameProfileTabLabel(first: NodeSnapshot, second: NodeSnapshot): Boolean {
+        val firstText = first.searchableText().firstOrNull(::isProfileTabText)
+        val secondText = second.searchableText().firstOrNull(::isProfileTabText)
+        if (firstText == null || secondText == null) return false
+        val firstNormalized = TextNormalizer.normalize(firstText)
+        val secondNormalized = TextNormalizer.normalize(secondText)
+        return PROFILE_TAB_LABELS.any { label ->
+            firstNormalized.startsWith(label) && secondNormalized.startsWith(label)
+        }
+    }
+
+    private fun profileTabIdentity(node: NodeSnapshot, context: ScreenContext): String {
+        val label = node.searchableText().firstOrNull(::isProfileTabText)
+            ?.let(TextNormalizer::normalize)
+            ?.substringBefore(',')
+            ?.substringBefore('，')
+            .orEmpty()
+        val rect = node.normalizedBounds(context.screenSize)
+        // Label + horizontal slot keeps two real tabs distinct even when a fixture omits paths.
+        return "$label:${(rect.centerX * 100).toInt()}"
+    }
+
+    /**
+     * Tapping the Works tab on current Douyin builds can open a small “最新/最热” menu even when
+     * the tab is already selected. Treat the exact “最新” option as a semantic transient target;
+     * this prevents the state machine from mistaking the menu's UNKNOWN page for a broken profile.
+     */
+    private fun worksSortLatestTarget(context: ScreenContext): NodeSnapshot? {
+        val latestLabels = context.nodes.filter { node ->
+            node.isVisibleToUser && node.searchableText().any { TextNormalizer.normalize(it) == "最新" }
+        }
+        return latestLabels.asSequence()
+            .mapNotNull { labeled ->
+                if (labeled.isClickable) labeled
+                else context.nodes
+                    .asSequence()
+                    .filter { candidate ->
+                        candidate.isClickable && candidate.isVisibleToUser &&
+                            isStrictAncestor(candidate.hierarchyPath, labeled.hierarchyPath)
+                    }
+                    .maxByOrNull { it.hierarchyPath.size }
+            }
+            .filter { it.bounds != ScreenBounds.EMPTY }
+            .maxByOrNull { it.bounds.top }
+    }
+
+    private fun hasNoWorksSignal(normalizedTexts: List<String>): Boolean = normalizedTexts.any { text ->
+        text.contains("私密账号") ||
+            text.contains("关注账号即可查看内容") ||
+            text.contains("暂无作品") ||
+            text.contains("暂无视频") ||
+            text.contains("作品会展示在这里") ||
+            Regex("作品\\s*0(?:$|[^0-9])").containsMatchIn(text)
+    }
+
+    private fun isPinnedTile(tile: NodeSnapshot, context: ScreenContext): Boolean {
+        val marginX = (tile.bounds.width * 0.12f).toInt()
+        val marginY = (tile.bounds.height * 0.18f).toInt()
+        fun isWithinTile(bounds: ScreenBounds): Boolean =
+            bounds.centerX.toInt() in (tile.bounds.left - marginX)..(tile.bounds.right + marginX) &&
+                bounds.centerY.toInt() in (tile.bounds.top - marginY)..(tile.bounds.bottom + marginY)
+        val nodeMarker = context.nodes.any { marker ->
+            val text = marker.searchableText().joinToString(" ").let(TextNormalizer::normalize)
+            marker.isVisibleToUser && text.contains("置顶") && isWithinTile(marker.bounds)
+        }
+        val ocrMarker = context.ocrBlocks.any { marker ->
+            TextNormalizer.normalize(marker.text).contains("置顶") && isWithinTile(marker.bounds)
+        }
+        return nodeMarker || ocrMarker
+    }
+
+    private fun isStrictAncestor(ancestor: List<Int>, descendant: List<Int>): Boolean =
+        ancestor.size < descendant.size && descendant.subList(0, ancestor.size) == ancestor
+
     private const val MIN_VIDEO_EDGE = 80
+    private val PROFILE_TAB_LABELS = setOf("作品", "橱窗", "商品", "直播", "视频", "合集", "收藏", "喜欢")
 }

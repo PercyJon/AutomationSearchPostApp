@@ -44,6 +44,7 @@ class CommentPrivateMessageModelsTest {
                 matchKeywords = listOf("价格|优惠"),
                 maxVideos = 3,
                 maxUsersPerVideo = 8,
+                skipPinnedVideos = true,
             ),
         ).toSnapshot(
             presets = SearchPresetCatalog("test", emptyList(), 0L),
@@ -54,6 +55,7 @@ class CommentPrivateMessageModelsTest {
         assertEquals(CommentPrivateMessageEntryMode.CURRENT_PROFILE, snapshot.commentConfig?.entryMode)
         assertEquals(listOf("价格", "优惠"), snapshot.commentConfig?.matchKeywords)
         assertEquals(3, snapshot.commentConfig?.maxVideos)
+        assertTrue(snapshot.commentConfig?.skipPinnedVideos == true)
         assertTrue(snapshot.commentConfig?.matchesComment("请问有优惠吗") == true)
     }
 

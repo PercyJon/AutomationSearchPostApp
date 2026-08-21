@@ -16,6 +16,8 @@ data class StructuralUserRowMatch(
     enum class Source {
         STRICT_ANCESTOR,
         VERTICAL_OVERLAP,
+        /** Two OCR samples verified the first custom-rendered user card; P0-only fallback. */
+        OCR_ASSISTED_STABLE,
     }
 }
 

@@ -130,6 +130,44 @@ class SelectorEngine {
         return current
     }
 
+    /**
+     * Re-locates a snapshot after a custom-rendered page rebuilt its accessibility tree.
+     *
+     * Douyin frequently replaces the profile grid while the Works tab settles. In that small
+     * window the immutable hierarchy path is no longer valid even though the same semantic tile
+     * (for example `id/qb-`) is still visible. The caller can inspect the fresh tree, use this
+     * method to choose the closest equivalent snapshot, and resolve its new path.
+     */
+    fun relocateSnapshot(context: ScreenContext, target: NodeSnapshot): NodeSnapshot? {
+        val targetId = target.viewIdResourceName?.takeIf { it.isNotBlank() }
+        val targetClass = target.className?.takeIf { it.isNotBlank() }
+        val targetRect = target.normalizedBounds(context.screenSize)
+        val candidates = context.nodes.asSequence()
+            .filter { it.isEnabled && (!target.isVisibleToUser || it.isVisibleToUser) }
+            .filter { it.bounds != ScreenBounds.EMPTY }
+            .filter { candidate ->
+                val sameId = targetId != null && candidate.viewIdResourceName == targetId
+                val sameClass = targetClass != null && candidate.className == targetClass
+                sameId || (sameClass && candidate.isClickable == target.isClickable)
+            }
+            .toList()
+        if (candidates.isEmpty()) return null
+
+        return candidates.minWithOrNull(
+            compareBy<NodeSnapshot> {
+                if (targetId != null && it.viewIdResourceName == targetId) 0 else 1
+            }.thenBy {
+                if (targetClass != null && it.className == targetClass) 0 else 1
+            }.thenBy {
+                if (target.isClickable == it.isClickable) 0 else 1
+            }.thenBy {
+                kotlin.math.abs(it.normalizedBounds(context.screenSize).centerX - targetRect.centerX) +
+                    kotlin.math.abs(it.normalizedBounds(context.screenSize).centerY - targetRect.centerY)
+            }.thenBy { it.normalizedBounds(context.screenSize).top }
+                .thenBy { it.normalizedBounds(context.screenSize).left },
+        )
+    }
+
     private fun rank(
         node: NodeSnapshot,
         screenSize: ScreenSize,

@@ -242,6 +242,40 @@ class SelectorEngineTest {
     }
 
     @Test
+    fun `stale hierarchy can relocate the same Douyin video tile by stable view id`() {
+        val target = NodeSnapshot(
+            hierarchyPath = listOf(4, 2, 0),
+            viewIdResourceName = "com.ss.android.ugc.aweme:id/qb-",
+            className = "android.view.View",
+            bounds = ScreenBounds(0, 1253, 358, 1730),
+            isClickable = true,
+        )
+        val fresh = ScreenContext(
+            screenSize = ScreenSize(1080, 2412),
+            nodes = listOf(
+                NodeSnapshot(
+                    hierarchyPath = listOf(2, 7, 1),
+                    viewIdResourceName = "com.ss.android.ugc.aweme:id/qb-",
+                    className = "android.view.View",
+                    bounds = ScreenBounds(0, 1258, 358, 1735),
+                    isClickable = true,
+                ),
+                NodeSnapshot(
+                    hierarchyPath = listOf(2, 7, 2),
+                    viewIdResourceName = "com.ss.android.ugc.aweme:id/qb-",
+                    className = "android.view.View",
+                    bounds = ScreenBounds(361, 1258, 719, 1735),
+                    isClickable = true,
+                ),
+            ),
+        )
+
+        val relocated = engine.relocateSnapshot(fresh, target)
+
+        assertEquals(listOf(2, 7, 1), relocated?.hierarchyPath)
+    }
+
+    @Test
     fun `scrollable result tab strip is selected only in the top region`() {
         val result = engine.select(
             ScreenContext(

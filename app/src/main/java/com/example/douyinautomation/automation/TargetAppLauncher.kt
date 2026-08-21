@@ -20,7 +20,13 @@ object TargetAppLauncher {
             ?: return LaunchResult.Failed("Douyin is not installed or has no launcher activity")
 
         return runCatching {
-            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            // When a task starts from CURRENT_PROFILE, the operator has already prepared a
+            // profile in Douyin.  CLEAR_TOP would destroy that navigation stack and restore the
+            // launcher/splash surface, forcing the controller to wait for a profile that can no
+            // longer be reached.  NEW_TASK lets Android bring the existing Douyin task forward
+            // while preserving its current top activity.  This is also safer for the normal
+            // search flow: the controller still waits for a detected page before acting.
+            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(launchIntent)
             LaunchResult.Started
         }.getOrElse { error ->

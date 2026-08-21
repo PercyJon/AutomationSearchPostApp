@@ -6,6 +6,7 @@ import android.os.SystemClock
 import android.view.accessibility.AccessibilityEvent
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -67,13 +68,17 @@ class DouyinAccessibilityService : AccessibilityService() {
             screenshotCapture = screenshotCapture,
             ocr = null
         )
-        AutomationStore.markServiceConnected()
-        logger.info("accessibility_service_connected", attributes = mapOf("target" to TargetAppLauncher.DOUYIN_PACKAGE))
-        commandJob = serviceScope.launch {
+        // Subscribe before reporting the service as command-ready. A debug intent can recreate
+        // Compose at the same time Android binds this service; publishing readiness first would
+        // let a SharedFlow command be emitted before there is a collector and silently lose the
+        // P0 start request. UNDISPATCHED installs the subscription synchronously on this callback.
+        commandJob = serviceScope.launch(start = CoroutineStart.UNDISPATCHED) {
             AutomationStore.commands.collect { command ->
                 controller.handle(command)
             }
         }
+        AutomationStore.markServiceConnected()
+        logger.info("accessibility_service_connected", attributes = mapOf("target" to TargetAppLauncher.DOUYIN_PACKAGE))
         scheduleCheckpointResumeAfterRebind()
         ocrInitializationJob?.cancel()
         ocrInitializationJob = serviceScope.launch(Dispatchers.IO) {
@@ -126,7 +131,7 @@ class DouyinAccessibilityService : AccessibilityService() {
         // the next event will provide a fresher tree once this one completes.
         if (!inspectionInFlight.compareAndSet(false, true)) return
 
-        val root = rootInActiveWindow
+        val root = targetRootFor(event)
         if (root == null) {
             inspectionInFlight.set(false)
             return
@@ -301,6 +306,35 @@ class DouyinAccessibilityService : AccessibilityService() {
         -> true
 
         else -> false
+    }
+
+    /**
+     * Prefer the active root, but do not drop a legitimate Douyin event merely because the
+     * optional floating progress panel temporarily becomes the OEM's active accessibility
+     * window.  The event source is already scoped to Douyin by the service configuration; walk
+     * it to its root so inspection still receives the complete target hierarchy.
+     */
+    @Suppress("DEPRECATION")
+    private fun targetRootFor(event: AccessibilityEvent): android.view.accessibility.AccessibilityNodeInfo? {
+        rootInActiveWindow?.let { activeRoot ->
+            if (activeRoot.packageName?.toString() == TargetAppLauncher.DOUYIN_PACKAGE) {
+                return activeRoot
+            }
+            activeRoot.recycle()
+        }
+
+        var node = event.source ?: return null
+        while (true) {
+            val parent = node.parent ?: break
+            node.recycle()
+            node = parent
+        }
+        return if (node.packageName?.toString() == TargetAppLauncher.DOUYIN_PACKAGE) {
+            node
+        } else {
+            node.recycle()
+            null
+        }
     }
 
     /**

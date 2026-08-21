@@ -75,7 +75,15 @@ class DouyinNavigationController(
     /** Pending local tasks are consumed only after the current task reaches a terminal state. */
     private val queuedTaskSnapshots = SequentialTaskQueue<TaskSnapshot>()
     private var initialOcrAttempts = 0
+    /** Number of bounded blind BACK actions used while the target tree is temporarily unavailable. */
+    private var initialBlindBackAttempts = 0
     private var latestContext: ScreenContext? = null
+    /**
+     * Last target-app snapshot that contained OCR blocks.  On some Douyin/OEM builds a
+     * node-only callback immediately follows the OCR-enriched callback and would otherwise
+     * replace the only snapshot that proves the current screen is a profile.
+     */
+    private var latestOcrContext: ScreenContext? = null
     private var userTabRevealAttempts = 0
     private var restrictedUserSkips = 0
     private var timeoutRecoveryAttempts = 0
@@ -100,6 +108,19 @@ class DouyinNavigationController(
     /** OCR-backed page transitions require two matching observations before an action is allowed. */
     private var lastOcrPageSignature: String? = null
     private var ocrPageStableObservations: Int = 0
+    /**
+     * A comment task reaches its source profile through the ordinary search/user-tab route, then
+     * hands control to [commentRuntime]. Keep that handoff explicit so a stale task snapshot can
+     * never silently leave the runner polling a profile without receiving it.
+     */
+    private var commentProfileHandoffObserved = false
+    /**
+     * Search-entry comment tasks deliberately defer the isolated comment runtime until the
+     * source profile has actually been reached.  The ordinary search/User-tab controller is
+     * responsible for that first leg, so a service rebind on a result page can never spend the
+     * comment runner's profile watchdog before there is a profile for it to inspect.
+     */
+    private var pendingCommentRuntimeSnapshot: CommentPrivateMessageSnapshot? = null
 
     fun installOcrEngine(engine: MlKitOcrEngine?) {
         ocr = engine
@@ -183,6 +204,9 @@ class DouyinNavigationController(
         // the active window. This keeps operator-requested node dumps useful while the target app
         // remains underneath the translucent diagnostics surface.
         latestContext = context
+        if (context.ocrBlocks.isNotEmpty() || detection.reasons.any { it.contains("OCR", ignoreCase = true) }) {
+            latestOcrContext = context
+        }
         if (detection.kind == PageKind.HUMAN_INTERVENTION) {
             pause("Verification or risk screen detected; manual handoff required")
             return
@@ -204,29 +228,37 @@ class DouyinNavigationController(
         // Comment tasks reuse the already-validated search/profile navigation until a user
         // profile is reached, then switch to the isolated comment runtime. Never let the normal
         // profile-to-DM branch click a private-message control for a comment task.
-        if (activeTaskSnapshot?.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE &&
-            phase == AutomationPhase.WAITING_FOR_PROFILE
+        if (detection.kind == PageKind.USER_PROFILE &&
+            isCommentPrivateMessageTask() &&
+            handoffCommentProfileObservation(context, detection, source = "accessibility_event")
         ) {
-            timeoutJob?.cancel()
-            commentRuntime.onObserved(context, detection)
             return
         }
 
         when (phase) {
             AutomationPhase.WAITING_FOR_HOME -> when (detection.kind) {
                 PageKind.HOME -> openSearch(context)
-                PageKind.SEARCH_ENTRY -> enterKeyword(context)
+                // Every comment-task launch is normalized through the Douyin home surface. The
+                // launcher may restore a stale search/profile/video activity; do not reuse its
+                // query or tap a control on that page because it can submit the wrong keyword.
+                PageKind.SEARCH_ENTRY -> recoverInitialSurface(context, requireHome = true)
                 // Starting Douyin does not always create a fresh activity. If the previous
                 // operator run left the app on a result page, the launch intent can restore that
                 // page (including its old query) instead of showing the home feed. The result
                 // page still exposes the real editable query field, so reuse that verified field
                 // rather than submitting the stale query or waiting for a search-entry event that
                 // will never arrive.
-                PageKind.SEARCH_RESULTS -> reuseSearchResultsQueryField(context, "initial_observation")
+                PageKind.SEARCH_RESULTS -> recoverInitialSurface(context, requireHome = true)
                 PageKind.USER_RESULTS,
                 PageKind.USER_PROFILE,
                 PageKind.DIRECT_MESSAGE
-                -> recoverInitialSurface(context)
+                -> recoverInitialSurface(context, requireHome = true)
+                // The launcher restores the last Douyin activity instead of a fresh home feed
+                // on several builds.  A video-detail activity does not expose a dedicated page
+                // kind (and is therefore UNKNOWN), but it is still safe to leave with the
+                // bounded, semantic back-navigation recovery below.  Waiting for OCR here was
+                // both slow and ineffective: it cannot turn a video detail surface into HOME.
+                PageKind.UNKNOWN -> recoverInitialSurface(context, requireHome = true)
                 else -> Unit
             }
 
@@ -351,6 +383,11 @@ class DouyinNavigationController(
         pendingSafetyProbe = safetyProbe
         pausedPhase = null
         initialOcrAttempts = 0
+        initialBlindBackAttempts = 0
+        // A prior POC can leave a profile/result snapshot in memory. Startup normalization must
+        // inspect the freshly launched target surface rather than reuse that stale tree.
+        latestContext = null
+        latestOcrContext = null
         userTabRevealAttempts = 0
         restrictedUserSkips = 0
         timeoutRecoveryAttempts = 0
@@ -379,35 +416,57 @@ class DouyinNavigationController(
         cachedUserResultsViewportSignature = null
         cachedUserResultsOcrBlocks = emptyList()
         userResultsSignatureBeforeSwipe = null
+        commentProfileHandoffObserved = false
         messageEntryPostconditionJob?.cancel()
         messageResultJob?.cancel()
         profilePostconditionJob?.cancel()
         initialObservationJob?.cancel()
         commentRuntime.stop()
+        pendingCommentRuntimeSnapshot = null
         // Create/switch the persisted task history entry before publishing the first phase.
         // In a queued batch, publishing LAUNCHING_TARGET while currentTaskId still points to
         // the previous task would regress its terminal COMPLETED status back to RUNNING.
         AutomationStore.beginTask(sanitizedKeyword, taskSnapshot)
         phase = AutomationPhase.LAUNCHING_TARGET
         AutomationStore.publishPhase(phase)
-        logger.info("poc_started", attributes = mapOf("target" to TargetAppLauncher.DOUYIN_PACKAGE))
+        logger.info(
+            "poc_started",
+            attributes = mapOf(
+                "target" to TargetAppLauncher.DOUYIN_PACKAGE,
+                "task_type" to (taskSnapshot?.taskType?.name ?: "LEGACY"),
+                "has_comment_config" to (commentConfig != null),
+            ),
+        )
 
         if (commentConfig != null) {
-            commentRuntime.start(requireNotNull(taskSnapshot?.commentConfig).let { config ->
-                CommentPrivateMessageSnapshot(
-                    entryMode = config.entryMode,
-                    targetUser = config.targetUser,
-                    matchKeywords = config.matchKeywords,
-                    maxVideos = config.maxVideos,
-                    maxUsersPerVideo = config.maxUsersPerVideo,
-                )
-            })
+            val runtimeSnapshot = requireNotNull(taskSnapshot?.commentConfig)
             if (startsFromCurrentProfile) {
-                phase = AutomationPhase.WAITING_FOR_PROFILE
-                AutomationStore.publishPhase(phase)
-                logger.info("comment_current_profile_entry_waiting")
-                scheduleCurrentProfileCommentObservation()
-                return
+                commentRuntime.start(runtimeSnapshot)
+                // The task form is hosted by our app, so tapping “立即开始” necessarily puts
+                // our activity in the foreground even when the operator prepared a Douyin
+                // profile first. Bring the existing Douyin task back to the foreground before
+                // polling; otherwise currentWindowContext() only sees our own form and the
+                // comment runtime times out waiting for a profile that is still behind it.
+                when (val result = TargetAppLauncher.launch(service)) {
+                    LaunchResult.Started -> {
+                        phase = AutomationPhase.WAITING_FOR_PROFILE
+                        AutomationStore.publishPhase(phase)
+                        logger.info("comment_current_profile_entry_waiting")
+                        delay(CURRENT_PROFILE_ENTRY_SETTLE_DELAY_MS)
+                        scheduleCurrentProfileCommentObservation()
+                        return
+                    }
+
+                    is LaunchResult.Failed -> {
+                        failTaskWithoutManualHandoff("无法重新打开抖音用户主页：${result.reason}")
+                        return
+                    }
+                }
+            } else {
+                // Do not start the comment-stage watchdog while ordinary search navigation is
+                // still locating the source profile. It is started atomically by the profile
+                // handoff below, after a verified USER_PROFILE observation.
+                pendingCommentRuntimeSnapshot = runtimeSnapshot
             }
             logger.info("comment_search_entry_using_profile_navigation")
         }
@@ -509,16 +568,18 @@ class DouyinNavigationController(
         if (!taskActive || activeTaskSnapshot?.taskType != AutomationTaskType.COMMENT_PRIVATE_MESSAGE) return
         timeoutJob?.cancel()
         initialObservationJob?.cancel()
-        commentRuntime.stop()
-        taskActive = false
         when (terminal.outcome) {
             CommentRuntimeTerminal.Outcome.COMPLETED -> {
+                commentRuntime.stop()
+                taskActive = false
                 phase = AutomationPhase.COMPLETED_TASK
                 publishTaskTerminal(phase)
                 logger.info("comment_task_completed", message = terminal.reason)
             }
 
             CommentRuntimeTerminal.Outcome.FAILED -> {
+                commentRuntime.stop()
+                taskActive = false
                 phase = AutomationPhase.FAILED
                 publishTaskTerminal(phase, error = terminal.reason)
                 logger.error("comment_task_failed", message = terminal.reason)
@@ -528,6 +589,17 @@ class DouyinNavigationController(
                 taskActive = true
                 pause(terminal.reason)
             }
+
+            CommentRuntimeTerminal.Outcome.SKIPPED_PROFILE -> {
+                // The profile was safely dismissed because it is private or has no works. Keep
+                // the comment runtime alive, return to the user-result phase, and let the normal
+                // semantic row selector choose the next profile.
+                taskActive = true
+                phase = AutomationPhase.WAITING_FOR_USER_RESULTS
+                AutomationStore.publishPhase(phase)
+                commentRuntime.rearmAfterSkippedProfile()
+                logger.info("comment_profile_skipped", message = terminal.reason)
+            }
         }
     }
 
@@ -535,15 +607,91 @@ class DouyinNavigationController(
     private fun scheduleCurrentProfileCommentObservation() {
         initialObservationJob?.cancel()
         initialObservationJob = scope.launch {
-            repeat(INITIAL_OBSERVATION_ATTEMPTS) {
-                delay(INITIAL_OBSERVATION_INTERVAL_MS)
+            // Launching an already-open Douyin profile is asynchronous on several OEM builds.
+            // A single short probe window can therefore sample the app's transition surface (or
+            // our own activity) and then leave the runtime waiting until its watchdog expires.
+            // Keep polling for the whole bounded entry timeout; this is still a fixed, low-rate
+            // diagnostic loop and does not scroll or click anything by itself.
+            repeat(CURRENT_PROFILE_OBSERVATION_ATTEMPTS) { attempt ->
+                delay(CURRENT_PROFILE_OBSERVATION_INTERVAL_MS)
                 if (!taskActive || !commentRuntime.isRunning) return@launch
-                val context = currentWindowContext() ?: return@repeat
+                // A custom-rendered profile can expose a fresh node tree as UNKNOWN while the
+                // preceding accessibility callback has already produced an OCR-enriched profile
+                // snapshot. Prefer that recent target-app snapshot for this bounded poll; using
+                // the node-only tree here would discard the profile identity and works anchors
+                // and leave the comment state machine waiting until its watchdog expires.
+                val context = currentProfileObservationContext()
+                if (context == null) {
+                    logger.info(
+                        "comment_current_profile_probe_waiting",
+                        attributes = mapOf("attempt" to (attempt + 1), "reason" to "douyin_window_unavailable"),
+                    )
+                    return@repeat
+                }
                 val detection = pageDetector.detect(context)
-                if (detection.kind == PageKind.OUTSIDE_TARGET) return@repeat
-                commentRuntime.onObserved(context, detection)
+                logger.info(
+                    "comment_current_profile_probe",
+                    attributes = mapOf(
+                        "attempt" to (attempt + 1),
+                        "page" to detection.kind.name,
+                        "confidence" to detection.confidence,
+                        "nodes" to context.nodes.size,
+                        "ocr_blocks" to context.ocrBlocks.size,
+                    ),
+                )
+                if (detection.kind != PageKind.OUTSIDE_TARGET) {
+                    commentRuntime.onObserved(context, detection)
+                }
             }
         }
+    }
+
+    /**
+     * Returns the freshest usable target-app snapshot for CURRENT_PROFILE polling. Accessibility
+     * callbacks and direct root reads are not synchronized on OEM builds: a root read may be a
+     * node-only UNKNOWN tree immediately after the callback's OCR probe recognized the profile.
+     * Retain a short-lived enriched snapshot so the state machine can act on the verified page
+     * without clicking from stale coordinates or waiting for a second unrelated event.
+     */
+    private suspend fun currentProfileObservationContext(): ScreenContext? {
+        val live = currentWindowContext()
+        val enriched = latestOcrContext
+            ?.takeIf { it.packageName == TargetAppLauncher.DOUYIN_PACKAGE }
+            ?.takeIf { System.currentTimeMillis() - it.capturedAtMillis <= CURRENT_PROFILE_CONTEXT_MAX_AGE_MS }
+        val latest = latestContext
+            ?.takeIf { it.packageName == TargetAppLauncher.DOUYIN_PACKAGE }
+            ?.takeIf { System.currentTimeMillis() - it.capturedAtMillis <= CURRENT_PROFILE_CONTEXT_MAX_AGE_MS }
+        val liveDetection = live?.let(pageDetector::detect)
+        val enrichedDetection = enriched?.let(pageDetector::detect)
+        val latestDetection = latest?.let(pageDetector::detect)
+        logger.info(
+            "comment_current_profile_context_candidates",
+            attributes = mapOf(
+                "live_page" to (liveDetection?.kind?.name ?: "NONE"),
+                "enriched_page" to (enrichedDetection?.kind?.name ?: "NONE"),
+                "enriched_blocks" to (enriched?.ocrBlocks?.size ?: 0),
+                "latest_page" to (latestDetection?.kind?.name ?: "NONE"),
+                "latest_blocks" to (latest?.ocrBlocks?.size ?: 0),
+            ),
+        )
+        val selected = when {
+            liveDetection?.kind == PageKind.USER_PROFILE -> live
+            enrichedDetection?.kind == PageKind.USER_PROFILE -> enriched
+            latestDetection?.kind == PageKind.USER_PROFILE -> latest
+            live != null -> live
+            else -> enriched ?: latest
+        }
+        // If the direct root read wins the race with the service OCR callback, take one bounded
+        // full-screen sample from the already-open profile. This is still a read-only probe; it
+        // never clicks or swipes and gives the comment state machine the same OCR-backed page
+        // evidence that a normal accessibility callback would provide.
+        if (selected != null &&
+            pageDetector.detect(selected).kind == PageKind.UNKNOWN &&
+            selected.packageName == TargetAppLauncher.DOUYIN_PACKAGE
+        ) {
+            return captureContextWithOcr(selected, "current_profile_probe", OcrRegion.FULL) ?: selected
+        }
+        return selected
     }
 
     private suspend fun resumeSavedTask() {
@@ -558,7 +706,11 @@ class DouyinNavigationController(
             return
         }
         val query = checkpoint.snapshot.composedQueries.getOrNull(checkpoint.queryIndex)
-        if (query.isNullOrBlank()) {
+        val restoredCommentConfig = checkpoint.snapshot.commentConfig
+            ?.takeIf { checkpoint.snapshot.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE }
+        val resumesCurrentProfileCommentTask = restoredCommentConfig?.entryMode ==
+            CommentPrivateMessageEntryMode.CURRENT_PROFILE
+        if (query.isNullOrBlank() && !resumesCurrentProfileCommentTask) {
             AutomationStore.publishFailure("任务检查点中的搜索词无效")
             AutomationStore.clearTaskCheckpoint()
             return
@@ -568,7 +720,7 @@ class DouyinNavigationController(
             attributes = mapOf("query_index" to checkpoint.queryIndex, "query_count" to checkpoint.snapshot.composedQueries.size),
         )
         taskActive = true
-        keyword = query
+        keyword = query.orEmpty()
         activeTaskSnapshot = checkpoint.snapshot
         taskQueryIndex = checkpoint.queryIndex
         remotePageNumber = 1
@@ -581,6 +733,9 @@ class DouyinNavigationController(
         pendingSafetyProbe = checkpoint.snapshot.executionMode == TaskExecutionMode.SAFE_BLANK_PROBE
         pausedPhase = null
         initialOcrAttempts = 0
+        initialBlindBackAttempts = 0
+        latestContext = null
+        latestOcrContext = null
         userTabRevealAttempts = 0
         restrictedUserSkips = 0
         timeoutRecoveryAttempts = 0
@@ -595,6 +750,8 @@ class DouyinNavigationController(
         cachedUserResultsViewportSignature = null
         cachedUserResultsOcrBlocks = emptyList()
         userResultsSignatureBeforeSwipe = null
+        commentProfileHandoffObserved = false
+        pendingCommentRuntimeSnapshot = null
         messageEntryPostconditionJob?.cancel()
         messageResultJob?.cancel()
         profilePostconditionJob?.cancel()
@@ -602,6 +759,33 @@ class DouyinNavigationController(
         phase = AutomationPhase.WAITING_FOR_HOME
         AutomationStore.publishPhase(phase)
         AutomationStore.resumeTask(checkpoint)
+
+        // A search-entry comment task first uses the generic search/User-tab navigation. Keep
+        // its immutable configuration across a rebind, but do not run the comment watchdog
+        // until a verified source profile is actually available.
+        restoredCommentConfig?.let { commentConfig ->
+            val shouldStartRuntime = commentConfig.entryMode == CommentPrivateMessageEntryMode.CURRENT_PROFILE
+            if (shouldStartRuntime) {
+                commentRuntime.start(commentConfig)
+            } else {
+                pendingCommentRuntimeSnapshot = commentConfig
+            }
+            logger.info(
+                "comment_runtime_resume_prepared_after_rebind",
+                attributes = mapOf(
+                    "entry_mode" to commentConfig.entryMode.name,
+                    "runtime_started" to shouldStartRuntime,
+                ),
+            )
+        }
+
+        if (resumesCurrentProfileCommentTask) {
+            phase = AutomationPhase.WAITING_FOR_PROFILE
+            AutomationStore.publishPhase(phase)
+            delay(CURRENT_PROFILE_ENTRY_SETTLE_DELAY_MS)
+            scheduleCurrentProfileCommentObservation()
+            return
+        }
         val existingContext = currentWindowContext()
         val existingDetection = existingContext?.let(pageDetector::detect)
         if (existingContext != null && existingDetection != null && existingDetection.kind in setOf(
@@ -777,15 +961,42 @@ class DouyinNavigationController(
      * chat, or a transient feed/video page. This is a bounded back-navigation recovery; it never
      * taps an unrelated control or relies on a coordinate to guess the current page.
      */
-    private suspend fun recoverInitialSurface(initialContext: ScreenContext) {
+    private suspend fun recoverInitialSurface(
+        initialContext: ScreenContext?,
+        requireHome: Boolean = false,
+    ) {
         var context: ScreenContext? = initialContext
-        repeat(MAX_BACK_ACTIONS_TO_SEARCH_ENTRY + 2) { attempt ->
-            val current = context ?: currentWindowContext()
+        repeat(MAX_INITIAL_HOME_BACK_ACTIONS) { attempt ->
+            val current = context ?: currentWindowContext() ?: recentInitialTargetContext()
             if (current == null) {
+                // Accessibility callbacks can be absent for a short period when a restored
+                // Douyin activity is covered by a system/OEM surface. A bounded blind BACK is
+                // still safe here because the task was launched immediately before this loop;
+                // it lets the app return to its home surface instead of waiting for an event
+                // that may never arrive.
+                if (initialBlindBackAttempts >= MAX_INITIAL_BLIND_BACK_ACTIONS) {
+                    failTaskWithoutManualHandoff("无法读取抖音页面，已尝试返回首页但无障碍服务未提供页面树")
+                    return
+                }
+                initialBlindBackAttempts++
+                val backSucceeded = service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+                logger.warn(
+                    "initial_context_missing_back",
+                    message = "No Douyin node tree is available; issuing a bounded BACK to normalize the launch surface",
+                    attributes = mapOf(
+                        "attempt" to initialBlindBackAttempts,
+                        "succeeded" to backSucceeded,
+                    ),
+                )
+                if (!backSucceeded && initialBlindBackAttempts >= MAX_INITIAL_BLIND_BACK_ACTIONS) {
+                    failTaskWithoutManualHandoff("无法读取抖音页面，已尝试返回首页但无障碍服务未提供页面树")
+                    return
+                }
                 delay(USER_PROFILE_BACK_DELAY_MS)
-                context = currentWindowContext()
+                context = currentWindowContext() ?: recentInitialTargetContext()
                 return@repeat
             }
+            initialBlindBackAttempts = 0
             val detection = pageDetector.detect(current)
             logger.info(
                 "initial_surface_recovery_probe",
@@ -797,25 +1008,68 @@ class DouyinNavigationController(
                     return
                 }
                 PageKind.SEARCH_ENTRY -> {
-                    enterKeyword(current)
-                    return
+                    if (!requireHome) {
+                        enterKeyword(current)
+                        return
+                    }
                 }
                 PageKind.SEARCH_RESULTS -> {
-                    if (selector.select(current, DouyinSelectors.searchInput).node != null) {
+                    if (!requireHome && selector.select(current, DouyinSelectors.searchInput).node != null) {
                         reuseSearchResultsQueryField(current, "initial_surface_recovery")
                         return
                     }
                 }
+                PageKind.OUTSIDE_TARGET -> {
+                    pause("抖音未处于前台，无法回到搜索页面")
+                    return
+                }
                 else -> Unit
             }
+            // Do not let the last profile/result snapshot masquerade as the post-BACK page if a
+            // device drops one content-change callback during the transition.
+            latestContext = null
+            latestOcrContext = null
             if (!service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)) {
                 pause("无法从抖音当前页面返回到可搜索页面")
                 return
             }
             delay(USER_PROFILE_BACK_DELAY_MS)
-            context = currentWindowContext()
+            context = currentWindowContext() ?: recentInitialTargetContext()
         }
-        pause("抖音未能在限定时间内回到可搜索页面")
+        // The final bounded BACK can be the action that leaves a focused search field and
+        // reveals HOME.  Check that resulting surface once before reporting a failed recovery;
+        // otherwise the loop would reject a valid home page without ever observing it.
+        val finalContext = currentWindowContext() ?: recentInitialTargetContext()
+        if (finalContext != null) {
+            val finalDetection = pageDetector.detect(finalContext)
+            logger.info(
+                "initial_surface_recovery_final_probe",
+                attributes = mapOf("page" to finalDetection.kind.name),
+            )
+            when (finalDetection.kind) {
+                PageKind.HOME -> {
+                    openSearch(finalContext)
+                    return
+                }
+                PageKind.SEARCH_ENTRY -> if (!requireHome) {
+                    enterKeyword(finalContext)
+                    return
+                }
+                PageKind.SEARCH_RESULTS -> if (!requireHome &&
+                    selector.select(finalContext, DouyinSelectors.searchInput).node != null
+                ) {
+                    reuseSearchResultsQueryField(finalContext, "initial_surface_recovery_final_probe")
+                    return
+                }
+                else -> Unit
+            }
+        }
+        val reason = "抖音未能在限定时间内回到可搜索页面"
+        if (requireHome) {
+            failTaskWithoutManualHandoff(reason)
+        } else {
+            pause(reason)
+        }
     }
 
     private suspend fun enterKeyword(
@@ -897,6 +1151,14 @@ class DouyinNavigationController(
         // A dispatched gesture can complete while the IME is still animating and leave the
         // suggestion page visible. Confirm the post-condition; retry only on a still-classified
         // search-entry page, never on a login/risk/unknown state.
+        //
+        // Douyin may publish the result tree several seconds after the gesture (especially when
+        // the first result page is network-backed). Do not hand this transition straight to the
+        // generic event-driven watchdog: on some builds the result tree arrives without a second
+        // accessibility event, so the watchdog can time out while the correct User page is
+        // already visible. A bounded live poll is still node/page based and never taps a guessed
+        // result.
+        var postSubmitResultsContext: ScreenContext? = null
         delay(500L)
         val postSubmitContext = currentWindowContext()
         if (postSubmitContext != null && pageDetector.detect(postSubmitContext).kind == PageKind.SEARCH_ENTRY) {
@@ -906,6 +1168,32 @@ class DouyinNavigationController(
                 pause("Search entry remained visible and the retry gesture was rejected")
                 return
             }
+            postSubmitResultsContext = currentWindowContext()?.takeIf { context ->
+                pageDetector.detect(context).kind in setOf(PageKind.SEARCH_RESULTS, PageKind.USER_RESULTS)
+            }
+        }
+
+        if (postSubmitResultsContext == null) {
+            postSubmitResultsContext = searchResultsContextAfterSubmit("search_submit_initial")
+        }
+
+        if (postSubmitResultsContext != null) {
+            val resultContext = requireNotNull(postSubmitResultsContext)
+            val resultPage = pageDetector.detect(resultContext)
+            when (resultPage.kind) {
+                PageKind.USER_RESULTS -> {
+                    phase = AutomationPhase.WAITING_FOR_USER_RESULTS
+                    AutomationStore.publishPhase(phase)
+                    selectVisibleUser(resultContext)
+                }
+                PageKind.SEARCH_RESULTS -> {
+                    phase = AutomationPhase.WAITING_FOR_SEARCH_RESULTS
+                    AutomationStore.publishPhase(phase)
+                    selectUserTab(resultContext)
+                }
+                else -> Unit
+            }
+            return
         }
 
         logger.info("search_submitted", attributes = mapOf("route" to submitResult.route))
@@ -1143,6 +1431,16 @@ class DouyinNavigationController(
             )
             if (rowMatch != null) break
         }
+        // Some current Douyin builds leave the User tab visually selected but expose an
+        // off-screen ViewPager subtree to accessibility. P0 is allowed one exceptionally strict
+        // OCR-assisted geometry fallback here; it verifies the same first card twice and never
+        // advances to a later result when that proof is unavailable.
+        if (rowMatch == null && minimumAnchorTop == null && isSingleTargetCommentProbe()) {
+            resolveP0FirstUserOcrFallback(rowContext)?.let { resolution ->
+                rowContext = resolution.context
+                rowMatch = resolution.match
+            }
+        }
         if (rowMatch != null) {
             rowContext = enrichUserResultIdentityContext(rowContext, rowMatch!!)
             var identity = UserResultIdentityExtractor.extract(rowContext, rowMatch!!)
@@ -1306,6 +1604,16 @@ class DouyinNavigationController(
                 logger.info("user_results_account_help_marker_only")
                 if (advanceToNextQueryIfAvailable("account_help_marker")) return
                 completeTaskAtQueryEnd()
+                return
+            }
+            // The single-user comment regression must never turn an ambiguous first result into
+            // a list swipe.  Preserve the live accessibility structure for diagnosis, then end
+            // this bounded probe before any later result can be selected.
+            if (isSingleTargetCommentProbe()) {
+                saveNodeDump(rowContext, "p0_first_user_ambiguous")
+                failTaskWithoutManualHandoff(
+                    "P0 首个用户结果缺少可验证的行结构；任务已安全结束，未处理后续用户",
+                )
                 return
             }
             logger.warn(
@@ -1510,6 +1818,149 @@ class DouyinNavigationController(
         )
     }
 
+    /**
+     * Transfers a verified search-target profile to the isolated comment runner.
+     *
+     * Search-target comment tasks intentionally share the resilient search/User-tab navigation
+     * with B-end private-message tasks. From this point onward the flows must diverge completely:
+     * the comment runner opens a work, reads one bounded comment viewport, and only then performs
+     * its avatar-only private-message safety probe. Keeping the transfer in one function gives
+     * the diagnostic log an unambiguous boundary and prevents the generic profile runner from
+     * being selected accidentally.
+     */
+    private suspend fun handoffCommentProfileObservation(
+        context: ScreenContext,
+        detection: PageDetection,
+        source: String,
+    ): Boolean {
+        val snapshot = activeTaskSnapshot ?: return false
+        if (snapshot.taskType != AutomationTaskType.COMMENT_PRIVATE_MESSAGE) return false
+        if (snapshot.commentConfig == null) {
+            logger.error(
+                "comment_profile_handoff_invalid",
+                message = "Comment task has no comment configuration",
+                attributes = mapOf("source" to source),
+            )
+            failTaskWithoutManualHandoff("评论私信任务配置缺失，无法进入评论区流程")
+            return true
+        }
+        if (!commentRuntime.isRunning) {
+            val snapshot = pendingCommentRuntimeSnapshot ?: snapshot.commentConfig
+            pendingCommentRuntimeSnapshot = null
+            commentRuntime.start(snapshot)
+            logger.info(
+                "comment_runtime_started_at_profile_handoff",
+                attributes = mapOf("source" to source, "page" to detection.kind.name),
+            )
+        }
+
+        timeoutJob?.cancel()
+        if (!commentProfileHandoffObserved) {
+            commentProfileHandoffObserved = true
+            logger.info(
+                "comment_profile_handoff",
+                attributes = mapOf(
+                    "source" to source,
+                    "page" to detection.kind.name,
+                    "confidence" to detection.confidence,
+                    "nodes" to context.nodes.size,
+                    "ocr_blocks" to context.ocrBlocks.size,
+                ),
+            )
+        }
+        commentRuntime.onObserved(context, detection)
+        return true
+    }
+
+    private fun isCommentPrivateMessageTask(): Boolean =
+        activeTaskSnapshot?.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE &&
+            activeTaskSnapshot?.commentConfig != null
+
+    /**
+     * P0 is deliberately a one-user/one-video/one-comment safety probe.  If its first source
+     * result cannot be structurally bound, advancing the list would violate that fixed scope.
+     */
+    private fun isSingleTargetCommentProbe(): Boolean {
+        val snapshot = activeTaskSnapshot ?: return false
+        val config = snapshot.commentConfig ?: return false
+        return snapshot.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE &&
+            snapshot.maxUsers == 1 &&
+            config.maxVideos == 1 &&
+            config.maxUsersPerVideo == 1
+    }
+
+    /**
+     * Resolves only P0's first source user when the live accessibility tree is the known
+     * off-screen ViewPager variant. OCR is a verification aid, not a direct text click: two
+     * screenshots must agree on the first card's account marker and geometry before a synthetic
+     * row can authorise the existing avatar-excluding, bounded content-area gesture.
+     */
+    private suspend fun resolveP0FirstUserOcrFallback(
+        context: ScreenContext,
+    ): P0FirstUserOcrResolution? {
+        val firstContext = captureContextWithOcr(
+            base = context,
+            tag = "p0_first_user_ocr_one",
+            region = OcrRegion.USER_RESULTS,
+        ) ?: return null
+        val firstAnalysis = OcrUserResultRowDetector.analyzeFirstVisible(firstContext)
+        val first = firstAnalysis.match
+        logger.info(
+            "p0_first_user_ocr_probe",
+            attributes = mapOf(
+                "sample" to 1,
+                "ocr_blocks" to firstContext.ocrBlocks.size,
+                "account_markers" to firstAnalysis.accountMarkerCount,
+                "matched" to (first != null),
+            ),
+        )
+        if (first == null) return null
+
+        delay(P0_FIRST_USER_OCR_STABILITY_DELAY_MS)
+        val refreshedBase = currentWindowContext() ?: return null
+        if (pageDetector.detect(refreshedBase).kind != PageKind.USER_RESULTS) {
+            logger.warn(
+                "p0_first_user_ocr_surface_changed",
+                message = "The result surface changed before the OCR fallback could be confirmed",
+            )
+            return null
+        }
+        val secondContext = captureContextWithOcr(
+            base = refreshedBase,
+            tag = "p0_first_user_ocr_two",
+            region = OcrRegion.USER_RESULTS,
+        ) ?: return null
+        val secondAnalysis = OcrUserResultRowDetector.analyzeFirstVisible(secondContext)
+        val second = secondAnalysis.match
+        val stable = second != null && first.agreesWith(second)
+        logger.info(
+            "p0_first_user_ocr_probe",
+            attributes = mapOf(
+                "sample" to 2,
+                "ocr_blocks" to secondContext.ocrBlocks.size,
+                "account_markers" to secondAnalysis.accountMarkerCount,
+                "matched" to (second != null),
+                "stable" to stable,
+            ),
+        )
+        if (!stable) return null
+        logger.warn(
+            "p0_first_user_ocr_geometry_fallback",
+            message = "The first custom-rendered user card was verified twice; using its bounded content area",
+            attributes = mapOf("row_height" to second.rowBounds.height),
+        )
+        return P0FirstUserOcrResolution(
+            context = secondContext,
+            match = second.asStructuralMatch(),
+        )
+    }
+
+    private data class P0FirstUserOcrResolution(
+        val context: ScreenContext,
+        val match: StructuralUserRowMatch,
+    )
+
+
     /** Poll the profile transition independently of accessibility callbacks, which OEM builds may drop. */
     private fun scheduleProfilePostconditionCheck() {
         profilePostconditionJob?.cancel()
@@ -1532,8 +1983,7 @@ class DouyinNavigationController(
                     // Comment tasks keep the profile-to-comment route in their isolated
                     // runtime. The legacy profile postcondition must never click a private
                     // message control for this task type.
-                    if (activeTaskSnapshot?.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE) {
-                        commentRuntime.onObserved(context, detection)
+                    if (handoffCommentProfileObservation(context, detection, source = "profile_postcondition")) {
                         return@withLock
                     }
                     when (detection.kind) {
@@ -2522,12 +2972,38 @@ class DouyinNavigationController(
         return ActionOutcome.failure("Top-right Search control did not open results")
     }
 
-    /** Returns true only after a live tree reports a results page, not merely a completed gesture. */
-    private suspend fun searchResultsPostconditionReached(route: String): Boolean {
+    /**
+     * Polls the live tree until a results page is classified. The returned context is the same
+     * snapshot that proved the post-condition, so callers can continue from it even when Douyin
+     * emits no follow-up accessibility event.
+     */
+    private suspend fun searchResultsContextAfterSubmit(route: String): ScreenContext? {
         repeat(SEARCH_SUBMIT_POSTCONDITION_ATTEMPTS) { attempt ->
-            delay(if (attempt == 0) SEARCH_SUBMIT_POSTCONDITION_DELAY_MS else SEARCH_SUBMIT_POSTCONDITION_INTERVAL_MS)
-            val liveContext = currentWindowContext() ?: return@repeat
-            val detection = pageDetector.detect(liveContext)
+            delay(
+                if (attempt == 0) SEARCH_SUBMIT_POSTCONDITION_DELAY_MS
+                else SEARCH_SUBMIT_POSTCONDITION_INTERVAL_MS,
+            )
+            // A non-focusable floating window or an OEM transition can make
+            // rootInActiveWindow temporarily return our overlay (or null) even though the
+            // accessibility callback has already delivered the target app's result tree. Keep
+            // using that most-recent target snapshot for this short post-condition window; it
+            // avoids declaring a correct result page timed out simply because the direct root
+            // read lost focus for one frame.
+            val liveContext = currentWindowContext()
+            val recentContext = latestContext
+                ?.takeIf { it.packageName == TargetAppLauncher.DOUYIN_PACKAGE }
+                ?.takeIf { System.currentTimeMillis() - it.capturedAtMillis <= SEARCH_SUBMIT_CONTEXT_MAX_AGE_MS }
+            val candidates = listOfNotNull(liveContext, recentContext)
+                .distinctBy { it.capturedAtMillis to it.nodes.size }
+            if (candidates.isEmpty()) return@repeat
+            val detectedCandidate = candidates
+                .asSequence()
+                .map { context -> context to pageDetector.detect(context) }
+                .firstOrNull { (_, detection) ->
+                    detection.kind == PageKind.SEARCH_RESULTS || detection.kind == PageKind.USER_RESULTS
+                }
+            val candidateContext = detectedCandidate?.first ?: candidates.first()
+            val detection = detectedCandidate?.second ?: pageDetector.detect(candidateContext)
             logger.info(
                 "search_submit_postcondition_probe",
                 attributes = mapOf(
@@ -2535,15 +3011,22 @@ class DouyinNavigationController(
                     "attempt" to attempt + 1,
                     "page" to detection.kind.name,
                     "confidence" to detection.confidence,
+                    "root_context" to (liveContext != null),
+                    "recent_context" to (recentContext != null),
                 ),
             )
             if (detection.kind == PageKind.SEARCH_RESULTS || detection.kind == PageKind.USER_RESULTS) {
-                latestContext = liveContext
+                latestContext = candidateContext
                 AutomationStore.publishObservation(detection)
-                return true
+                return candidateContext
             }
         }
-        return false
+        return null
+    }
+
+    /** Returns true only after a live tree reports a results page, not merely a completed gesture. */
+    private suspend fun searchResultsPostconditionReached(route: String): Boolean {
+        return searchResultsContextAfterSubmit(route) != null
     }
 
     /** M2 submits one space and requires Douyin's blank-message notice; it never sends content. */
@@ -2747,7 +3230,10 @@ class DouyinNavigationController(
                 base.copy(
                     ocrBlocks = result.toOcrTextBlocks(),
                     capturedAtMillis = System.currentTimeMillis(),
-                ).also { latestContext = it }
+                ).also {
+                    latestContext = it
+                    latestOcrContext = it
+                }
             } finally {
                 bitmap.recycle()
             }
@@ -3930,7 +4416,7 @@ class DouyinNavigationController(
                 PageKind.SEARCH_RESULTS -> reuseSearchResultsQueryField(requireNotNull(context), "home_timeout_recovery")
                 PageKind.USER_RESULTS,
                 PageKind.USER_PROFILE,
-                PageKind.DIRECT_MESSAGE -> recoverInitialSurface(requireNotNull(context))
+                PageKind.DIRECT_MESSAGE -> recoverInitialSurface(requireNotNull(context), requireHome = true)
                 PageKind.UNKNOWN -> {
                     val startupAd = context?.let(TransientOverlayDetector::findStartupAd)
                     if (startupAd != null) {
@@ -4040,12 +4526,33 @@ class DouyinNavigationController(
 
     @Suppress("DEPRECATION")
     private fun currentWindowContext(): ScreenContext? {
-        val root = service.rootInActiveWindow ?: return null
-        return try {
-            if (root.packageName?.toString() != TargetAppLauncher.DOUYIN_PACKAGE) return null
-            inspector.inspect(root)
-        } finally {
-            root.recycle()
+        // On some OEM builds an app-owned, non-focusable TYPE_APPLICATION_OVERLAY can briefly
+        // become the accessibility "active" window.  In that moment rootInActiveWindow is our
+        // overlay (or null), even though Douyin remains visible immediately below.  The service
+        // is explicitly configured to retrieve interactive windows, so use the visible Douyin
+        // window as a node-first fallback rather than treating the overlay as a screen failure.
+        service.rootInActiveWindow?.let { activeRoot ->
+            try {
+                if (activeRoot.packageName?.toString() == TargetAppLauncher.DOUYIN_PACKAGE) {
+                    return inspector.inspect(activeRoot)
+                }
+            } finally {
+                activeRoot.recycle()
+            }
+        }
+
+        return service.windows.orEmpty().firstNotNullOfOrNull { window ->
+            val root = window.root
+            try {
+                if (root?.packageName?.toString() == TargetAppLauncher.DOUYIN_PACKAGE) {
+                    inspector.inspect(root)
+                } else {
+                    null
+                }
+            } finally {
+                root?.recycle()
+                window.recycle()
+            }
         }
     }
 
@@ -4146,6 +4653,7 @@ class DouyinNavigationController(
         remoteResumeTargetPageNumber = null
         remoteResumeMaxSwipes = 0
         processedUserIdentities.clear()
+        latestOcrContext = null
         cachedUserResultsViewportSignature = null
         cachedUserResultsOcrBlocks = emptyList()
         userResultsSignatureBeforeSwipe = null
@@ -4192,6 +4700,14 @@ class DouyinNavigationController(
         const val INITIAL_OCR_MAX_ATTEMPTS = 6
         const val OCR_PAGE_STABLE_OBSERVATIONS = 2
         const val INITIAL_SCREEN_SETTLE_DELAY_MS = 5_000L
+        /** Callback snapshots older than this cannot prove the currently launched target page. */
+        const val INITIAL_CONTEXT_MAX_AGE_MS = 4_000L
+        const val CURRENT_PROFILE_ENTRY_SETTLE_DELAY_MS = 700L
+        /** A profile launch can take several seconds while Douyin restores a custom surface. */
+        const val CURRENT_PROFILE_OBSERVATION_ATTEMPTS = 120
+        const val CURRENT_PROFILE_OBSERVATION_INTERVAL_MS = 500L
+        /** OCR-enriched callback snapshots remain valid only for this short transition window. */
+        const val CURRENT_PROFILE_CONTEXT_MAX_AGE_MS = 4_000L
         const val NEXT_TASK_SETTLE_DELAY_MS = 900L
         const val INITIAL_READY_STABLE_OBSERVATIONS = 2
         val INITIAL_READY_PAGE_KINDS = setOf(
@@ -4208,6 +4724,8 @@ class DouyinNavigationController(
         const val USER_ROW_POSTCONDITION_INTERVAL_MS = 350L
         const val IDENTITY_RETRY_ATTEMPTS = 3
         const val IDENTITY_RETRY_INTERVAL_MS = 450L
+        /** Two exception-only OCR samples must settle before P0 may use geometry fallback. */
+        const val P0_FIRST_USER_OCR_STABILITY_DELAY_MS = 350L
         const val VIEWPORT_ANCHOR_PROBE_ATTEMPTS = 8
         const val VIEWPORT_ANCHOR_PROBE_INTERVAL_MS = 650L
         const val VIEWPORT_IDENTITY_STABLE_OBSERVATIONS = 2
@@ -4223,6 +4741,9 @@ class DouyinNavigationController(
         const val PRIVATE_MESSAGE_ENTRY_OCR_PROBE_ATTEMPT = 2
         const val USER_PROFILE_BACK_DELAY_MS = 700L
         const val MAX_BACK_ACTIONS_TO_SEARCH_ENTRY = 3
+        /** One extra action covers a focused restored search field; still strictly bounded. */
+        const val MAX_INITIAL_HOME_BACK_ACTIONS = 5
+        const val MAX_INITIAL_BLIND_BACK_ACTIONS = 4
         const val PROFILE_POSTCONDITION_ATTEMPTS = 16
         const val PROFILE_POSTCONDITION_INITIAL_DELAY_MS = 450L
         const val PROFILE_POSTCONDITION_INTERVAL_MS = 400L
@@ -4253,9 +4774,13 @@ class DouyinNavigationController(
         const val MAX_TIMEOUT_RECOVERY_ATTEMPTS = 1
         const val SEARCH_ENTRY_POSTCONDITION_ATTEMPTS = 8
         const val SEARCH_ENTRY_POSTCONDITION_INTERVAL_MS = 350L
-        const val SEARCH_SUBMIT_POSTCONDITION_ATTEMPTS = 3
+        // Results can arrive without a second accessibility callback. Poll for roughly six
+        // seconds before falling back to the normal phase watchdog instead of false-pausing on a
+        // page that is already visible.
+        const val SEARCH_SUBMIT_POSTCONDITION_ATTEMPTS = 12
         const val SEARCH_SUBMIT_POSTCONDITION_DELAY_MS = 450L
-        const val SEARCH_SUBMIT_POSTCONDITION_INTERVAL_MS = 350L
+        const val SEARCH_SUBMIT_POSTCONDITION_INTERVAL_MS = 500L
+        const val SEARCH_SUBMIT_CONTEXT_MAX_AGE_MS = 8_000L
         // OEM/Douyin live banners can remain above the target for several seconds. Wait long
         // enough for a normal transient notification to clear, but keep a bounded manual-handoff
         // path when the active window never returns.
@@ -4306,7 +4831,25 @@ class DouyinNavigationController(
                 delay(INITIAL_OBSERVATION_INTERVAL_MS)
                 if (!taskActive || phase != AutomationPhase.WAITING_FOR_HOME) return@launch
 
-                val context = currentWindowContext() ?: return@repeat
+                // A current-root lookup can be transiently shadowed by the optional progress
+                // overlay on some OEM devices.  A short-lived callback snapshot is safe to use,
+                // but a prior task's profile/result tree is never valid startup evidence.
+                val context = currentWindowContext() ?: recentInitialTargetContext()
+                if (context == null) {
+                    logger.warn(
+                        "initial_context_missing",
+                        message = "No Douyin node tree is available during startup; beginning bounded home recovery",
+                        attributes = mapOf("observation" to observationAttempt + 1),
+                    )
+                    // The normal event path already owns this mutex. This polling path does not,
+                    // so serialize the blind BACK recovery with every other navigation action.
+                    mutex.withLock {
+                        if (taskActive && phase == AutomationPhase.WAITING_FOR_HOME) {
+                            recoverInitialSurface(initialContext = null, requireHome = true)
+                        }
+                    }
+                    return@launch
+                }
                 val augmentedContext = augmentInitialUnknownWithOcr(context, observationAttempt)
                 val detected = pageDetector.detect(augmentedContext)
                 // Check the launch overlay before trusting the page classifier. An ad can leave
@@ -4388,6 +4931,10 @@ class DouyinNavigationController(
         observationAttempt: Int,
     ): ScreenContext {
         if (pageDetector.detect(context).kind != PageKind.UNKNOWN) return context
+        // Comment P0 has a deterministic, node-first recovery path for an already-restored
+        // profile/video: bounded Back navigation until HOME/search.  Screenshot OCR cannot
+        // improve that decision and needlessly adds seconds to every regression start.
+        if (isCommentPrivateMessageTask()) return context
         if (observationAttempt % INITIAL_OCR_RETRY_EVERY_OBSERVATIONS != 0) return context
         if (initialOcrAttempts >= INITIAL_OCR_MAX_ATTEMPTS) return context
         val engine = ocr ?: return context
@@ -4415,6 +4962,12 @@ class DouyinNavigationController(
             )
         }.getOrDefault(context)
     }
+
+    /** Returns only a recent target snapshot; startup recovery must never act on a stale run. */
+    private fun recentInitialTargetContext(): ScreenContext? =
+        latestContext
+            ?.takeIf { it.packageName == TargetAppLauncher.DOUYIN_PACKAGE }
+            ?.takeIf { System.currentTimeMillis() - it.capturedAtMillis <= INITIAL_CONTEXT_MAX_AGE_MS }
 
     private fun hasInitialSearchSelectorCandidate(context: ScreenContext): Boolean =
         selector.select(context, DouyinSelectors.searchEntry).node != null ||

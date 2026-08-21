@@ -135,6 +135,26 @@ class PageDetectorTest {
     }
 
     @Test
+    fun `incidental login label does not mask selected user results`() {
+        val context = contextOf(
+            NodeSnapshot(text = "用户", bounds = ScreenBounds(400, 180, 600, 260), isSelected = true),
+            NodeSnapshot(text = "关注", bounds = ScreenBounds(700, 500, 900, 580)),
+            NodeSnapshot(text = "登录", bounds = ScreenBounds(720, 700, 900, 780), isClickable = true),
+        )
+
+        assertEquals(PageKind.USER_RESULTS, detector.detect(context).kind)
+    }
+
+    @Test
+    fun `specific phone login label remains a login page`() {
+        val context = contextOf(
+            NodeSnapshot(text = "手机号登录", bounds = ScreenBounds(180, 420, 900, 520)),
+        )
+
+        assertEquals(PageKind.LOGIN, detector.detect(context).kind)
+    }
+
+    @Test
     fun `structural follow anchors verify custom rendered user results`() {
         val rowPath = listOf(0, 1)
         val anchorPath = listOf(0, 1, 0)
@@ -221,6 +241,26 @@ class PageDetectorTest {
             NodeSnapshot(text = "粉丝"),
             NodeSnapshot(text = "关注", isClickable = true),
             NodeSnapshot(text = "联系客服", contentDescription = "私信", isClickable = true),
+        )
+
+        assertEquals(PageKind.USER_PROFILE, detector.detect(context).kind)
+    }
+
+    @Test
+    fun `custom rendered profile with follow and stats wins over home navigation labels`() {
+        val context = ScreenContext(
+            packageName = "com.ss.android.ugc.aweme",
+            screenSize = ScreenSize(1080, 2412),
+            nodes = listOf(
+                NodeSnapshot(text = "关注", isClickable = true, bounds = ScreenBounds(620, 1020, 1000, 1140)),
+                NodeSnapshot(text = "推荐", bounds = ScreenBounds(0, 120, 160, 220)),
+                NodeSnapshot(text = "商城", bounds = ScreenBounds(760, 120, 900, 220)),
+            ),
+            ocrBlocks = listOf(
+                OcrTextBlock("Liquid Mind", ScreenBounds(280, 420, 760, 520)),
+                OcrTextBlock("抖音号:1178711787", ScreenBounds(280, 520, 760, 600)),
+                OcrTextBlock("3.9万 获赞 16 关注 1.4万 粉丝", ScreenBounds(40, 760, 920, 860)),
+            ),
         )
 
         assertEquals(PageKind.USER_PROFILE, detector.detect(context).kind)
