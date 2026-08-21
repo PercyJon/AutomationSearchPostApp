@@ -218,10 +218,20 @@ object CommentEntrySignalDetector {
         // neither “播放” nor a full-width video node, so requiring those weaker visual markers
         // made a genuine video wait until its watchdog expired even though its comment button
         // was already safely actionable.
-        val hasVideoSurface = page == PageKind.UNKNOWN && (
-            commentButton != null ||
-                (hasVideoMarker && context.nodes.any { it.isVisibleToUser && it.bounds.width >= MIN_VIDEO_EDGE })
-            )
+        //
+        // Douyin renders the immersive video player opened from a profile's first video tile with
+        // the same bottom-navigation labels as the home feed, so PageDetector can classify that
+        // genuine video surface as HOME instead of UNKNOWN. The verified right-rail comment button
+        // is authoritative in both cases: a home-classified screen carrying a semantic/structural
+        // speech-bubble action is the opened video, and proceeding lets the WAITING_FOR_VIDEO →
+        // OPEN_COMMENTS transition fire instead of idling into the “等待视频页面” watchdog. The
+        // weaker visual marker (a wide node plus “播放/暂停/作品” text) is still restricted to
+        // UNKNOWN, since a live home feed can also contain incidental wide nodes.
+        val hasCommentRail = commentButton != null
+        val hasWideVideoNode = hasVideoMarker &&
+            context.nodes.any { it.isVisibleToUser && it.bounds.width >= MIN_VIDEO_EDGE }
+        val hasVideoSurface = hasCommentRail && (page == PageKind.UNKNOWN || page == PageKind.HOME) ||
+            (page == PageKind.UNKNOWN && hasWideVideoNode)
         return CommentEntryObservation(
             page = page,
             hasFirstVideoTarget = hasFirstVideoTarget,

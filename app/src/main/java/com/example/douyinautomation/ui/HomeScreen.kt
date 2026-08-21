@@ -97,6 +97,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import com.example.douyinautomation.BuildConfig
+import com.example.douyinautomation.CommentRegressionPreset
 import com.example.douyinautomation.automation.AutomationCommand
 import com.example.douyinautomation.automation.AutomationPhase
 import com.example.douyinautomation.automation.AutomationStore
@@ -167,6 +168,7 @@ fun AppHomeScreen(
     initialCommentTask: Boolean = false,
     autoStartCommentP0: Boolean = false,
     commentP0LaunchToken: Int = 0,
+    commentRegressionPreset: CommentRegressionPreset? = null,
 ) {
     var section by rememberSaveable(initialSection) { mutableStateOf(initialSection ?: HomeSection.HOME.name) }
     var detailTaskId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -316,6 +318,7 @@ fun AppHomeScreen(
                     },
                     autoStartP0 = autoStartCommentP0,
                     autoStartToken = commentP0LaunchToken,
+                    regressionPreset = commentRegressionPreset,
                     onClose = {
                         showCommentTask = false
                         showCreateTask = false
@@ -345,6 +348,7 @@ fun AppHomeScreen(
                     },
                     autoStartP0 = autoStartCommentP0,
                     autoStartToken = commentP0LaunchToken,
+                    regressionPreset = commentRegressionPreset,
                     onClose = {
                         showCommentTask = false
                         showCreateTask = false
@@ -870,6 +874,7 @@ private fun CommentTaskScreen(
     presetCatalog: SearchPresetCatalog,
     autoStartP0: Boolean = false,
     autoStartToken: Int = 0,
+    regressionPreset: CommentRegressionPreset? = null,
     onClose: () -> Unit,
 ) {
     val state by AutomationStore.uiState.collectAsState()
@@ -898,8 +903,39 @@ private fun CommentTaskScreen(
     // predates this regression preset. It never changes values again after the operator edits
     // the form in the current development build.
     var regressionSeedVersion by rememberSaveable { mutableStateOf("") }
+    // The M3 parameterized preset takes precedence over the fixed P0 seed. Its values are applied
+    // once per delivered preset instance (identified by the autoStartToken, which is unique per
+    // debug intent) so 5/10/20 bounds, match keywords, skip-pinned and multi-video variants can be
+    // driven from ADB extras without touching the form.
+    var appliedPresetToken by rememberSaveable { mutableStateOf(0) }
+    LaunchedEffect(autoStartToken, regressionPreset) {
+        val preset = regressionPreset
+        if (useP0RegressionDefaults && preset != null && appliedPresetToken != autoStartToken) {
+            appliedPresetToken = autoStartToken
+            entryMode = CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE
+            targetUser = preset.targetUser
+            taskName = ""
+            matchKeywords = preset.matchKeywords
+            maxVideos = preset.maxVideos.toString()
+            maxUsers = preset.maxUsersPerVideo.toString()
+            skipPinnedVideos = preset.skipPinnedVideos
+            regressionSeedVersion = COMMENT_P0_REGRESSION_SEED
+            com.example.douyinautomation.automation.AutomationStore.logger.info(
+                "p0_regression_preset_applied",
+                attributes = mapOf(
+                    "token" to autoStartToken,
+                    // Numeric bounds keyed without "user"/"keyword" so the M3 5/10/20 evidence is
+                    // not swallowed by the logger's defensive redaction. The target and terms are
+                    // deliberately left sensitive (redacted) since they may be account identifiers.
+                    "max_videos" to preset.maxVideos,
+                    "per_video_cap" to preset.maxUsersPerVideo,
+                    "skip_pinned" to preset.skipPinnedVideos,
+                ),
+            )
+        }
+    }
     LaunchedEffect(useP0RegressionDefaults, regressionSeedVersion) {
-        if (useP0RegressionDefaults && regressionSeedVersion != COMMENT_P0_REGRESSION_SEED) {
+        if (useP0RegressionDefaults && regressionSeedVersion != COMMENT_P0_REGRESSION_SEED && regressionPreset == null) {
             entryMode = CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE
             targetUser = "designer"
             taskName = ""
@@ -962,9 +998,45 @@ private fun CommentTaskScreen(
             onClose()
         }
     }
+    // The preset LaunchedEffect above writes the M3 5/10/20 bounds into the same rememberSaveable
+    // form state that this builder reads. Building the snapshot here (inside the auto-start
+    // coroutine) instead of reusing the composable-body `snapshot` val is essential: the body val
+    // is captured stale from the pre-preset composition, whereas these delegated state reads are
+    // live at coroutine execution time, so the bounds that actually reach the runtime match the
+    // delivered preset instead of the fixed "1" seed.
+    fun buildPreparedSnapshot(): com.example.douyinautomation.automation.TaskSnapshot? {
+        val liveConfig = CommentPrivateMessageConfig(
+            entryMode = entryMode,
+            targetUser = targetUser.trim().takeIf { it.isNotEmpty() },
+            matchKeywords = matchKeywords.split('|'),
+            maxVideos = maxVideos.toIntOrNull() ?: 0,
+            maxUsersPerVideo = maxUsers.toIntOrNull() ?: 0,
+            skipPinnedVideos = skipPinnedVideos,
+        )
+        val liveDraft = TaskDraft(
+            id = java.util.UUID.randomUUID().toString(),
+            name = taskName,
+            customKeywords = if (entryMode == CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE) {
+                listOf(targetUser)
+            } else {
+                emptyList()
+            },
+            maxUsers = (maxUsers.toIntOrNull() ?: 0).coerceAtLeast(1),
+            executionMode = TaskExecutionMode.SAFE_BLANK_PROBE,
+            taskType = AutomationTaskType.COMMENT_PRIVATE_MESSAGE,
+            commentConfig = liveConfig,
+        )
+        if (liveDraft.validationErrors().isNotEmpty()) return null
+        return runCatching {
+            liveDraft.toSnapshot(presets = presetCatalog, nowMillis = System.currentTimeMillis())
+        }.getOrNull()
+    }
     // Development-only direct runner: no separate business logic is used. It invokes exactly
-    // the same prepared snapshot/start command as the visible “立即开始” control.
-    LaunchedEffect(autoStartLatchToken, canRun) {
+    // the same prepared snapshot/start command as the visible “立即开始” control. The
+    // appliedPresetToken key re-arms this effect after the M3 regression preset has been written
+    // into the form state, so the captured snapshot carries the 5/10/20 bounds instead of the
+    // stale fixed seed (the two LaunchedEffects otherwise run in the same frame).
+    LaunchedEffect(autoStartLatchToken, canRun, appliedPresetToken) {
         com.example.douyinautomation.automation.AutomationStore.logger.info(
             "p0_autostart_effect",
             attributes = mapOf(
@@ -974,11 +1046,13 @@ private fun CommentTaskScreen(
                 "ready" to state.serviceCommandReady,
                 "errors" to errors.size,
                 "snapshot" to (snapshot != null),
+                "applied_preset" to appliedPresetToken,
             ),
         )
-        if (autoStartLatchToken != 0 && autoStartTriggeredForToken != autoStartLatchToken && canRun) {
+        val presetReady = regressionPreset == null || appliedPresetToken == autoStartLatchToken
+        if (autoStartLatchToken != 0 && autoStartTriggeredForToken != autoStartLatchToken && canRun && presetReady) {
             autoStartTriggeredForToken = autoStartLatchToken
-            startPreparedTask(snapshot)
+            startPreparedTask(buildPreparedSnapshot())
         }
     }
 

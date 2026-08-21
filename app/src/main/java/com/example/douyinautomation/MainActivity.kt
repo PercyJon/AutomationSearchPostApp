@@ -16,17 +16,32 @@ import com.example.douyinautomation.automation.TaskExecutionMode
 import com.example.douyinautomation.ui.AppHomeScreen
 import com.example.douyinautomation.ui.theme.AutomationTheme
 
+/**
+ * Parameterized M3 device-regression preset delivered through the debug OPEN_COMMENT_P0 intent.
+ * When present it overrides the fixed "comment-p0-designer-1-1" seed so bounded 5/10/20, keyword
+ * filter, skip-pinned and multi-video regressions can be driven entirely from ADB extras.
+ */
+data class CommentRegressionPreset(
+    val targetUser: String = "designer",
+    val matchKeywords: String = "",
+    val maxVideos: Int = 1,
+    val maxUsersPerVideo: Int = 1,
+    val skipPinnedVideos: Boolean = false,
+)
+
 class MainActivity : ComponentActivity() {
     private val statusHandler = Handler(Looper.getMainLooper())
     private val statusRefresh = Runnable { AutomationStore.refreshServiceStatus(this) }
     private var openRecordsTab: Boolean = false
     private var openCommentP0: Boolean = false
+    private var commentRegressionPreset: CommentRegressionPreset? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         openRecordsTab = intent.getBooleanExtra(EXTRA_OPEN_RECORDS, false)
         openCommentP0 = BuildConfig.DEBUG && intent.getBooleanExtra(EXTRA_OPEN_COMMENT_P0, false)
+        commentRegressionPreset = if (openCommentP0) readCommentRegressionPreset(intent) else null
         // The launch nonce lives in the companion object so it survives recreate().  A process-cold
         // start assigns the initial token exactly once; re-delivered intents advance it in onNewIntent.
         if (openCommentP0 && commentP0LaunchNonce == 0) commentP0LaunchNonce = 1
@@ -47,6 +62,7 @@ class MainActivity : ComponentActivity() {
                         initialCommentTask = openCommentP0,
                         autoStartCommentP0 = openCommentP0,
                         commentP0LaunchToken = commentP0LaunchNonce,
+                        commentRegressionPreset = commentRegressionPreset,
                     )
                 }
             }
@@ -120,6 +136,16 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    /** Reads the M3 parameterized comment regression preset from a debug intent. */
+    private fun readCommentRegressionPreset(source: android.content.Intent): CommentRegressionPreset =
+        CommentRegressionPreset(
+            targetUser = source.getStringExtra(EXTRA_COMMENT_TARGET_USER)?.takeIf { it.isNotBlank() } ?: "designer",
+            matchKeywords = source.getStringExtra(EXTRA_COMMENT_MATCH_KEYWORDS).orEmpty(),
+            maxVideos = source.getIntExtra(EXTRA_COMMENT_MAX_VIDEOS, 1).coerceAtLeast(1),
+            maxUsersPerVideo = source.getIntExtra(EXTRA_COMMENT_MAX_USERS, 1).coerceAtLeast(1),
+            skipPinnedVideos = source.getBooleanExtra(EXTRA_COMMENT_SKIP_PINNED, false),
+        )
+
     companion object {
         /** Monotonic token identifying each distinct OPEN_COMMENT_P0 debug launch. Static so it
          * survives recreate() (an instance field resets to 0 and re-arms the latch incorrectly). */
@@ -132,5 +158,11 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_SEED_MULTI_TASK_TESTS = "com.example.douyinautomation.SEED_MULTI_TASK_TESTS"
         /** Debug-only P0 regression shortcut; it reuses the visible “立即开始” task path. */
         const val EXTRA_OPEN_COMMENT_P0 = "com.example.douyinautomation.OPEN_COMMENT_P0"
+        /** M3 parameterized regression extras; only read when OPEN_COMMENT_P0 is set. */
+        const val EXTRA_COMMENT_TARGET_USER = "com.example.douyinautomation.COMMENT_TARGET_USER"
+        const val EXTRA_COMMENT_MATCH_KEYWORDS = "com.example.douyinautomation.COMMENT_MATCH_KEYWORDS"
+        const val EXTRA_COMMENT_MAX_VIDEOS = "com.example.douyinautomation.COMMENT_MAX_VIDEOS"
+        const val EXTRA_COMMENT_MAX_USERS = "com.example.douyinautomation.COMMENT_MAX_USERS"
+        const val EXTRA_COMMENT_SKIP_PINNED = "com.example.douyinautomation.COMMENT_SKIP_PINNED"
     }
 }

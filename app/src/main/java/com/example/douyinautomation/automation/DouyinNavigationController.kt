@@ -133,6 +133,9 @@ class DouyinNavigationController(
     fun shouldProbeEmptyMessageResult(): Boolean =
         taskActive && phase == AutomationPhase.WAITING_FOR_EMPTY_MESSAGE_RESULT
 
+    /** True while the comment runtime is awaiting its own blank-message safety probe result. */
+    fun shouldProbeCommentBlankMessage(): Boolean = taskActive && commentRuntime.isProbingBlankMessage
+
     /**
      * Some profile chats expose no editable Accessibility node.  During the bounded entry
      * post-condition, allow the service to take a throttled OCR sample so the chat is not
@@ -151,25 +154,37 @@ class DouyinNavigationController(
      * normal window inspection loop. The text is kept in-memory only and is never written to the
      * diagnostic log.
      */
-    suspend fun onTransientAccessibilityText(values: List<String>) = mutex.withLock {
-        if (!taskActive || phase != AutomationPhase.WAITING_FOR_EMPTY_MESSAGE_RESULT || values.isEmpty()) return@withLock
-        val base = latestContext ?: currentWindowContext() ?: return@withLock
-        val transientContext = base.copy(
-            ocrBlocks = values.map { value -> OcrTextBlock(text = value) },
-            capturedAtMillis = System.currentTimeMillis(),
-        )
-        val detection = pageDetector.detect(transientContext)
-        logger.info(
-            "empty_message_probe_accessibility_event",
-            attributes = mapOf("page" to detection.kind.name, "signals" to values.size),
-        )
-        when (detection.kind) {
-            PageKind.MESSAGE_EMPTY_REJECTED -> completeEmptyMessageProbe()
-            PageKind.HUMAN_INTERVENTION -> pause("A verification or risk screen appeared during the blank-message probe; manual handoff required")
-            PageKind.MESSAGE_SEND_FAILED -> skipMessageSendFailure(
-                "The blank-message probe was rejected by the recipient's messaging settings",
+    suspend fun onTransientAccessibilityText(values: List<String>) {
+        if (values.isEmpty()) return
+        // The comment runtime runs its own blank-message probe with a transient toast confirmation
+        // and must receive the event even though the classic phase is not WAITING_FOR_EMPTY_MESSAGE_RESULT.
+        // Forward lock-free: the probe polls while this controller's mutex is held by onScreenObserved
+        // (handoffCommentProfileObservation -> commentRuntime.onObserved -> probeBlankMessage), so a
+        // mutex-guarded forward would deadlock and never deliver the toast.
+        if (taskActive && commentRuntime.isProbingBlankMessage) {
+            commentRuntime.onTransientAccessibilityText(values)
+            if (phase != AutomationPhase.WAITING_FOR_EMPTY_MESSAGE_RESULT) return
+        }
+        mutex.withLock {
+            if (!taskActive || phase != AutomationPhase.WAITING_FOR_EMPTY_MESSAGE_RESULT) return@withLock
+            val base = latestContext ?: currentWindowContext() ?: return@withLock
+            val transientContext = base.copy(
+                ocrBlocks = values.map { value -> OcrTextBlock(text = value) },
+                capturedAtMillis = System.currentTimeMillis(),
             )
-            else -> Unit
+            val detection = pageDetector.detect(transientContext)
+            logger.info(
+                "empty_message_probe_accessibility_event",
+                attributes = mapOf("page" to detection.kind.name, "signals" to values.size),
+            )
+            when (detection.kind) {
+                PageKind.MESSAGE_EMPTY_REJECTED -> completeEmptyMessageProbe()
+                PageKind.HUMAN_INTERVENTION -> pause("A verification or risk screen appeared during the blank-message probe; manual handoff required")
+                PageKind.MESSAGE_SEND_FAILED -> skipMessageSendFailure(
+                    "The blank-message probe was rejected by the recipient's messaging settings",
+                )
+                else -> Unit
+            }
         }
     }
 
@@ -1440,10 +1455,10 @@ class DouyinNavigationController(
             if (rowMatch != null) break
         }
         // Some current Douyin builds leave the User tab visually selected but expose an
-        // off-screen ViewPager subtree to accessibility. P0 is allowed one exceptionally strict
-        // OCR-assisted geometry fallback here; it verifies the same first card twice and never
-        // advances to a later result when that proof is unavailable.
-        if (rowMatch == null && minimumAnchorTop == null && isSingleTargetCommentProbe()) {
+        // off-screen ViewPager subtree to accessibility. Every search-target comment task is
+        // allowed one OCR-assisted geometry fallback here; it verifies the same first card twice
+        // and never advances to a later result when that proof is unavailable.
+        if (rowMatch == null && minimumAnchorTop == null && isSearchTargetProfileCommentTask()) {
             resolveP0FirstUserOcrFallback(rowContext)?.let { resolution ->
                 rowContext = resolution.context
                 rowMatch = resolution.match
@@ -1614,13 +1629,13 @@ class DouyinNavigationController(
                 completeTaskAtQueryEnd()
                 return
             }
-            // The single-user comment regression must never turn an ambiguous first result into
-            // a list swipe.  Preserve the live accessibility structure for diagnosis, then end
-            // this bounded probe before any later result can be selected.
-            if (isSingleTargetCommentProbe()) {
-                saveNodeDump(rowContext, "p0_first_user_ambiguous")
+            // A search-target comment task selects exactly one profile, so it must never turn an
+            // ambiguous first result into a list swipe. Preserve the live accessibility structure
+            // for diagnosis, then end this bounded probe before any later result can be selected.
+            if (isSearchTargetProfileCommentTask()) {
+                saveNodeDump(rowContext, "comment_first_user_ambiguous")
                 failTaskWithoutManualHandoff(
-                    "P0 首个用户结果缺少可验证的行结构；任务已安全结束，未处理后续用户",
+                    "目标用户搜索结果缺少可验证的行结构；任务已安全结束，未处理后续用户",
                 )
                 return
             }
@@ -1885,16 +1900,15 @@ class DouyinNavigationController(
             activeTaskSnapshot?.commentConfig != null
 
     /**
-     * P0 is deliberately a one-user/one-video/one-comment safety probe.  If its first source
-     * result cannot be structurally bound, advancing the list would violate that fixed scope.
+     * Every SEARCH_TARGET_PROFILE comment task selects exactly one source profile during search
+     * navigation before handing off to the comment runtime. The per-video/per-user bounds belong
+     * to the comment runtime's loop, not to this navigation step, so the OCR-assisted first-card
+     * fallback and fail-fast (never swipe a list) semantics apply to all such tasks.
      */
-    private fun isSingleTargetCommentProbe(): Boolean {
+    private fun isSearchTargetProfileCommentTask(): Boolean {
         val snapshot = activeTaskSnapshot ?: return false
-        val config = snapshot.commentConfig ?: return false
         return snapshot.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE &&
-            snapshot.maxUsers == 1 &&
-            config.maxVideos == 1 &&
-            config.maxUsersPerVideo == 1
+            snapshot.commentConfig?.entryMode == CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE
     }
 
     /**

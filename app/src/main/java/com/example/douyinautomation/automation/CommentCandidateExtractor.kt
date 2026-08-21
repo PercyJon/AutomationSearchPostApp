@@ -424,6 +424,79 @@ object CommentCandidateExtractor {
     }
 
     /**
+     * Diagnostic snapshot of why an avatar re-resolution may fail. The runtime logs this on the
+     * failure path so a stale-tree case (avatar was present at extraction but vanished from the
+     * fresh accessibility tree) can be told apart from a missing-avatar case (avatarBounds null,
+     * which is only possible on pure-OCR fixtures) on the device.
+     */
+    fun avatarTargetDiagnostics(context: ScreenContext, candidate: CommentUserCandidate): Map<String, Any?> {
+        val expected = candidate.avatarBounds
+        val pathNodes = if (candidate.avatarHierarchyPath.isNotEmpty()) {
+            context.nodes.filter { it.hierarchyPath == candidate.avatarHierarchyPath }
+        } else {
+            emptyList()
+        }
+        val avatarLikeCount = context.nodes.count(::isAvatarLikeNode)
+        val avatarLikeInRow = if (expected != null) {
+            val textLeft = minOf(
+                candidate.authorBounds?.left ?: Int.MAX_VALUE,
+                candidate.commentBounds.left,
+            )
+            val rowTop = minOf(
+                candidate.authorBounds?.top ?: candidate.commentBounds.top,
+                candidate.commentBounds.top,
+            )
+            val rowBottom = maxOf(
+                candidate.authorBounds?.bottom ?: candidate.commentBounds.bottom,
+                candidate.commentBounds.bottom,
+            )
+            context.nodes.asSequence()
+                .filter(::isAvatarLikeNode)
+                .count { node -> isRowAvatar(node, textLeft, rowTop, rowBottom, avatarTextOverlap(expected)) }
+        } else {
+            0
+        }
+        return mapOf(
+            "avatar_bounds" to (expected?.toString() ?: "null"),
+            "avatar_path" to candidate.avatarHierarchyPath.joinToString("/"),
+            "avatar_path_len" to candidate.avatarHierarchyPath.size,
+            "avatar_like_count" to avatarLikeCount,
+            "path_node_present" to pathNodes.isNotEmpty(),
+            "path_node_bounds" to (pathNodes.firstOrNull()?.bounds?.toString() ?: "null"),
+            "avatar_like_in_row" to avatarLikeInRow,
+            "author_bounds" to (candidate.authorBounds?.toString() ?: "null"),
+            "comment_bounds" to candidate.commentBounds.toString(),
+            "source" to candidate.source.name,
+        )
+    }
+
+    /**
+     * Counts distinct left-side avatar rows visible below the sheet header. The comment sheet
+     * exposes one circular avatar per comment row, while a profile exposes only its single header
+     * avatar and a video page exposes at most the author avatar. This is therefore a stable,
+     * text-independent signature that the panel is still open even after its header and “回复”
+     * markers have scrolled out of the accessibility tree.
+     */
+    fun commentAvatarRowCount(context: ScreenContext): Int {
+        val leftLimit = (context.screenSize.width * 0.34f).toInt()
+        val contentTop = (context.screenSize.height * 0.14f).toInt()
+        val centers = context.nodes.asSequence()
+            .filter(::isAvatarLikeNode)
+            .filter { node ->
+                node.bounds.centerX <= leftLimit && node.bounds.top >= contentTop
+            }
+            .map { it.bounds.centerY }
+            .toList()
+            .sorted()
+        if (centers.isEmpty()) return 0
+        var rows = 1
+        for (index in 1 until centers.size) {
+            if (centers[index] - centers[index - 1] > AVATAR_ROW_BAND) rows += 1
+        }
+        return rows
+    }
+
+    /**
      * A comment-row avatar is the only safe click target for the comment flow.  Keep this
      * geometry deliberately strict: it must be a near-square image on the left of the author and
      * comment, aligned with that row.  This excludes the location pin, like/dislike controls,
@@ -492,6 +565,7 @@ object CommentCandidateExtractor {
     )
 
     private const val MAX_AUTHOR_COLUMN_OFFSET_RATIO = 0.22f
+    private const val AVATAR_ROW_BAND = 60
 }
 
 data class CommentSurfaceDetection(
@@ -513,20 +587,28 @@ object CommentSurfaceDetector {
             node.isEditable && node.bounds.top >= context.screenSize.height * 0.68f
         } || ocrTexts.any { it.contains("写评论") }
         val repeatedReply = (nodeTexts + ocrTexts).count { it.contains("回复") } >= 2
+        // A profile exposes a single header avatar and a video page at most the author avatar,
+        // so three or more left-side avatar rows are strong evidence that the comment sheet is
+        // open even after its header/“回复” markers have scrolled out of the accessibility tree.
+        val avatarRowCount = CommentCandidateExtractor.commentAvatarRowCount(context)
+        val avatarRowEvidence = avatarRowCount >= 3
         val reasons = buildList {
             if (nodeMarkers.isNotEmpty()) add("node markers: ${nodeMarkers.joinToString()}")
             if (ocrMarkers.isNotEmpty()) add("OCR markers: ${ocrMarkers.joinToString()}")
             if (bottomComposer) add("bottom comment composer")
             if (repeatedReply) add("repeated reply markers")
+            if (avatarRowEvidence) add("comment avatar rows: $avatarRowCount")
         }
         val isSurface = nodeMarkers.isNotEmpty() && (bottomComposer || repeatedReply || nodeMarkers.size >= 2) ||
-            ocrMarkers.isNotEmpty() && bottomComposer
+            ocrMarkers.isNotEmpty() && bottomComposer ||
+            avatarRowEvidence
         return CommentSurfaceDetection(
             isCommentSurface = isSurface,
             confidence = when {
                 !isSurface -> 0.1f
                 nodeMarkers.isNotEmpty() && bottomComposer -> 0.92f
                 nodeMarkers.size >= 2 -> 0.84f
+                avatarRowEvidence -> 0.78f
                 else -> 0.72f
             },
             reasons = reasons.ifEmpty { listOf("No comment-surface signature matched") },

@@ -3,6 +3,7 @@ package com.example.douyinautomation.automation
 import android.accessibilityservice.AccessibilityService
 import android.graphics.Rect
 import android.view.accessibility.AccessibilityNodeInfo
+import java.io.File
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -52,6 +53,10 @@ class CommentPrivateMessageRuntime(
     private var scrollPending = false
     private var lastViewportFingerprint: Int? = null
     private var scrollCount = 0
+    /** Consecutive scrolls whose viewport fingerprint did not change; signals end-of-list. */
+    private var staleScrollCount = 0
+    /** Consecutive scrolls that added zero new candidates; catches RecyclerView recycling at the bottom. */
+    private var emptyScrollCount = 0
     private var videoIndex = 0
     private var liveRoomExitCount = 0
     private var liveRoomSwipeCount = 0
@@ -59,6 +64,10 @@ class CommentPrivateMessageRuntime(
     /** Task-level identity ledger; prevents the same commenter being probed again on another video. */
     private val processedTaskCandidateKeys = LinkedHashSet<String>()
     private var activeCandidate: CommentUserCandidate? = null
+    /** True while the blank-message safety probe is awaiting its result. */
+    @Volatile private var probingBlankMessage = false
+    /** Set when a transient toast carried the blank-message rejection text. */
+    @Volatile private var blankRejectionObserved = false
     /**
      * Accessibility events can arrive while a commenter profile is still being processed. A
      * second viewport pass must not run concurrently with the first one, otherwise both passes
@@ -69,6 +78,7 @@ class CommentPrivateMessageRuntime(
     val isRunning: Boolean get() = running
     val stage: CommentEntryStage get() = stateMachine.stage
     val candidateCount: Int get() = ledger.size
+    val isProbingBlankMessage: Boolean get() = running && probingBlankMessage
 
     fun start(snapshot: CommentPrivateMessageSnapshot) {
         timeoutJob?.cancel()
@@ -79,6 +89,8 @@ class CommentPrivateMessageRuntime(
         scrollPending = false
         lastViewportFingerprint = null
         scrollCount = 0
+        staleScrollCount = 0
+        emptyScrollCount = 0
         videoIndex = 0
         liveRoomExitCount = 0
         liveRoomSwipeCount = 0
@@ -93,9 +105,11 @@ class CommentPrivateMessageRuntime(
             "comment_runtime_started",
             attributes = mapOf(
                 "entry_mode" to snapshot.entryMode.name,
-                "keyword_count" to snapshot.matchKeywords.size,
+                // Numeric bounds are deliberately keyed without the "user"/"keyword" substrings so
+                // the DiagnosticLogger's defensive redaction does not hide the M3 5/10/20 evidence.
+                "terms_count" to snapshot.matchKeywords.size,
                 "max_videos" to snapshot.maxVideos,
-                "max_users_per_video" to snapshot.maxUsersPerVideo,
+                "per_video_cap" to snapshot.maxUsersPerVideo,
             ),
         )
     }
@@ -119,6 +133,8 @@ class CommentPrivateMessageRuntime(
         scrollPending = false
         lastViewportFingerprint = null
         scrollCount = 0
+        staleScrollCount = 0
+        emptyScrollCount = 0
         activeCandidate = null
         running = true
         armTimeout("等待下一个用户主页")
@@ -143,6 +159,8 @@ class CommentPrivateMessageRuntime(
                 "no_works" to observation.profileHasNoWorks,
                 "video_surface" to observation.hasVideoSurface,
                 "comment_entry" to observation.hasCommentEntry,
+                "surface_ready" to observation.isCommentSurfaceReady,
+                "scroll_pending" to scrollPending,
                 "action" to decision.action.name,
             ),
         )
@@ -298,10 +316,44 @@ class CommentPrivateMessageRuntime(
 
         // Once the state machine has crossed the comment-surface post-condition, subsequent
         // content-change events are pagination observations rather than another click request.
-        if (stateMachine.stage == CommentEntryStage.READY_TO_READ && observation.isCommentSurfaceReady) {
+        // The marker-based surface detector can degrade after a scroll: the panel header and the
+        // “回复” labels leave the accessibility tree while the comment list itself stays open. A
+        // scroll this runtime issued is therefore accepted as equivalent evidence that the panel
+        // is still the active surface, so the bounded read loop does not idle into the pagination
+        // watchdog merely because the header markers scrolled away.
+        if (stateMachine.stage == CommentEntryStage.READY_TO_READ &&
+            (observation.isCommentSurfaceReady || scrollPending)
+        ) {
             val fingerprint = viewportFingerprint(context)
-            if (scrollPending && fingerprint == lastViewportFingerprint) return
+            if (scrollPending && fingerprint == lastViewportFingerprint) {
+                // The scroll completed but the viewport fingerprint is unchanged: the list has
+                // ended, or the footer needs one more settle beat. Detect the end marker directly
+                // instead of letting the pagination watchdog expire into a spurious FAILED, and
+                // retry the scroll a bounded number of times before concluding the list ended.
+                val end = CommentPanelEndDetector.detect(context)
+                if (end.reached) {
+                    advanceAfterVideo("评论区已读取到底部：${end.marker.orEmpty()}")
+                } else if (staleScrollCount >= MAX_STALE_SCROLLS) {
+                    advanceAfterVideo("评论区连续滚动后内容未更新")
+                } else {
+                    staleScrollCount += 1
+                    logger.info(
+                        "comment_scroll_stale",
+                        attributes = mapOf("stale_scrolls" to staleScrollCount, "scroll_count" to scrollCount),
+                    )
+                    val outcome = scrollCommentPanel(context)
+                    if (!outcome.succeeded) {
+                        terminal(CommentRuntimeTerminal.Outcome.FAILED, "滚动评论区失败：${outcome.reason}")
+                    } else {
+                        lastViewportFingerprint = fingerprint
+                        scrollCount += 1
+                        armTimeout("等待评论区下一页")
+                    }
+                }
+                return
+            }
             scrollPending = false
+            staleScrollCount = 0
             processCommentViewportOnce(context)
         } else if (detection.kind == PageKind.HUMAN_INTERVENTION || detection.kind == PageKind.LOGIN) {
             terminal(CommentRuntimeTerminal.Outcome.PAUSED, "抖音出现需要人工处理的页面")
@@ -404,6 +456,21 @@ class CommentPrivateMessageRuntime(
             advanceAfterVideo("已完成当前视频的评论用户上限探测")
             return
         }
+        // A RecyclerView-backed comment list keeps recycling rows near the bottom, so the viewport
+        // fingerprint can change on every scroll even when no new commenter has appeared, and
+        // Douyin sometimes omits the "暂时没有更多了" footer from the accessibility tree. Detect
+        // that exhaustion case by counting consecutive scrolls that added zero new candidates,
+        // instead of relying only on the fingerprint or the footer marker, so the bounded 5/10/20
+        // regression terminates cleanly instead of idling into the pagination watchdog.
+        if (update.added > 0) {
+            emptyScrollCount = 0
+        } else if (scrollCount > 0) {
+            emptyScrollCount += 1
+            if (emptyScrollCount >= MAX_EMPTY_SCROLLS) {
+                advanceAfterVideo("评论区连续滚动后无新增评论用户")
+                return
+            }
+        }
         if (scrollCount >= MAX_COMMENT_SCROLLS) {
             terminal(CommentRuntimeTerminal.Outcome.FAILED, "评论区连续滚动后仍未出现到底提示")
             return
@@ -417,6 +484,47 @@ class CommentPrivateMessageRuntime(
         lastViewportFingerprint = viewportFingerprint(context)
         scrollPending = true
         scrollCount += 1
+        // A scroll that reaches the bottom of the list may never produce another accessibility
+        // event: Douyin stops emitting content-change events once the comment list is exhausted,
+        // while RecyclerView recycling keeps rewriting the viewport. Waiting for the next
+        // observation would therefore idle into the pagination watchdog. Instead, poll the active
+        // window directly (bounded) and treat either the end footer or consecutive zero-new-
+        // candidate viewports as end-of-list, so the 5/10/20 regression always terminates cleanly.
+        var emptyPolls = 0
+        while (running && emptyPolls < POST_SCROLL_POLL_ATTEMPTS) {
+            delay(POST_SCROLL_POLL_INTERVAL_MS)
+            val fresh = currentContext()
+            if (fresh == null) break
+            val end = CommentPanelEndDetector.detect(fresh)
+            if (end.reached) {
+                advanceAfterVideo("评论区已读取到底部：${end.marker.orEmpty()}")
+                return
+            }
+            val added = CommentCandidateExtractor.extract(fresh, terms).candidates.count { candidate ->
+                !processedCandidateKeys.contains(candidate.identityKey) &&
+                    !processedTaskCandidateKeys.contains(candidate.identityKey)
+            }
+            if (added > 0) {
+                logger.info(
+                    "comment_post_scroll_ready",
+                    attributes = mapOf("added" to added, "scroll_count" to scrollCount),
+                )
+                scrollPending = false
+                staleScrollCount = 0
+                processCommentViewport(fresh)
+                return
+            }
+            emptyPolls += 1
+            logger.info(
+                "comment_post_scroll_empty",
+                attributes = mapOf("poll" to emptyPolls, "scroll_count" to scrollCount),
+            )
+        }
+        if (!running) return
+        if (emptyPolls >= POST_SCROLL_POLL_ATTEMPTS) {
+            advanceAfterVideo("评论区连续滚动后无新增评论用户")
+            return
+        }
         armTimeout("等待评论区下一页")
     }
 
@@ -452,6 +560,8 @@ class CommentPrivateMessageRuntime(
         lastViewportFingerprint = null
         scrollPending = false
         scrollCount = 0
+        staleScrollCount = 0
+        emptyScrollCount = 0
         activeCandidate = null
         stateMachine.prepareNextVideo()
 
@@ -508,10 +618,23 @@ class CommentPrivateMessageRuntime(
             ),
         )
 
-        // The comment sheet may have refreshed while the candidate was queued. Resolve the
-        // author against the latest node tree before falling back to the captured hierarchy path.
-        val candidateContext = currentContext() ?: initialContext
-        val click = clickCommentCandidate(candidateContext, candidate)
+        // The comment sheet's custom-rendered avatar rows can briefly vanish from the
+        // accessibility tree while the RecyclerView settles after opening. Resolve the avatar
+        // against fresh trees a bounded number of times before recording an identity failure.
+        var click: ActionOutcome = ActionOutcome.failure("评论头像节点不可重新定位，拒绝点击名称或其他控件")
+        var avatarAttempt = 0
+        while (avatarAttempt < AVATAR_RESOLVE_RETRIES && !click.succeeded) {
+            if (avatarAttempt > 0) {
+                delay(AVATAR_RESOLVE_RETRY_DELAY_MS)
+                logger.info(
+                    "comment_avatar_resolve_retry",
+                    attributes = mapOf("attempt" to avatarAttempt, "last_reason" to click.reason.orEmpty()),
+                )
+            }
+            val candidateContext = currentContext() ?: initialContext
+            click = clickCommentCandidate(candidateContext, candidate)
+            avatarAttempt += 1
+        }
         if (!click.succeeded) {
             finishCandidate(
                 identityHash,
@@ -661,7 +784,15 @@ class CommentPrivateMessageRuntime(
         candidate: CommentUserCandidate,
     ): ActionOutcome {
         val target = CommentCandidateExtractor.resolveAvatarTarget(context, candidate)
-            ?: return ActionOutcome.failure("评论头像节点不可重新定位，拒绝点击名称或其他控件")
+        if (target == null) {
+            saveNodeDiagnostic(context, "avatar_resolution_failed")
+            logger.warn(
+                "comment_avatar_resolution_failed",
+                message = "评论头像节点不可重新定位，拒绝点击名称或其他控件",
+                attributes = CommentCandidateExtractor.avatarTargetDiagnostics(context, candidate),
+            )
+            return ActionOutcome.failure("评论头像节点不可重新定位，拒绝点击名称或其他控件")
+        }
         logger.info(
             "comment_avatar_target_verified",
             attributes = mapOf(
@@ -736,11 +867,96 @@ class CommentPrivateMessageRuntime(
             return ObservedPage(PageKind.MESSAGE_SEND_FAILED, refreshed, "无法提交空消息探测")
         }
         logger.info("comment_blank_probe_submitted")
-        return awaitPage(
-            expected = setOf(PageKind.MESSAGE_EMPTY_REJECTED, PageKind.MESSAGE_SEND_FAILED),
-            description = "空消息探测结果",
-            timeoutMs = BLANK_PROBE_TIMEOUT_MS,
+        // Douyin delivers the “不能发送空白消息” notice as a transient TYPE_NOTIFICATION_STATE_CHANGED
+        // toast that never appears in the node tree. Arm the transient listener before polling so
+        // the service can set blankRejectionObserved while this coroutine is sampling the page.
+        probingBlankMessage = true
+        blankRejectionObserved = false
+        try {
+            val attempts = (BLANK_PROBE_TIMEOUT_MS / PAGE_POLL_INTERVAL_MS).toInt().coerceAtLeast(1)
+            var lastKind = PageKind.UNKNOWN
+            var lastContext: ScreenContext? = null
+            repeat(attempts) { attempt ->
+                if (attempt > 0) delay(PAGE_POLL_INTERVAL_MS)
+                if (blankRejectionObserved) {
+                    return ObservedPage(PageKind.MESSAGE_EMPTY_REJECTED, lastContext, null)
+                }
+                val sampled = currentContext() ?: return@repeat
+                lastContext = sampled
+                val detection = pageDetector.detect(sampled)
+                lastKind = detection.kind
+                if (detection.kind == PageKind.MESSAGE_EMPTY_REJECTED ||
+                    detection.kind == PageKind.MESSAGE_SEND_FAILED
+                ) {
+                    // Capture the exact node tree that produced the detection. Douyin's blank-message
+                    // rejection can arrive as an inline node (e.g. "发送失败") rather than a transient
+                    // toast; the dump is written to the private diagnostics directory, never to logcat.
+                    saveNodeDiagnostic(
+                        sampled,
+                        if (detection.kind == PageKind.MESSAGE_EMPTY_REJECTED) {
+                            "blank_probe_empty_rejected"
+                        } else {
+                            "blank_probe_send_failed"
+                        },
+                    )
+                    logger.info(
+                        "comment_blank_probe_node_detection",
+                        attributes = mapOf(
+                            "attempt" to attempt,
+                            "kind" to detection.kind.name,
+                            "confidence" to detection.confidence,
+                            "reason_count" to detection.reasons.size,
+                        ),
+                    )
+                    return ObservedPage(detection.kind, sampled, null)
+                }
+            }
+            return ObservedPage(lastKind, lastContext, "空消息探测结果超时")
+        } finally {
+            probingBlankMessage = false
+            blankRejectionObserved = false
+        }
+    }
+
+    /**
+     * Receives transient Accessibility notification text (usually a toast) while the blank-message
+     * probe is active. The “不能发送空白消息” notice never enters the node tree, so this is the only
+     * reliable confirmation that the safety probe was rejected as blank and no real content moved.
+     */
+    fun onTransientAccessibilityText(values: List<String>) {
+        if (!running || !probingBlankMessage) return
+        val matched = values.any { EmptyMessageRejectionMatcher.matches(it) }
+        // Log every transient delivery while the probe is armed so we can tell whether the toast
+        // ever arrives at all, independent of whether its text matched the rejection vocabulary.
+        logger.info(
+            "comment_blank_probe_transient_received",
+            attributes = mapOf("signals" to values.size, "matched" to matched),
         )
+        if (matched) {
+            blankRejectionObserved = true
+            logger.info("comment_blank_probe_rejection_transient", attributes = mapOf("signals" to values.size))
+        }
+    }
+
+    /** Writes a privacy-scoped node dump into the private diagnostics directory, never to logcat. */
+    private fun saveNodeDiagnostic(context: ScreenContext, tag: String) {
+        val safeTag = tag.replace(Regex("[^a-zA-Z0-9_-]+"), "_").take(32).ifBlank { "blank_probe" }
+        val directory = File(service.filesDir, BLANK_PROBE_NODE_DUMP_DIRECTORY)
+        if (!directory.exists() && !directory.mkdirs()) {
+            logger.error("blank_probe_node_dump_failed", message = "Could not create private node-dump directory")
+            return
+        }
+        val destination = File(directory, "nodes_${System.currentTimeMillis()}_$safeTag.txt")
+        runCatching { destination.writeText(inspector.diagnosticDump(context)) }
+            .onSuccess {
+                logger.info(
+                    "blank_probe_node_dump_saved",
+                    attributes = mapOf("file" to destination.name, "nodes" to context.nodes.size),
+                )
+            }
+            .onFailure { error ->
+                logger.error("blank_probe_node_dump_failed", message = "Could not write private node dump", throwable = error)
+            }
     }
 
     private suspend fun returnToCommentSurface(): Boolean {
@@ -762,7 +978,20 @@ class CommentPrivateMessageRuntime(
                     PageKind.MESSAGE_SEND_FAILED,
                     PageKind.PRIVATE_MESSAGE_RESTRICTED,
                 )
-                if (!stillInsideNestedSurface && CommentSurfaceDetector.detect(context).isCommentSurface) {
+                val surfaceDetection = CommentSurfaceDetector.detect(context)
+                val commentButton = VideoCommentButtonDetector.find(context)
+                logger.info(
+                    "comment_return_to_surface_attempt",
+                    attributes = mapOf(
+                        "attempt" to attempt,
+                        "page" to detection.kind.name,
+                        "nested" to stillInsideNestedSurface,
+                        "surface" to surfaceDetection.isCommentSurface,
+                        "surface_reasons" to surfaceDetection.reasons.joinToString("|"),
+                        "comment_button" to (commentButton != null),
+                    ),
+                )
+                if (!stillInsideNestedSurface && surfaceDetection.isCommentSurface) {
                     logger.info(
                         "comment_surface_restored",
                         attributes = mapOf("back_attempts" to attempt),
@@ -770,9 +999,12 @@ class CommentPrivateMessageRuntime(
                     return true
                 }
                 // If the sheet closed but the video remains visible, reopen it via the verified
-                // speech-bubble node; OCR text and fixed coordinates are never clicked.
-                val commentButton = VideoCommentButtonDetector.find(context)
-                if (commentButton != null && detection.kind == PageKind.UNKNOWN) {
+                // speech-bubble node; OCR text and fixed coordinates are never clicked. Douyin's
+                // immersive player keeps the home bottom-navigation labels, so the reopened video
+                // surface is often classified HOME rather than UNKNOWN. The verified right-rail
+                // comment button is authoritative on any non-nested surface, so accept it on
+                // HOME too instead of idling into the “无法返回评论区” terminal.
+                if (commentButton != null) {
                     val click = clickSnapshot(commentButton, "comment_reopen_panel")
                     if (click.succeeded) {
                         val reopened = awaitCommentSurface()
@@ -1064,9 +1296,20 @@ class CommentPrivateMessageRuntime(
         const val COMMENT_SURFACE_POLL_ATTEMPTS = 8
         /** Bounded regression scope; never scroll an unbounded long comment list. */
         const val MAX_COMMENT_SCROLLS = 20
+        /** Consecutive unchanged-fingerprint scrolls tolerated before treating the list as ended. */
+        const val MAX_STALE_SCROLLS = 2
+        /** Consecutive zero-new-candidate scrolls tolerated before treating the list as ended. */
+        const val MAX_EMPTY_SCROLLS = 3
+        /** Direct window polls issued after a scroll before falling back to the event watchdog. */
+        const val POST_SCROLL_POLL_ATTEMPTS = 3
+        const val POST_SCROLL_POLL_INTERVAL_MS = 600L
+        /** Bounded retries for re-resolving a comment-row avatar that briefly left the tree. */
+        const val AVATAR_RESOLVE_RETRIES = 8
+        const val AVATAR_RESOLVE_RETRY_DELAY_MS = 400L
         const val MAX_LIVE_ROOM_EXITS = 3
         const val MAX_LIVE_ROOM_SWIPES = 3
         const val LIVE_ROOM_SWIPE_DURATION_MS = 460L
         const val NEXT_VIDEO_SWIPE_DURATION_MS = 520L
+        const val BLANK_PROBE_NODE_DUMP_DIRECTORY = "diagnostics/nodes"
     }
 }

@@ -4,6 +4,45 @@
 
 ---
 
+## [未发布] 2026-08-22 —— M3 有界真机回归与匹配词过滤（5/10/20 条 + 关键词 + 分支回归）
+
+### 修改内容
+
+- [`CommentPrivateMessageRuntime.kt`](app/src/main/java/com/example/douyinautomation/automation/CommentPrivateMessageRuntime.kt)：
+  - **修复 cap=20 列表耗尽时超时**：根因是抖音在评论列表滚到底部后停止发出 accessibility 事件（RecyclerView 复用只改写视口，不再产生 content-change 事件），观测驱动的 `emptyScrollCount` 永远不会被触发，只有 12 秒分页看门狗（`armTimeout`）会超时。修复方案：在每次 `scrollCommentPanel` 之后增加**有界直连轮询循环**（`POST_SCROLL_POLL_ATTEMPTS = 3` × `POST_SCROLL_POLL_INTERVAL_MS = 600L`），直接重读 `currentContext()` 而不是等待下一次事件——命中 `CommentPanelEndDetector` 结束标记即 `advanceAfterVideo`；连续 3 次轮询都无新增候选则 `advanceAfterVideo("评论区连续滚动后无新增评论用户")`；否则回落到 `armTimeout` 看门狗。
+  - 新增 `staleScrollCount`（连续指纹不变滚动计数）与 `MAX_STALE_SCROLLS = 2`、`MAX_EMPTY_SCROLLS = 3` 常量。
+  - 新增 `avatarTargetDiagnostics` / `commentAvatarRowCount` 诊断：用左侧头像行数作为「评论面板仍打开」的文本无关签名（滚动后头部与「回复」标记会滚出 accessibility 树）。
+  - 评论区恢复：放宽 `returnToCommentSurface` 的 `commentButton` 判断——抖音沉浸播放器保留首页底部导航，重开的视频页常被判为 `HOME` 而非 `UNKNOWN`，现在在任意非嵌套页面命中已验证的右侧评论气泡节点即可重开面板，避免「无法返回评论区」终态。
+  - 空白消息安全探针增强：新增 `probingBlankMessage` / `blankRejectionObserved` 状态、`onTransientAccessibilityText` 入口（捕获 toast 携带的「不能发送空白消息」文本）、隐私作用域的 `saveNodeDiagnostic`（写入私有 `diagnostics/nodes` 目录而非 logcat）。
+- [`CommentCandidateExtractor.kt`](app/src/main/java/com/example/douyinautomation/automation/CommentCandidateExtractor.kt)：新增头像重定位诊断快照与 `commentAvatarRowCount`（按 `AVATAR_ROW_BAND = 60` 分带统计左侧头像行数）。
+- [`MainActivity.kt`](app/src/main/java/com/example/douyinautomation/MainActivity.kt)：新增 `CommentRegressionPreset` 数据类与 `EXTRA_COMMENT_TARGET_USER` / `EXTRA_COMMENT_MATCH_KEYWORDS` / `EXTRA_COMMENT_MAX_VIDEOS` / `EXTRA_COMMENT_MAX_USERS` / `EXTRA_COMMENT_SKIP_PINNED` 五个 ADB extras（仅在 `OPEN_COMMENT_P0=true` 时读取），使 M3 有界回归、关键词过滤、跳过置顶、多视频全部可从 ADB 驱动。
+- [`HomeScreen.kt`](app/src/main/java/com/example/douyinautomation/ui/HomeScreen.kt)：新增 `commentRegressionPreset` 参数与 `appliedPresetToken` 闩锁，确保预置参数先写入 `rememberSaveable` 表单状态、再在自启动协程内用**实时委托读**构建快照（`buildPreparedSnapshot()`），避免 5/10/20 边界被固定种子「1」覆盖。
+- [`DouyinNavigationController.kt`](app/src/main/java/com/example/douyinautomation/automation/DouyinNavigationController.kt)：将 `isSingleTargetCommentProbe()` 泛化为 `isSearchTargetProfileCommentTask()`——所有 `SEARCH_TARGET_PROFILE` 评论任务均共享「搜索只选一个主页、绝不滑动结果列表」的语义，不再受 `maxUsers==1` 固定约束。
+- [`DouyinAccessibilityService.kt`](app/src/main/java/com/example/douyinautomation/automation/DouyinAccessibilityService.kt)：在空白消息探针等待阶段把 transient 文本事件转投给运行时。
+
+### 已验证项（真机 OnePlus NE2210 / b33aa309）
+
+- **M3.2 有界回归 5/10/20 条（目标：人民日报，无关键词）**：
+  - cap=5 → `已完成当前视频的评论用户上限探测` → `comment_runtime_terminal [outcome=COMPLETED]`（上限停止，ledger 7）。
+  - cap=10 → `评论区连续滚动后无新增评论用户` → COMPLETED（列表在第 9 条耗尽）。
+  - cap=20 → `评论区连续滚动后无新增评论用户` → COMPLETED（列表在第 8 条耗尽，`comment_post_scroll_empty [poll=1/2/3]` → `comment_video_batch_completed`）。
+  - 三者均 **COMPLETED 无超时**（此前 cap=20 因列表耗尽会 12 秒超时 FAILED，本版本已修复）。
+- **M3.3 匹配词过滤**：
+  - 负向（`COMMENT_MATCH_KEYWORDS=qwzx99`）：首个视口 `candidate_count=0`，3 次空轮询 → COMPLETED，证明过滤生效（同目标不过滤可得 3-4 候选）。
+  - 正向（`COMMENT_MATCH_KEYWORDS=的`）：首个视口 0 候选 → 滚动后 `candidate_count=3` → `comment_blank_probe_rejection_transient [signals=1]` → `已完成当前视频的评论用户上限探测` → COMPLETED。
+- **M3.4 分支回归**（直播/私密/无作品/置顶/0 评论）：决策逻辑由 [`CommentEntryStateMachineTest.kt`](app/src/test/java/com/example/douyinautomation/automation/CommentEntryStateMachineTest.kt) 与 [`CommentSurfaceSignalsTest.kt`](app/src/test/java/com/example/douyinautomation/automation/CommentSurfaceSignalsTest.kt) 覆盖（直播间退出/下滑跳过、私密与空主页 SKIP_PROFILE、作品 Tab 切换、置顶磁贴跳过、0 评论面板终态）；0 候选真机路径经 cap=20 列表耗尽验证。全量 `./gradlew testDebugUnitTest lintDebug assembleDebug` → **BUILD SUCCESSFUL**。
+
+### 未解决问题
+
+- M4 评论功能增强：关键词筛选 UI、多视频切换、跳过置顶开关、当前用户主页模式 + A4 `tryLock` 丢帧修复。
+- `DouyinNavigationController.kt` 约 5000 行，待分拆（用户指定优先级）。
+
+### 版本
+
+- `0.3.4-mobile-login`（versionCode 14）
+
+---
+
 ## [未发布] 2026-08-22 —— M2 P0 三项卡点修复（调试任务竞态 / 启动不在首页 / 评论区结构误识别）
 
 ### 修改内容

@@ -111,8 +111,9 @@ class DouyinAccessibilityService : AccessibilityService() {
         // is delivered as TYPE_NOTIFICATION_STATE_CHANGED rather than as a content-change event,
         // so the old filter discarded the only reliable signal before OCR had a chance to run.
         // Copy the text while the event is live and hand it to the state machine without walking
-        // the (usually huge) active window tree.
-        if (controller.shouldProbeEmptyMessageResult()) {
+        // the (usually huge) active window tree. The comment runtime runs the same probe and must
+        // receive the same transient signal.
+        if (controller.shouldProbeEmptyMessageResult() || controller.shouldProbeCommentBlankMessage()) {
             val transientText = buildList {
                 event.text?.forEach { value -> value?.toString()?.trim()?.takeIf(String::isNotBlank)?.let(::add) }
                 event.contentDescription?.toString()?.trim()?.takeIf(String::isNotBlank)?.let(::add)
