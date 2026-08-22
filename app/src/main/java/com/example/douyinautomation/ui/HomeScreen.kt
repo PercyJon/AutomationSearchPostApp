@@ -1106,7 +1106,7 @@ private fun CommentTaskScreen(
         }
         if (entryMode == CommentPrivateMessageEntryMode.CURRENT_PROFILE) {
             Text(
-                "请先在抖音打开目标用户主页，再从本页点击开始。",
+                "请先在抖音打开目标用户主页，或停留在普通视频页（非直播、非广告），再从本页点击开始。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

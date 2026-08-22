@@ -228,6 +228,23 @@ class DouyinNavigationController(
     suspend fun onScreenObserved(context: ScreenContext, detection: PageDetection) = mutex.withLock {
         AutomationStore.publishObservation(detection)
 
+        // A deliberately suspended CURRENT_PROFILE task must not act on navigation events, but
+        // it still needs the freshest target-app snapshot when the operator later presses the
+        // overlay's explicit Resume action.  In particular, an expanded application overlay can
+        // briefly shadow rootInActiveWindow at that moment on some OEM builds.  Retaining this
+        // read-only Douyin snapshot lets resume validate the already-visible normal video rather
+        // than asking the operator to press Resume a second time.  It is revalidated (and aged
+        // out) before any comment action is dispatched.
+        if (phase == AutomationPhase.SUSPENDED_BEFORE_START &&
+            detection.kind != PageKind.OUTSIDE_TARGET &&
+            context.packageName == TargetAppLauncher.DOUYIN_PACKAGE
+        ) {
+            latestContext = context
+            if (context.ocrBlocks.isNotEmpty() || detection.reasons.any { it.contains("OCR", ignoreCase = true) }) {
+                latestOcrContext = context
+            }
+            return
+        }
         if (!taskActive || detection.kind == PageKind.OUTSIDE_TARGET) return
         // Do not replace the last Douyin context when the diagnostics activity briefly becomes
         // the active window. This keeps operator-requested node dumps useful while the target app
@@ -259,9 +276,13 @@ class DouyinNavigationController(
         if (!confirmOcrBackedPage(context, detection)) return
 
         // Comment tasks reuse the already-validated search/profile navigation until a user
-        // profile is reached, then switch to the isolated comment runtime. Never let the normal
-        // profile-to-DM branch click a private-message control for a comment task.
-        if (detection.kind == PageKind.USER_PROFILE && isCommentPrivateMessageTask()) {
+        // profile is reached, then switch to the isolated comment runtime. CURRENT_PROFILE also
+        // accepts the operator's already-open ordinary video when its verified comment rail is
+        // present. Never let the normal profile-to-DM branch click a private-message control for
+        // a comment task.
+        if (isCommentPrivateMessageTask() &&
+            (detection.kind == PageKind.USER_PROFILE || isCurrentProfileCommentTask())
+        ) {
             if (handoffCommentProfileObservation(context, detection, source = "accessibility_event")) {
                 return
             }
@@ -660,7 +681,7 @@ class DouyinNavigationController(
         }
     }
 
-    /** Polls an already-open profile for the CURRENT_PROFILE comment-task entry mode. */
+    /** Polls an already-open profile or ordinary video for the CURRENT_PROFILE entry mode. */
     private fun scheduleCurrentProfileCommentObservation() {
         initialObservationJob?.cancel()
         initialObservationJob = scope.launch {
@@ -672,11 +693,11 @@ class DouyinNavigationController(
             repeat(CURRENT_PROFILE_OBSERVATION_ATTEMPTS) { attempt ->
                 delay(CURRENT_PROFILE_OBSERVATION_INTERVAL_MS)
                 if (!taskActive || !commentRuntime.isRunning) return@launch
-                // A custom-rendered profile can expose a fresh node tree as UNKNOWN while the
-                // preceding accessibility callback has already produced an OCR-enriched profile
-                // snapshot. Prefer that recent target-app snapshot for this bounded poll; using
-                // the node-only tree here would discard the profile identity and works anchors
-                // and leave the comment state machine waiting until its watchdog expires.
+                // A custom-rendered profile/video can expose a fresh node tree as UNKNOWN while
+                // the preceding accessibility callback has already produced an OCR-enriched
+                // target-app snapshot. Prefer that recent snapshot for this bounded poll; using
+                // a node-only tree here would discard the profile/video evidence and leave the
+                // comment state machine waiting until its watchdog expires.
                 val context = currentProfileObservationContext()
                 if (context == null) {
                     logger.info(
@@ -706,9 +727,10 @@ class DouyinNavigationController(
     /**
      * Returns the freshest usable target-app snapshot for CURRENT_PROFILE polling. Accessibility
      * callbacks and direct root reads are not synchronized on OEM builds: a root read may be a
-     * node-only UNKNOWN tree immediately after the callback's OCR probe recognized the profile.
-     * Retain a short-lived enriched snapshot so the state machine can act on the verified page
-     * without clicking from stale coordinates or waiting for a second unrelated event.
+     * node-only UNKNOWN tree immediately after the callback's OCR probe recognized the prepared
+     * profile or ordinary video. Retain a short-lived enriched snapshot so the state machine can
+     * act on the verified page without clicking from stale coordinates or waiting for a second
+     * unrelated event.
      */
     private suspend fun currentProfileObservationContext(): ScreenContext? {
         val live = currentWindowContext()
@@ -731,17 +753,29 @@ class DouyinNavigationController(
                 "latest_blocks" to (latest?.ocrBlocks?.size ?: 0),
             ),
         )
+        val commentConfig = activeTaskSnapshot?.commentConfig
+        val directVideoCandidate = listOfNotNull(live, enriched, latest).firstOrNull { candidate ->
+            commentConfig != null && isCurrentCommentEntrySurface(
+                candidate,
+                pageDetector.detect(candidate),
+                commentConfig,
+            )
+        }
         val selected = when {
             liveDetection?.kind == PageKind.USER_PROFILE -> live
             enrichedDetection?.kind == PageKind.USER_PROFILE -> enriched
             latestDetection?.kind == PageKind.USER_PROFILE -> latest
+            // Prefer a freshly observed, fully verified normal-video surface over a sparse
+            // live root that was captured while our progress overlay was expanded.  The caller
+            // still validates this context again before it can open a comment panel.
+            directVideoCandidate != null -> directVideoCandidate
             live != null -> live
             else -> enriched ?: latest
         }
         // If the direct root read wins the race with the service OCR callback, take one bounded
-        // full-screen sample from the already-open profile. This is still a read-only probe; it
-        // never clicks or swipes and gives the comment state machine the same OCR-backed page
-        // evidence that a normal accessibility callback would provide.
+        // full-screen sample from the already-open profile/video. This is still a read-only
+        // probe; it never clicks or swipes and gives the comment state machine the same OCR-backed
+        // page evidence that a normal accessibility callback would provide.
         if (selected != null &&
             pageDetector.detect(selected).kind == PageKind.UNKNOWN &&
             selected.packageName == TargetAppLauncher.DOUYIN_PACKAGE
@@ -991,21 +1025,17 @@ class DouyinNavigationController(
 
     /**
      * Starts a CURRENT_PROFILE comment task only after the operator explicitly resumes it from a
-     * verified Douyin profile. This intentionally does not call TargetAppLauncher: the suspended
-     * flow exists to preserve the page the operator navigated to by hand.
+     * verified Douyin profile or an already-open ordinary video. This intentionally does not call
+     * TargetAppLauncher: the suspended flow exists to preserve the page the operator navigated to
+     * by hand.
      */
     private suspend fun resumeCurrentProfileCommentTask(source: String) {
-        val context = currentProfileObservationContext()
-        if (context == null) {
-            keepCurrentProfileTaskSuspended("未检测到抖音窗口，请先打开目标用户主页后再恢复")
+        val entry = resolveCurrentProfileCommentEntryForResume()
+        if (entry == null) {
+            keepCurrentProfileTaskSuspended("请先停留在抖音目标用户主页或普通视频（非直播、非广告）后再恢复")
             return
         }
-        val detection = pageDetector.detect(context)
-        AutomationStore.publishObservation(detection)
-        if (detection.kind != PageKind.USER_PROFILE) {
-            keepCurrentProfileTaskSuspended("请先停留在抖音目标用户主页后再恢复")
-            return
-        }
+        val (context, detection) = entry
 
         taskActive = true
         phase = AutomationPhase.WAITING_FOR_PROFILE
@@ -1016,11 +1046,63 @@ class DouyinNavigationController(
         }
         AutomationStore.publishPhase(phase)
         if (!handoffCommentProfileObservation(context, detection, source = source)) {
-            failTaskWithoutManualHandoff("无法将当前用户主页交给评论私信流程")
+            failTaskWithoutManualHandoff("无法将当前页面交给评论私信流程")
             return
         }
         logger.info("comment_current_profile_resumed", attributes = mapOf("source" to source))
         scheduleCurrentProfileCommentObservation()
+    }
+
+    /**
+     * The overlay's Resume button is itself an application window.  Let its removal settle and
+     * take a few short, read-only snapshots before deciding that the hand-prepared target is
+     * unavailable.  This eliminates the one-frame overlay/root race without weakening the
+     * normal-video contract: every accepted candidate still has to expose the strict comment
+     * action rail and pass the existing live/ad/risk exclusions.
+     */
+    private suspend fun resolveCurrentProfileCommentEntryForResume(): Pair<ScreenContext, PageDetection>? {
+        val commentConfig = activeTaskSnapshot?.commentConfig ?: return null
+        repeat(CURRENT_PROFILE_RESUME_CONTEXT_ATTEMPTS) { attempt ->
+            delay(
+                if (attempt == 0) {
+                    CURRENT_PROFILE_RESUME_SETTLE_DELAY_MS
+                } else {
+                    CURRENT_PROFILE_RESUME_CONTEXT_INTERVAL_MS
+                },
+            )
+            val context = currentProfileObservationContext()
+            if (context == null) {
+                logger.info(
+                    "comment_current_profile_resume_probe_waiting",
+                    attributes = mapOf(
+                        "attempt" to (attempt + 1),
+                        "reason" to "douyin_window_unavailable",
+                    ),
+                )
+                return@repeat
+            }
+            val detection = pageDetector.detect(context)
+            AutomationStore.publishObservation(detection)
+            val observation = CommentEntrySignalDetector.observe(
+                context,
+                skipPinnedVideos = commentConfig.skipPinnedVideos,
+            )
+            val accepted = isCurrentCommentEntrySurface(context, detection, commentConfig)
+            logger.info(
+                "comment_current_profile_resume_probe",
+                attributes = mapOf(
+                    "attempt" to (attempt + 1),
+                    "page" to detection.kind.name,
+                    "nodes" to context.nodes.size,
+                    "video_surface" to observation.hasVideoSurface,
+                    "comment_entry" to observation.hasCommentEntry,
+                    "comment_surface" to observation.isCommentSurfaceReady,
+                    "accepted" to accepted,
+                ),
+            )
+            if (accepted) return context to detection
+        }
+        return null
     }
 
     /** Keeps the pre-start flow recoverable when the operator has not reached a usable profile. */
@@ -2029,7 +2111,8 @@ class DouyinNavigationController(
     }
 
     /**
-     * Transfers a verified search-target profile to the isolated comment runner.
+     * Transfers a verified search-target profile, or a current ordinary video, to the isolated
+     * comment runner.
      *
      * Search-target comment tasks intentionally share the resilient search/User-tab navigation
      * with B-end private-message tasks. From this point onward the flows must diverge completely:
@@ -2045,10 +2128,6 @@ class DouyinNavigationController(
     ): Boolean {
         val snapshot = activeTaskSnapshot ?: return false
         if (snapshot.taskType != AutomationTaskType.COMMENT_PRIVATE_MESSAGE) return false
-        // The generic profile postcondition polls while the user-result animation is still
-        // settling. A result page is never a valid handoff surface, even if the controller has
-        // already advanced to WAITING_FOR_PROFILE.
-        if (detection.kind != PageKind.USER_PROFILE) return false
         val commentConfig = snapshot.commentConfig
         if (commentConfig == null) {
             logger.error(
@@ -2059,6 +2138,11 @@ class DouyinNavigationController(
             failTaskWithoutManualHandoff("评论私信任务配置缺失，无法进入评论区流程")
             return true
         }
+        // The generic profile postcondition polls while the user-result animation is still
+        // settling. A result page is never a valid handoff surface, even if the controller has
+        // already advanced to WAITING_FOR_PROFILE. CURRENT_PROFILE additionally permits one
+        // verified non-live, non-ad video already prepared by the operator.
+        if (!isCurrentCommentEntrySurface(context, detection, commentConfig)) return false
         // Search-target tasks may be launched while Douyin still displays the profile from a
         // previous run. That is not the profile selected by this task. Accept a profile handoff
         // only after the user-result action has advanced the controller to WAITING_FOR_PROFILE;
@@ -2117,6 +2201,32 @@ class DouyinNavigationController(
     private fun isCommentPrivateMessageTask(): Boolean =
         activeTaskSnapshot?.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE &&
             activeTaskSnapshot?.commentConfig != null
+
+    private fun isCurrentProfileCommentTask(): Boolean =
+        activeTaskSnapshot?.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE &&
+            activeTaskSnapshot?.commentConfig?.entryMode == CommentPrivateMessageEntryMode.CURRENT_PROFILE
+
+    /**
+     * A direct entry is safe only on a verified profile or on a normal video that exposes the
+     * strict comment affordance. Live/risk/login pages are classified before this point, while a
+     * startup/download promotion is rejected by the existing ad detector instead of being treated
+     * as a video merely because it has a right-side action rail.
+     */
+    private fun isCurrentCommentEntrySurface(
+        context: ScreenContext,
+        detection: PageDetection,
+        commentConfig: CommentPrivateMessageSnapshot,
+    ): Boolean {
+        if (detection.kind == PageKind.USER_PROFILE) return true
+        if (commentConfig.entryMode != CommentPrivateMessageEntryMode.CURRENT_PROFILE) return false
+        if (detection.kind !in setOf(PageKind.HOME, PageKind.UNKNOWN)) return false
+        if (TransientOverlayDetector.findStartupAd(context) != null) return false
+        val observation = CommentEntrySignalDetector.observe(
+            context,
+            skipPinnedVideos = commentConfig.skipPinnedVideos,
+        )
+        return observation.hasVideoSurface && observation.hasCommentEntry
+    }
 
     /**
      * Every SEARCH_TARGET_PROFILE comment task selects exactly one source profile during search
@@ -4977,6 +5087,11 @@ class DouyinNavigationController(
         /** A profile launch can take several seconds while Douyin restores a custom surface. */
         const val CURRENT_PROFILE_OBSERVATION_ATTEMPTS = 120
         const val CURRENT_PROFILE_OBSERVATION_INTERVAL_MS = 500L
+        /** Allow the app-owned overlay to disappear before reading the target app's root. */
+        const val CURRENT_PROFILE_RESUME_SETTLE_DELAY_MS = 150L
+        /** A bounded retry window for the overlay/root handoff; it performs no gestures. */
+        const val CURRENT_PROFILE_RESUME_CONTEXT_ATTEMPTS = 6
+        const val CURRENT_PROFILE_RESUME_CONTEXT_INTERVAL_MS = 250L
         /** OCR-enriched callback snapshots remain valid only for this short transition window. */
         const val CURRENT_PROFILE_CONTEXT_MAX_AGE_MS = 4_000L
         const val NEXT_TASK_SETTLE_DELAY_MS = 900L

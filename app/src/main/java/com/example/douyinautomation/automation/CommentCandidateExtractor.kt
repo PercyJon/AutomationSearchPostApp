@@ -76,11 +76,36 @@ object CommentCandidateExtractor {
         val commentContentTop = commentCountBottom(context)
         val locationCardBottom = locationCardBottom(context, commentContentTop)
         val headerAnchoredFirstAvatar = firstCommentAvatar(context, commentContentTop)
+        // Current Douyin comment rows expose their body through a stable `:id/content` node.
+        // Prefer those bodies whenever they are available.  The generic text fallback below is
+        // still needed for older/custom-rendered builds, but it cannot reliably distinguish a
+        // standalone region label in the metadata line from a short comment.  In particular, a
+        // metadata fragment immediately below row N used to make row N's body look like that
+        // fragment's “author”, which removed the first three real rows and left only a later one.
+        // This structural preference is intentionally scoped to body nodes that remain in the
+        // comment-content region; it does not inspect location text or any action control.
+        val structuredCommentBodies = context.nodes.asSequence()
+            .filter { node ->
+                node.isVisibleToUser &&
+                    node.bounds != ScreenBounds.EMPTY &&
+                    !node.text.isNullOrBlank() &&
+                    node.bounds.top >= (context.screenSize.height * HEADER_EXCLUSION_RATIO).toInt() &&
+                    (commentContentTop == null || node.bounds.top >= commentContentTop) &&
+                    (locationCardBottom == null || node.bounds.top >= locationCardBottom) &&
+                    isExplicitCommentBodyNode(node)
+            }
+            .toList()
         val commentFragments = fragments.filter { fragment ->
             fragment.bounds != ScreenBounds.EMPTY &&
                 fragment.bounds.top >= (context.screenSize.height * HEADER_EXCLUSION_RATIO).toInt() &&
                 (commentContentTop == null || fragment.bounds.top >= commentContentTop) &&
                 (locationCardBottom == null || fragment.bounds.top >= locationCardBottom) &&
+                (structuredCommentBodies.isEmpty() ||
+                    structuredCommentBodies.any { body ->
+                        fragment.source == CommentTextSource.ACCESSIBILITY &&
+                            body.hierarchyPath == fragment.hierarchyPath &&
+                            body.bounds == fragment.bounds
+                    }) &&
                 isLikelyCommentText(fragment.text) &&
                 // A bare number at the far right belongs to the like/dislike action rail. It
                 // must not participate in author pairing: otherwise a punctuation-free comment
@@ -163,6 +188,16 @@ object CommentCandidateExtractor {
             // own left-side image controls.
             firstVisibleCommentAvatar = headerAnchoredFirstAvatar ?: candidates.firstOrNull()?.avatarBounds,
         )
+    }
+
+    /**
+     * The resource name is a structural body marker, not the displayed text.  It is deliberately
+     * strict: if a future build removes it, extraction falls back to the existing avatar/text
+     * geometry instead of guessing from an unrelated generic “content” label.
+     */
+    private fun isExplicitCommentBodyNode(node: NodeSnapshot): Boolean {
+        val id = TextNormalizer.normalize(node.viewIdResourceName)
+        return id.endsWith(":id/content") || id.endsWith("/content")
     }
 
     private fun collectFragments(context: ScreenContext): List<CommentTextFragment> {

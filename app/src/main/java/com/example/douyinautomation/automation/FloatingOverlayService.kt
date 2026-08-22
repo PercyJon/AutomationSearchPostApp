@@ -189,6 +189,12 @@ class FloatingOverlayService : Service() {
                     AutomationPhase.SUSPENDED_BEFORE_START,
                     AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF,
                 )
+                // Resume must inspect Douyin immediately.  Keeping this expanded application
+                // overlay above the player can temporarily make it the active accessibility
+                // window on some OEM builds, so remove it before queuing the explicit Resume.
+                // The controller performs its own bounded, read-only target revalidation after
+                // this handoff; collapsing here never starts a task by itself.
+                if (canResume) collapseOverlay()
                 AutomationStore.send(if (canResume) AutomationCommand.Resume else AutomationCommand.Pause)
             }
         }

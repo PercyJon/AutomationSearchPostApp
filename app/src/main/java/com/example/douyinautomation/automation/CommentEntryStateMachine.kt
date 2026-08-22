@@ -94,7 +94,21 @@ class CommentEntryStateMachine {
 
         return when (stage) {
             CommentEntryStage.WAITING_FOR_PROFILE -> {
-                if (observation.page != PageKind.USER_PROFILE) {
+                // “当前用户主页” can begin from an already-open ordinary video as well as an
+                // explicitly opened profile.  The controller only sends this observation after
+                // it has verified the target app, rejected live/risk surfaces, and found the
+                // right-side comment affordance.  Do not navigate to a profile from a video:
+                // that would discard the operator's chosen current video and make Start appear
+                // idle.  If the sheet is already visible, read it rather than toggling it closed.
+                if (observation.hasVideoSurface && observation.hasCommentEntry) {
+                    if (observation.isCommentSurfaceReady) {
+                        stage = CommentEntryStage.READY_TO_READ
+                        decision(CommentEntryAction.READ_COMMENTS, "已确认当前普通视频的评论区，直接读取")
+                    } else {
+                        stage = CommentEntryStage.WAITING_FOR_COMMENTS
+                        decision(CommentEntryAction.OPEN_COMMENTS, "已确认当前普通视频，准备打开评论区")
+                    }
+                } else if (observation.page != PageKind.USER_PROFILE) {
                     decision(CommentEntryAction.NONE, "等待确认用户主页")
                 } else if (observation.profileHasNoWorks) {
                     decision(CommentEntryAction.SKIP_PROFILE, "用户没有可处理的作品或账号为私密账号")

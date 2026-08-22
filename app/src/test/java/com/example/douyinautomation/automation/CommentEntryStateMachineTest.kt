@@ -33,6 +33,39 @@ class CommentEntryStateMachineTest {
     }
 
     @Test
+    fun `current ordinary video opens comments without navigating away to a profile`() {
+        val machine = CommentEntryStateMachine()
+
+        val decision = machine.observe(
+            CommentEntryObservation(
+                page = PageKind.HOME,
+                hasVideoSurface = true,
+                hasCommentEntry = true,
+            ),
+        )
+
+        assertEquals(CommentEntryStage.WAITING_FOR_COMMENTS, decision.stage)
+        assertEquals(CommentEntryAction.OPEN_COMMENTS, decision.action)
+    }
+
+    @Test
+    fun `current ordinary video reads an already open comments sheet without toggling it`() {
+        val machine = CommentEntryStateMachine()
+
+        val decision = machine.observe(
+            CommentEntryObservation(
+                page = PageKind.HOME,
+                hasVideoSurface = true,
+                hasCommentEntry = true,
+                commentSurface = CommentSurfaceDetection(true, 0.93f, listOf("composer")),
+            ),
+        )
+
+        assertEquals(CommentEntryStage.READY_TO_READ, decision.stage)
+        assertEquals(CommentEntryAction.READ_COMMENTS, decision.action)
+    }
+
+    @Test
     fun `delayed profile snapshot does not open the first video twice`() {
         val machine = CommentEntryStateMachine()
         val opened = machine.observe(

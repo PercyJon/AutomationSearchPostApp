@@ -104,6 +104,67 @@ class CommentCandidateExtractorTest {
     }
 
     @Test
+    fun `explicit comment body nodes keep the first row ahead of metadata fragments`() {
+        val firstAvatar = ScreenBounds(48, 970, 156, 1078)
+        val secondAvatar = ScreenBounds(48, 1230, 156, 1338)
+        val extraction = CommentCandidateExtractor.extract(
+            context = ScreenContext(
+                screenSize = screen,
+                nodes = listOf(
+                    node("270条评论", 380, 850, 650, 900),
+                    NodeSnapshot(
+                        hierarchyPath = listOf(1, 0, 1),
+                        className = "按钮",
+                        viewIdResourceName = "com.ss.android.ugc.aweme:id/avatar",
+                        bounds = firstAvatar,
+                        isClickable = true,
+                    ),
+                    NodeSnapshot(
+                        hierarchyPath = listOf(1, 0, 2),
+                        text = "第一位",
+                        viewIdResourceName = "com.ss.android.ugc.aweme:id/title",
+                        bounds = ScreenBounds(180, 970, 420, 1028),
+                    ),
+                    NodeSnapshot(
+                        hierarchyPath = listOf(1, 0, 3),
+                        text = "首条真实评论正文",
+                        viewIdResourceName = "com.ss.android.ugc.aweme:id/content",
+                        bounds = ScreenBounds(180, 1040, 860, 1110),
+                    ),
+                    // A regional metadata fragment is visually below the body. It must never
+                    // make the body look like an author and remove the first row.
+                    node("华北", 380, 1120, 500, 1170, hierarchyPath = listOf(1, 0, 4, 1)),
+                    NodeSnapshot(
+                        hierarchyPath = listOf(1, 1, 1),
+                        className = "按钮",
+                        viewIdResourceName = "com.ss.android.ugc.aweme:id/avatar",
+                        bounds = secondAvatar,
+                        isClickable = true,
+                    ),
+                    NodeSnapshot(
+                        hierarchyPath = listOf(1, 1, 2),
+                        text = "第二位",
+                        viewIdResourceName = "com.ss.android.ugc.aweme:id/title",
+                        bounds = ScreenBounds(180, 1230, 420, 1288),
+                    ),
+                    NodeSnapshot(
+                        hierarchyPath = listOf(1, 1, 3),
+                        text = "第二条真实评论正文",
+                        viewIdResourceName = "com.ss.android.ugc.aweme:id/content",
+                        bounds = ScreenBounds(180, 1300, 860, 1370),
+                    ),
+                    node("华东", 380, 1380, 500, 1430, hierarchyPath = listOf(1, 1, 4, 1)),
+                ),
+            ),
+            matchKeywords = emptyList(),
+        )
+
+        assertEquals(listOf("第一位", "第二位"), extraction.candidates.map { it.authorText })
+        assertEquals(firstAvatar, extraction.firstVisibleCommentAvatar)
+        assertTrue(CommentCandidateExtractor.belongsToAvatarRow(extraction.candidates.first(), firstAvatar))
+    }
+
+    @Test
     fun `first avatar comment remains eligible when nickname is virtualized`() {
         val extraction = CommentCandidateExtractor.extract(
             context = ScreenContext(
