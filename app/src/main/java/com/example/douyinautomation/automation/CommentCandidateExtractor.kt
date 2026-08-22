@@ -789,39 +789,55 @@ data class CommentSurfaceDetection(
 /** Conservative comment-surface detector used by the future controller before reading rows. */
 object CommentSurfaceDetector {
     private val markers = listOf("评论", "全部评论", "写评论", "条评论", "回复")
+    private val countHeaderPattern = Regex("^\\d+(?:[.,]\\d+)?(?:万|亿)?\\s*条评论$")
+    private val commentTabPattern = Regex("^评论\\s*\\d+$")
 
     fun detect(context: ScreenContext): CommentSurfaceDetection {
         val nodeTexts = context.nodeText().map(TextNormalizer::normalize)
         val ocrTexts = context.ocrText().map(TextNormalizer::normalize)
+        val allTexts = nodeTexts + ocrTexts
         val nodeMarkers = nodeTexts.flatMap { text -> markers.filter(text::contains) }.distinct()
         val ocrMarkers = ocrTexts.flatMap { text -> markers.filter(text::contains) }.distinct()
         val bottomComposer = context.nodes.any { node ->
             node.isEditable && node.bounds.top >= context.screenSize.height * 0.68f
         } || ocrTexts.any { it.contains("写评论") }
-        val repeatedReply = (nodeTexts + ocrTexts).count { it.contains("回复") } >= 2
+        val repeatedReply = allTexts.count { it.contains("回复") } >= 2
+        // A full-screen video can expose an inline “期待你的评论” prompt, a location card, and
+        // several decorative left-side images. None of those proves that the bottom sheet is
+        // open. A count/tab header is the stable sheet chrome; when the header has scrolled
+        // away, require both several structured comment rows and their repeated reply affordance.
+        val explicitCountHeader = allTexts.any(countHeaderPattern::matches)
+        val commentsTabHeader = allTexts.any(commentTabPattern::matches)
+        val fullCommentsHeader = allTexts.any { it == "全部评论" }
+        val structuredCommentRows = CommentCandidateExtractor.extract(context, emptyList()).candidates.size
         // A profile exposes a single header avatar and a video page at most the author avatar,
-        // so three or more left-side avatar rows are strong evidence that the comment sheet is
-        // open even after its header/“回复” markers have scrolled out of the accessibility tree.
+        // so three or more left-side avatar rows paired with real author/comment text are strong
+        // evidence that the comment sheet is open even after its header has scrolled out of the
+        // accessibility tree. Raw image counts alone are intentionally insufficient.
         val avatarRowCount = CommentCandidateExtractor.commentAvatarRowCount(context)
-        val avatarRowEvidence = avatarRowCount >= 3
+        val avatarRowEvidence = avatarRowCount >= 3 && structuredCommentRows >= 2
         val reasons = buildList {
             if (nodeMarkers.isNotEmpty()) add("node markers: ${nodeMarkers.joinToString()}")
             if (ocrMarkers.isNotEmpty()) add("OCR markers: ${ocrMarkers.joinToString()}")
+            if (explicitCountHeader) add("comment count header")
+            if (commentsTabHeader) add("comment tab header")
+            if (fullCommentsHeader) add("full comments header")
             if (bottomComposer) add("bottom comment composer")
             if (repeatedReply) add("repeated reply markers")
-            if (avatarRowEvidence) add("comment avatar rows: $avatarRowCount")
+            if (avatarRowEvidence) add("structured comment avatar rows: $avatarRowCount/$structuredCommentRows")
         }
-        val isSurface = nodeMarkers.isNotEmpty() && (bottomComposer || repeatedReply || nodeMarkers.size >= 2) ||
-            ocrMarkers.isNotEmpty() && bottomComposer ||
-            avatarRowEvidence
+        val isSurface = (explicitCountHeader || fullCommentsHeader) &&
+            (bottomComposer || repeatedReply || avatarRowEvidence) ||
+            commentsTabHeader && bottomComposer ||
+            avatarRowEvidence && repeatedReply
         return CommentSurfaceDetection(
             isCommentSurface = isSurface,
             confidence = when {
                 !isSurface -> 0.1f
-                nodeMarkers.isNotEmpty() && bottomComposer -> 0.92f
-                nodeMarkers.size >= 2 -> 0.84f
-                avatarRowEvidence -> 0.78f
-                else -> 0.72f
+                (explicitCountHeader || fullCommentsHeader) && bottomComposer -> 0.95f
+                commentsTabHeader && bottomComposer -> 0.94f
+                explicitCountHeader || fullCommentsHeader -> 0.88f
+                else -> 0.84f
             },
             reasons = reasons.ifEmpty { listOf("No comment-surface signature matched") },
         )

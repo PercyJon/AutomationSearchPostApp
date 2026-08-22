@@ -144,6 +144,35 @@ class CommentSurfaceSignalsTest {
     }
 
     @Test
+    fun `OCR action-count rail infers only the second comment bubble`() {
+        val malformedRail = (0..3).map { index ->
+            node(
+                text = null,
+                className = "android.widget.ImageView",
+                left = 900,
+                top = -900 + index * 180,
+                right = 1000,
+                bottom = -800 + index * 180,
+            )
+        }
+        val context = ScreenContext(
+            screenSize = screen,
+            nodes = malformedRail,
+            ocrBlocks = listOf(
+                OcrTextBlock("3.2万", ScreenBounds(930, 1420, 1030, 1470), confidence = 0.97f),
+                OcrTextBlock("59", ScreenBounds(930, 1620, 1030, 1670), confidence = 0.96f),
+                OcrTextBlock("1", ScreenBounds(930, 1820, 1030, 1870), confidence = 0.98f),
+                OcrTextBlock("1278", ScreenBounds(930, 2020, 1030, 2070), confidence = 0.95f),
+            ),
+        )
+
+        assertEquals(
+            CommentButtonTarget.OcrFallback(ScreenBounds(920, 1505, 1040, 1625)),
+            VideoCommentButtonDetector.find(context),
+        )
+    }
+
+    @Test
     fun `OCR caption text outside the action rail is not a comment fallback`() {
         val context = ScreenContext(
             screenSize = screen,

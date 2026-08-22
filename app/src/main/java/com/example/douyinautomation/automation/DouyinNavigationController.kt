@@ -44,6 +44,13 @@ class DouyinNavigationController(
         pageDetector = pageDetector,
         selector = selector,
         gestures = gestures,
+        enrichWithOcr = { base ->
+            captureContextWithOcr(
+                base = base,
+                tag = "comment_next_video_rail",
+                region = OcrRegion.FULL,
+            ) ?: base
+        },
         onTerminal = { terminal ->
             // Runtime timeouts happen on its watchdog coroutine. Queue terminal handling so the
             // controller's single action mutex remains the only owner of task lifecycle fields.
@@ -254,11 +261,17 @@ class DouyinNavigationController(
         // Comment tasks reuse the already-validated search/profile navigation until a user
         // profile is reached, then switch to the isolated comment runtime. Never let the normal
         // profile-to-DM branch click a private-message control for a comment task.
-        if (detection.kind == PageKind.USER_PROFILE &&
-            isCommentPrivateMessageTask() &&
-            handoffCommentProfileObservation(context, detection, source = "accessibility_event")
-        ) {
-            return
+        if (detection.kind == PageKind.USER_PROFILE && isCommentPrivateMessageTask()) {
+            if (handoffCommentProfileObservation(context, detection, source = "accessibility_event")) {
+                return
+            }
+            // A result-row tap can be followed by one delayed profile tree from before that tap.
+            // It cannot prove the newly selected source profile, so the handoff above correctly
+            // rejects it. Never fall through to the legacy profile → private-message branch in
+            // this state: that would open a direct-message thread for a stale/source profile
+            // before any verified comment avatar has been selected. The bounded profile
+            // post-condition poll will consume the fresh profile snapshot instead.
+            if (phase == AutomationPhase.WAITING_FOR_PROFILE) return
         }
 
         when (phase) {
@@ -2218,10 +2231,26 @@ class DouyinNavigationController(
                         ),
                     )
                     // Comment tasks keep the profile-to-comment route in their isolated
-                    // runtime. The legacy profile postcondition must never click a private
-                    // message control for this task type.
-                    if (handoffCommentProfileObservation(context, detection, source = "profile_postcondition")) {
-                        handedOff = true
+                    // runtime. A stale snapshot is deliberately not a valid handoff, but it is
+                    // also never permission to enter the legacy profile → private-message flow.
+                    // Keep polling until a fresh verified profile arrives or the existing
+                    // bounded profile watchdog resolves the route.
+                    if (isCommentPrivateMessageTask()) {
+                        when (detection.kind) {
+                            PageKind.USER_PROFILE -> {
+                                if (handoffCommentProfileObservation(context, detection, source = "profile_postcondition")) {
+                                    handedOff = true
+                                }
+                            }
+
+                            PageKind.HUMAN_INTERVENTION ->
+                                pause("A verification or risk screen appeared before opening the comment workflow; manual handoff required")
+
+                            PageKind.LOGIN ->
+                                pause("Douyin login is required before opening the comment workflow")
+
+                            else -> Unit
+                        }
                         return@withLock
                     }
                     when (detection.kind) {

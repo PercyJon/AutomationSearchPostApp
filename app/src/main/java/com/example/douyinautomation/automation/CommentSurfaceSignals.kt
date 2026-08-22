@@ -94,7 +94,7 @@ object VideoCommentButtonDetector {
         // structural accessibility selectors have rejected the rail, so use the on-screen OCR
         // "评论" label as the narrowly-scoped final fallback. Requiring a compact right-side
         // block prevents captions or an already-open comment panel from becoming a tap target.
-        val ocrFallback = context.ocrBlocks.asSequence()
+        val ocrLabelFallback = context.ocrBlocks.asSequence()
             .filter { block -> block.bounds.width > 0 && block.bounds.height > 0 }
             .filter { block ->
                 val normalized = block.bounds.normalized(context.screenSize)
@@ -105,12 +105,104 @@ object VideoCommentButtonDetector {
                 val normalized = block.bounds.normalized(context.screenSize)
                 (block.confidence ?: 0f) + normalized.centerX
             }
-        return ocrFallback?.let { CommentButtonTarget.OcrFallback(it.bounds) }
+        if (ocrLabelFallback != null) return CommentButtonTarget.OcrFallback(ocrLabelFallback.bounds)
+
+        // The speech-bubble itself contains no text on some current player layouts, but its
+        // right-side count column remains readable: like, comment, favorite, share. Infer the
+        // bubble only from a complete, evenly-spaced four-count rail and always select the second
+        // slot. This is deliberately stricter than a single numeric OCR match, so a caption,
+        // location card, or a lone number can never turn into a social-action tap.
+        return ocrActionCountRailFallback(context)
+    }
+
+    private fun ocrActionCountRailFallback(context: ScreenContext): CommentButtonTarget.OcrFallback? {
+        val rawCounts = context.ocrBlocks.asSequence()
+            .filter { block -> block.bounds.width > 0 && block.bounds.height > 0 }
+            .filter { block ->
+                val normalized = block.bounds.normalized(context.screenSize)
+                normalized.centerX >= OCR_COUNT_RAIL_LEFT &&
+                    normalized.centerY in OCR_COUNT_RAIL_TOP..OCR_COUNT_RAIL_BOTTOM
+            }
+            .filter { block -> engagementCountPattern.matches(TextNormalizer.normalize(block.text)) }
+            .sortedBy { it.bounds.centerY }
+            .toList()
+
+        // OCR can emit overlapping duplicates for the same small numeric label. Keep the more
+        // confident one within a single line before validating the action stack geometry.
+        val counts = mutableListOf<OcrTextBlock>()
+        rawCounts.forEach { candidate ->
+            val existing = counts.lastOrNull {
+                kotlin.math.abs(it.bounds.centerY - candidate.bounds.centerY) <= OCR_COUNT_CLUSTER_TOLERANCE
+            }
+            when {
+                existing == null -> counts.add(candidate)
+                (candidate.confidence ?: 0f) > (existing.confidence ?: 0f) -> {
+                    counts[counts.lastIndex] = candidate
+                }
+            }
+        }
+
+        return counts.windowed(size = 4, step = 1, partialWindows = false).firstNotNullOfOrNull { rail ->
+            val gaps = rail.zipWithNext { upper, lower -> lower.bounds.centerY - upper.bounds.centerY }
+            val minGap = gaps.minOrNull() ?: return@firstNotNullOfOrNull null
+            val maxGap = gaps.maxOrNull() ?: return@firstNotNullOfOrNull null
+            val spacing = gaps.sorted()[gaps.size / 2].toFloat()
+            val minimumAllowedGap = context.screenSize.height * OCR_COUNT_MIN_GAP_FRACTION
+            val maximumAllowedGap = context.screenSize.height * OCR_COUNT_MAX_GAP_FRACTION
+            val alignedXs = rail.map { it.bounds.centerX }
+            val xSpread = (alignedXs.maxOrNull() ?: 0f) - (alignedXs.minOrNull() ?: 0f)
+
+            if (minGap.toFloat() < minimumAllowedGap ||
+                maxGap.toFloat() > maximumAllowedGap ||
+                maxGap.toFloat() / minGap.toFloat() > OCR_COUNT_MAX_GAP_RATIO ||
+                xSpread > context.screenSize.width * OCR_COUNT_MAX_X_SPREAD_FRACTION
+            ) {
+                return@firstNotNullOfOrNull null
+            }
+
+            val commentCount = rail[1]
+            val targetCenterX = alignedXs.average().toFloat()
+            val targetCenterY = commentCount.bounds.centerY - spacing * OCR_COMMENT_ICON_OFFSET_FRACTION
+            val firstCountCenterY = rail.first().bounds.centerY
+            if (targetCenterY <= firstCountCenterY + spacing * OCR_MIN_ICON_GAP_FRACTION ||
+                targetCenterY >= commentCount.bounds.centerY - spacing * OCR_MIN_ICON_GAP_FRACTION
+            ) {
+                return@firstNotNullOfOrNull null
+            }
+
+            val halfSide = (spacing * OCR_COMMENT_ICON_SIZE_FRACTION)
+                .toInt()
+                .coerceIn(OCR_COMMENT_ICON_MIN_HALF_SIDE, OCR_COMMENT_ICON_MAX_HALF_SIDE)
+            val centerX = targetCenterX.toInt()
+            val centerY = targetCenterY.toInt()
+            val bounds = ScreenBounds(
+                left = (centerX - halfSide).coerceAtLeast(0),
+                top = (centerY - halfSide).coerceAtLeast(0),
+                right = (centerX + halfSide).coerceAtMost(context.screenSize.width),
+                bottom = (centerY + halfSide).coerceAtMost(context.screenSize.height),
+            )
+            bounds.takeIf { it.width >= OCR_COMMENT_ICON_MIN_HALF_SIDE * 2 && it.height >= OCR_COMMENT_ICON_MIN_HALF_SIDE * 2 }
+                ?.let(CommentButtonTarget::OcrFallback)
+        }
     }
 
     private const val OCR_RAIL_LEFT = 0.76f
     private const val OCR_RAIL_TOP = 0.28f
     private const val OCR_RAIL_BOTTOM = 0.90f
+    private const val OCR_COUNT_RAIL_LEFT = 0.82f
+    private const val OCR_COUNT_RAIL_TOP = 0.42f
+    private const val OCR_COUNT_RAIL_BOTTOM = 0.93f
+    private const val OCR_COUNT_CLUSTER_TOLERANCE = 28
+    private const val OCR_COUNT_MIN_GAP_FRACTION = 0.035f
+    private const val OCR_COUNT_MAX_GAP_FRACTION = 0.16f
+    private const val OCR_COUNT_MAX_GAP_RATIO = 1.45f
+    private const val OCR_COUNT_MAX_X_SPREAD_FRACTION = 0.08f
+    private const val OCR_COMMENT_ICON_OFFSET_FRACTION = 0.40f
+    private const val OCR_COMMENT_ICON_SIZE_FRACTION = 0.30f
+    private const val OCR_MIN_ICON_GAP_FRACTION = 0.16f
+    private const val OCR_COMMENT_ICON_MIN_HALF_SIDE = 42
+    private const val OCR_COMMENT_ICON_MAX_HALF_SIDE = 80
+    private val engagementCountPattern = Regex("^\\d+(?:[.,]\\d+)?(?:万|亿|w|k|m)?$")
 }
 
 data class CommentPanelEndDetection(

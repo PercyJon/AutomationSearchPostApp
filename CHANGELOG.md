@@ -4,6 +4,34 @@
 
 ---
 
+## [未发布] 2026-08-22 —— M4.5 多视频评论轨道、OCR 回退与安全恢复
+
+### 修改内容
+
+- [`CommentPrivateMessageRuntime.kt`](app/src/main/java/com/example/douyinautomation/automation/CommentPrivateMessageRuntime.kt)：
+  - 搜索结果进入的用户主页先出现空壳、作品网格稍后才渲染时，新增 12 秒有界主页重读；只在结构化首条视频入口出现后点击，避免闲置到原始 60 秒看门狗。
+  - 多视频切换增加直接后置探测与前一视频语义指纹，解决抖音滑到下一条后不派发 accessibility 事件导致的等待超时。
+  - 对「视频存在、评论栏的无障碍节点却全为越界/不可见」的情况，最多采集两次全屏 OCR 上下文；仍使用严格的评论轨道识别，未证实则在两次负向证据后快速跳过该视频，而不猜测坐标。
+  - 从评论用户主页/私信页返回时复用同一受限 OCR 恢复路径，优先重开已验证的评论面板，避免将视频误判为评论页后额外 BACK 回到用户主页。
+- [`CommentSurfaceSignals.kt`](app/src/main/java/com/example/douyinautomation/automation/CommentSurfaceSignals.kt)：当语义评论按钮和可用轨道节点都失效时，只有同时识别出右侧等距的「点赞、评论、收藏、分享」四个数值计数，才推导第二项评论气泡的紧凑点击区域；单个数字、地点卡、视频标题或字幕均不能触发操作。
+- [`CommentCandidateExtractor.kt`](app/src/main/java/com/example/douyinautomation/automation/CommentCandidateExtractor.kt)：收紧评论面板判断。视频页内嵌的“期待你的评论”、地点卡及装饰性左侧图片不再构成评论区证据；需有评论数量/标签页头，或多条结构化评论行加重复“回复”证据。
+- [`DouyinNavigationController.kt`](app/src/main/java/com/example/douyinautomation/automation/DouyinNavigationController.kt)：为评论运行时注入受限 OCR 截图回调，确保定时探测和事件驱动路径使用同一份 OCR 证据。
+- 新增单元覆盖：OCR 四计数轨道只选第二个评论气泡；视频页内嵌评论提示与左侧装饰图不得误判为评论面板。
+
+### 已验证项（真机 OnePlus NE2210 / b33aa309）
+
+- **3 视频完整闭环**：`designer` → 用户搜索结果第一个用户（两次 OCR 稳定确认，未滚动结果列表）→ 该用户第一条视频，`maxVideos=3`、每视频首位评论用户上限为 1。最终 `comment_runtime_terminal [outcome=COMPLETED]`。
+- 第 1 条视频：只点击首条评论用户的左侧头像；进入私信后仅提交一个空格，收到原生空白消息拒绝，记录为 `BLANK_PROBE_VERIFIED`，没有发送真实消息。
+- 第 2 条视频：真实命中 `source=ocr_fallback` 打开失真右侧评论栏，再只点击首位评论用户左侧头像；私信不可用，安全记录为 `PRIVATE_MESSAGE_UNAVAILABLE`。
+- 第 3 条视频：两次 OCR 均未形成完整四计数评论轨道，记录 `comment_next_video_skipped_no_safe_entry [observations=2]` 后直接完成，不超时、不猜测点击。
+- 全程没有点赞/心形操作；无 force-stop；无障碍服务在任务结束后仍保持 `target_enabled=true`。`./gradlew testDebugUnitTest lintDebug assembleDebug`、`git diff --check` 均通过。
+
+### 已知限制
+
+- OCR 轨道回退刻意要求完整且等距的四个右侧计数；证据不足时会跳过该视频。这是为避免把点赞、收藏、地点或任意数字误当作评论按钮的安全约束。
+
+---
+
 ## [未发布] 2026-08-22 —— 当前用户主页闭环与评论入口文案
 
 ### 修改内容

@@ -43,6 +43,8 @@ class CommentPrivateMessageRuntime(
     private val pageDetector: PageDetector,
     private val selector: SelectorEngine,
     private val gestures: GestureEngine,
+    /** Owner-supplied OCR capture used only for a malformed next-video comment rail. */
+    private val enrichWithOcr: suspend (ScreenContext) -> ScreenContext = { it },
     private val onTerminal: (CommentRuntimeTerminal) -> Unit,
 ) {
     private val stateMachine = CommentEntryStateMachine()
@@ -92,6 +94,17 @@ class CommentPrivateMessageRuntime(
     private var firstVideoTransitionProbeJob: Job? = null
     /** Bounded direct verification for an opened comment sheet when its event is dropped. */
     private var commentPanelProbeJob: Job? = null
+    /** Bounded direct verification after the feed swipe selects the next video. */
+    private var nextVideoTransitionProbeJob: Job? = null
+    /**
+     * A search-result → profile transition can expose a verified profile shell before its Works
+     * grid has populated. The initial shell has no safe first-video target yet, and some Douyin
+     * builds do not emit a second accessibility event when the grid appears. Re-sample that
+     * already-verified profile for a short, fixed window instead of idling until the entry guard.
+     */
+    private var profileSurfaceProbeJob: Job? = null
+    /** Lightweight semantic fingerprint taken after the old comment sheet has closed. */
+    private var nextVideoSurfaceSignatureBeforeSwipe: Int? = null
 
     val isRunning: Boolean get() = running
     val stage: CommentEntryStage get() = stateMachine.stage
@@ -124,6 +137,11 @@ class CommentPrivateMessageRuntime(
         firstVideoTransitionProbeJob = null
         commentPanelProbeJob?.cancel()
         commentPanelProbeJob = null
+        nextVideoTransitionProbeJob?.cancel()
+        nextVideoTransitionProbeJob = null
+        profileSurfaceProbeJob?.cancel()
+        profileSurfaceProbeJob = null
+        nextVideoSurfaceSignatureBeforeSwipe = null
         // Search-target mode still traverses the existing launch/search/user-tab flow before the
         // runtime receives a profile observation. Give that bounded entry route a longer guard;
         // once the profile/video/comment actions begin, each step returns to the short watchdog.
@@ -151,6 +169,11 @@ class CommentPrivateMessageRuntime(
         firstVideoTransitionProbeJob = null
         commentPanelProbeJob?.cancel()
         commentPanelProbeJob = null
+        nextVideoTransitionProbeJob?.cancel()
+        nextVideoTransitionProbeJob = null
+        profileSurfaceProbeJob?.cancel()
+        profileSurfaceProbeJob = null
+        nextVideoSurfaceSignatureBeforeSwipe = null
         pendingViewportContext = null
         running = false
         config = null
@@ -182,6 +205,11 @@ class CommentPrivateMessageRuntime(
         firstVideoTransitionProbeJob = null
         commentPanelProbeJob?.cancel()
         commentPanelProbeJob = null
+        nextVideoTransitionProbeJob?.cancel()
+        nextVideoTransitionProbeJob = null
+        profileSurfaceProbeJob?.cancel()
+        profileSurfaceProbeJob = null
+        nextVideoSurfaceSignatureBeforeSwipe = null
         running = true
         armTimeout("等待下一个用户主页")
     }
@@ -210,6 +238,10 @@ class CommentPrivateMessageRuntime(
             skipPinnedVideos = config?.skipPinnedVideos == true,
         )
         val decision = stateMachine.observe(observation)
+        val waitingForProfileContent =
+            stateMachine.stage == CommentEntryStage.WAITING_FOR_PROFILE &&
+                observation.page == PageKind.USER_PROFILE &&
+                decision.action == CommentEntryAction.NONE
         // A genuine video surface without a resolved comment button means the detector's filters
         // dropped an actionable speech-bubble. Dump every semantic/rail candidate so the failing
         // filter (visibility flag, clickable/enabled flag, bounds, or rail cardinality) is visible
@@ -385,6 +417,14 @@ class CommentPrivateMessageRuntime(
             CommentEntryAction.NONE -> Unit
         }
 
+        // The profile shell is verified but has not exposed a thumbnail or an explicit empty
+        // state yet. Do not click from the incomplete tree. A bounded direct probe is enough to
+        // catch the Works grid's late layout pass on current Douyin builds, including when no
+        // follow-up accessibility callback is emitted.
+        if (waitingForProfileContent) {
+            scheduleProfileSurfaceProbe()
+        }
+
         // Once the state machine has crossed the comment-surface post-condition, subsequent
         // content-change events are pagination observations rather than another click request.
         // The marker-based surface detector can degrade after a scroll: the panel header and the
@@ -510,6 +550,173 @@ class CommentPrivateMessageRuntime(
                         armTimeout("等待视频页面", timeoutMs = VIDEO_PAGE_TIMEOUT_MS)
                     }
                 }
+            }
+        }
+    }
+
+    /**
+     * A feed swipe can move to a fully rendered video without dispatching a content-change event.
+     * Probe the target window after the old comment sheet's settle window. The baseline check
+     * prevents the just-closed video's action rail from being treated as a new item, so this
+     * never reopens comments merely because the panel animation is late.
+     */
+    private fun scheduleNextVideoTransitionProbe() {
+        nextVideoTransitionProbeJob?.cancel()
+        nextVideoTransitionProbeJob = scope.launch {
+            var hiddenEntryObservations = 0
+            var controlsRevealAttempted = false
+            var ocrProbeCount = 0
+            repeat(NEXT_VIDEO_TRANSITION_PROBE_ATTEMPTS) { attempt ->
+                val settleRemaining = (nextVideoSettleUntilMs - SystemClock.uptimeMillis()).coerceAtLeast(0L)
+                delay(
+                    if (attempt == 0) {
+                        settleRemaining + NEXT_VIDEO_TRANSITION_INITIAL_GRACE_MS
+                    } else {
+                        NEXT_VIDEO_TRANSITION_PROBE_INTERVAL_MS
+                    },
+                )
+                if (!running || stateMachine.stage != CommentEntryStage.WAITING_FOR_VIDEO) {
+                    return@launch
+                }
+                var context = currentContext() ?: return@repeat
+                var observation = CommentEntrySignalDetector.observe(
+                    context,
+                    skipPinnedVideos = config?.skipPinnedVideos == true,
+                )
+                // Direct tree reads are intentionally cheap, but they contain no OCR blocks.
+                // The post-swipe failure we are recovering from is exactly a player whose rail
+                // pixels are on-screen while every corresponding accessibility node has stale
+                // negative bounds. Capture at most two bounded, full-screen OCR samples only
+                // after a genuine video was observed without a safe entry, then re-run the same
+                // strict detector against the enriched snapshot.
+                if (observation.hasVideoSurface && !observation.hasCommentEntry &&
+                    ocrProbeCount < NEXT_VIDEO_OCR_PROBE_LIMIT
+                ) {
+                    ocrProbeCount += 1
+                    context = enrichWithOcr(context)
+                    observation = CommentEntrySignalDetector.observe(
+                        context,
+                        skipPinnedVideos = config?.skipPinnedVideos == true,
+                    )
+                }
+                val signature = videoSurfaceFingerprint(context)
+                val changedFromPreviousVideo = nextVideoSurfaceSignatureBeforeSwipe == null ||
+                    signature == null || signature != nextVideoSurfaceSignatureBeforeSwipe
+                logger.info(
+                    "comment_next_video_postcondition",
+                    attributes = mapOf(
+                        "attempt" to (attempt + 1),
+                        "page" to observation.page.name,
+                        "video_surface" to observation.hasVideoSurface,
+                        "comment_entry" to observation.hasCommentEntry,
+                        "changed" to changedFromPreviousVideo,
+                        "ocr_blocks" to context.ocrBlocks.size,
+                    ),
+                )
+                if (observation.page in setOf(
+                        PageKind.HUMAN_INTERVENTION,
+                        PageKind.LOGIN,
+                        PageKind.LIVE_ROOM,
+                        PageKind.LIVE_ROOM_SESSION,
+                    )
+                ) {
+                    onObserved(context, pageDetector.detect(context))
+                    return@launch
+                }
+                if (observation.hasVideoSurface && !observation.hasCommentEntry) {
+                    hiddenEntryObservations += 1
+                    // Persisting a full node dump is intentionally expensive. Capture it once
+                    // per inaccessible video so it remains useful for triage without consuming
+                    // most of the bounded next-video watchdog.
+                    if (hiddenEntryObservations == 1) {
+                        logCommentButtonMissDiagnostics(context)
+                    }
+                    // The profile-player can auto-hide its right action rail after a feed
+                    // swipe. Its visible SurfaceView is a neutral media canvas, not a social
+                    // action: touch its centre once only to reveal the existing controls. This
+                    // never targets the heart, comment text, location card, or any user row.
+                    if (!controlsRevealAttempted) {
+                        controlsRevealAttempted = true
+                        val surface = neutralVideoSurface(context)
+                        if (surface != null) {
+                            val reveal = gestures.tapBounds(surface.bounds)
+                            logger.info(
+                                "comment_video_controls_reveal",
+                                attributes = mapOf("success" to reveal.succeeded, "route" to reveal.route),
+                            )
+                            delay(VIDEO_CONTROLS_REVEAL_SETTLE_MS)
+                        }
+                    }
+                    // A genuine video that still does not expose a safe comment entry after
+                    // the one neutral reveal is not actionable. Treat it like the documented
+                    // no-comment case and move forward; opening arbitrary invisible controls
+                    // would be riskier than skipping this video.
+                    if (hiddenEntryObservations >= NEXT_VIDEO_HIDDEN_ENTRY_LIMIT) {
+                        logger.info(
+                            "comment_next_video_skipped_no_safe_entry",
+                            attributes = mapOf("video_index" to videoIndex, "observations" to hiddenEntryObservations),
+                        )
+                        advanceAfterVideo("当前视频未提供可验证评论入口，已跳过", closeCommentSheet = false)
+                        return@launch
+                    }
+                }
+                if (changedFromPreviousVideo && observation.hasVideoSurface && observation.hasCommentEntry) {
+                    onObserved(context, pageDetector.detect(context))
+                    return@launch
+                }
+            }
+        }
+    }
+
+    /**
+     * Reads the current verified profile a few times after its shell appeared without a Works
+     * tile. This is intentionally read-only until the ordinary state machine sees a structural
+     * first-video target; it never turns an unrecognized row, label, or right-side action into a
+     * click target.
+     */
+    private fun scheduleProfileSurfaceProbe() {
+        if (profileSurfaceProbeJob?.isActive == true) return
+        armTimeout("等待用户主页内容稳定", timeoutMs = PROFILE_CONTENT_TIMEOUT_MS)
+        profileSurfaceProbeJob = scope.launch {
+            repeat(PROFILE_SURFACE_PROBE_ATTEMPTS) { attempt ->
+                delay(
+                    if (attempt == 0) PROFILE_SURFACE_PROBE_INITIAL_DELAY_MS
+                    else PROFILE_SURFACE_PROBE_INTERVAL_MS,
+                )
+                if (!running || stateMachine.stage != CommentEntryStage.WAITING_FOR_PROFILE) {
+                    return@launch
+                }
+                val context = currentContext() ?: return@repeat
+                val detection = pageDetector.detect(context)
+                val observation = CommentEntrySignalDetector.observe(
+                    context,
+                    skipPinnedVideos = config?.skipPinnedVideos == true,
+                )
+                logger.info(
+                    "comment_profile_surface_probe",
+                    attributes = mapOf(
+                        "attempt" to (attempt + 1),
+                        "page" to detection.kind.name,
+                        "first_video" to observation.hasFirstVideoTarget,
+                        "no_works" to observation.profileHasNoWorks,
+                    ),
+                )
+                when (detection.kind) {
+                    PageKind.USER_PROFILE,
+                    PageKind.HUMAN_INTERVENTION,
+                    PageKind.LOGIN,
+                    -> onObserved(context, detection)
+
+                    // A transient custom-rendered tree is not evidence that the profile has
+                    // changed. Keep sampling it rather than pausing or guessing a click target.
+                    else -> Unit
+                }
+                if (!running || stateMachine.stage != CommentEntryStage.WAITING_FOR_PROFILE) {
+                    return@launch
+                }
+            }
+            if (running && stateMachine.stage == CommentEntryStage.WAITING_FOR_PROFILE) {
+                terminal(CommentRuntimeTerminal.Outcome.FAILED, "用户主页未在限定时间内出现可处理的视频入口")
             }
         }
     }
@@ -742,7 +949,10 @@ class CommentPrivateMessageRuntime(
      * comment sheet is closed first, then a single bounded feed swipe selects the next video.
      * The state machine is re-armed only after the previous video has been fully accounted for.
      */
-    private suspend fun advanceAfterVideo(reason: String) {
+    private suspend fun advanceAfterVideo(
+        reason: String,
+        closeCommentSheet: Boolean = true,
+    ) {
         val snapshot = config
             ?: return terminal(CommentRuntimeTerminal.Outcome.FAILED, "评论任务配置已丢失")
         val completedVideo = videoIndex + 1
@@ -756,10 +966,12 @@ class CommentPrivateMessageRuntime(
         }
 
         timeoutJob?.cancel()
-        val closed = service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
-        if (!closed) {
-            terminal(CommentRuntimeTerminal.Outcome.FAILED, "关闭当前视频评论区失败，无法继续下一个视频")
-            return
+        if (closeCommentSheet) {
+            val closed = service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+            if (!closed) {
+                terminal(CommentRuntimeTerminal.Outcome.FAILED, "关闭当前视频评论区失败，无法继续下一个视频")
+                return
+            }
         }
         // Re-arm the route before the settle delay so the closing panel's accessibility events are
         // gated by WAITING_FOR_VIDEO instead of READY_TO_READ, and drop any parked stale viewport
@@ -767,7 +979,8 @@ class CommentPrivateMessageRuntime(
         stateMachine.prepareNextVideo()
         pendingViewportContext = null
         nextVideoSettleUntilMs = SystemClock.uptimeMillis() + NEXT_VIDEO_SETTLE_MS
-        delay(RETURN_TO_COMMENT_DELAY_MS)
+        if (closeCommentSheet) delay(RETURN_TO_COMMENT_DELAY_MS)
+        nextVideoSurfaceSignatureBeforeSwipe = currentContext()?.let(::videoSurfaceFingerprint)
 
         videoIndex = completedVideo
         ledger.clear()
@@ -799,7 +1012,8 @@ class CommentPrivateMessageRuntime(
             terminal(CommentRuntimeTerminal.Outcome.FAILED, "切换下一个视频失败：${swipe.reason.orEmpty()}")
             return
         }
-        armTimeout("等待下一个视频")
+        armTimeout("等待下一个视频", timeoutMs = VIDEO_PAGE_TIMEOUT_MS)
+        scheduleNextVideoTransitionProbe()
     }
 
     /**
@@ -1288,10 +1502,11 @@ class CommentPrivateMessageRuntime(
     }
 
     private suspend fun returnToCommentSurface(): Boolean {
+        var ocrRecoveryAttempted = false
         for (attempt in 0..MAX_RETURN_TO_COMMENT_BACKS) {
-            val context = currentContext()
+            var context = currentContext()
             if (context != null) {
-                val detection = pageDetector.detect(context)
+                var detection = pageDetector.detect(context)
                 if (detection.kind == PageKind.HUMAN_INTERVENTION || detection.kind == PageKind.LOGIN) {
                     terminal(CommentRuntimeTerminal.Outcome.PAUSED, "返回评论区时出现需要人工处理的页面")
                     return false
@@ -1299,13 +1514,35 @@ class CommentPrivateMessageRuntime(
                 // A direct-message composer can contain reply-like labels and a bottom input,
                 // while a profile can contain “回复” in its visible content. Do not treat either
                 // surface as the comment sheet before performing the required back navigation.
-                val stillInsideNestedSurface = detection.kind in setOf(
+                var stillInsideNestedSurface = detection.kind in setOf(
                     PageKind.USER_PROFILE,
                     PageKind.DIRECT_MESSAGE,
                     PageKind.MESSAGE_EMPTY_REJECTED,
                     PageKind.MESSAGE_SEND_FAILED,
                     PageKind.PRIVATE_MESSAGE_RESTRICTED,
                 )
+                // A commenter profile can return directly to a video whose entire right rail is
+                // visually present but inaccessible with negative bounds. Before issuing another
+                // BACK from that non-nested surface, take one bounded OCR sample and reuse the
+                // same strict action-count detector that opens the next video. This prevents an
+                // unnecessary BACK from closing the video to its profile when the real recovery
+                // action is simply reopening its comment sheet.
+                if (!stillInsideNestedSurface && !ocrRecoveryAttempted) {
+                    ocrRecoveryAttempted = true
+                    context = enrichWithOcr(context)
+                    detection = pageDetector.detect(context)
+                    if (detection.kind == PageKind.HUMAN_INTERVENTION || detection.kind == PageKind.LOGIN) {
+                        terminal(CommentRuntimeTerminal.Outcome.PAUSED, "返回评论区时出现需要人工处理的页面")
+                        return false
+                    }
+                    stillInsideNestedSurface = detection.kind in setOf(
+                        PageKind.USER_PROFILE,
+                        PageKind.DIRECT_MESSAGE,
+                        PageKind.MESSAGE_EMPTY_REJECTED,
+                        PageKind.MESSAGE_SEND_FAILED,
+                        PageKind.PRIVATE_MESSAGE_RESTRICTED,
+                    )
+                }
                 val surfaceDetection = CommentSurfaceDetector.detect(context)
                 val commentButton = VideoCommentButtonDetector.find(context)
                 logger.info(
@@ -1317,6 +1554,7 @@ class CommentPrivateMessageRuntime(
                         "surface" to surfaceDetection.isCommentSurface,
                         "surface_reasons" to surfaceDetection.reasons.joinToString("|"),
                         "comment_button" to (commentButton != null),
+                        "ocr_blocks" to context.ocrBlocks.size,
                     ),
                 )
                 if (!stillInsideNestedSurface && surfaceDetection.isCommentSurface) {
@@ -1614,6 +1852,49 @@ class CommentPrivateMessageRuntime(
         context.ocrBlocks.forEach { block -> append(block.text).append('|').append(block.bounds).append(';') }
     }.hashCode()
 
+    /**
+     * Captures only the visible semantic/video-action shell after the old comment panel has
+     * closed. It is not an identity key and is never used to choose a person; it only stops a
+     * late panel animation from being mistaken for the next feed item after a swipe.
+     */
+    private fun videoSurfaceFingerprint(context: ScreenContext): Int? = buildString {
+        context.nodes.asSequence()
+            .filter { it.isVisibleToUser && it.bounds != ScreenBounds.EMPTY }
+            .filter { it.normalizedBounds(context.screenSize).top < 0.94f }
+            .forEach { node ->
+                append(node.viewIdResourceName.orEmpty()).append('|')
+                append(node.className.orEmpty()).append('|')
+                node.searchableText().forEach { append(it).append('|') }
+                val bounds = node.normalizedBounds(context.screenSize)
+                append(bounds.left).append(',').append(bounds.top).append(',')
+                    .append(bounds.right).append(',').append(bounds.bottom).append(';')
+            }
+        context.ocrBlocks
+            .filter { it.bounds.centerY < context.screenSize.height * 0.94f }
+            .forEach { block -> append(block.text).append('|').append(block.bounds).append(';') }
+    }.takeIf(String::isNotBlank)?.hashCode()
+
+    /** Returns only the central media canvas used to reveal an auto-hidden player action rail. */
+    private fun neutralVideoSurface(context: ScreenContext): NodeSnapshot? = context.nodes
+        .asSequence()
+        .filter { it.bounds != ScreenBounds.EMPTY }
+        .filter { TextNormalizer.normalize(it.className).contains("surfaceview") }
+        .filter {
+            // Some Douyin player surfaces are drawn correctly but carry a stale false
+            // isVisibleToUser flag after the feed pager settles. Raw in-screen geometry keeps
+            // this fallback limited to the currently rendered media canvas and rules out the
+            // off-screen/stale surfaces that use negative coordinates.
+            it.bounds.left >= 0 && it.bounds.top >= 0 &&
+                it.bounds.right <= context.screenSize.width && it.bounds.bottom <= context.screenSize.height
+        }
+        .filter {
+            val bounds = it.normalizedBounds(context.screenSize)
+            bounds.left <= 0.10f && bounds.right >= 0.90f &&
+                bounds.width >= 0.70f && bounds.height >= 0.16f &&
+                bounds.centerY in 0.22f..0.72f
+        }
+        .maxByOrNull { it.bounds.width * it.bounds.height }
+
     private fun armTimeout(description: String, timeoutMs: Long = STEP_TIMEOUT_MS) {
         timeoutJob?.cancel()
         val generation = timeoutGeneration.incrementAndGet()
@@ -1635,6 +1916,11 @@ class CommentPrivateMessageRuntime(
         firstVideoTransitionProbeJob = null
         commentPanelProbeJob?.cancel()
         commentPanelProbeJob = null
+        nextVideoTransitionProbeJob?.cancel()
+        nextVideoTransitionProbeJob = null
+        profileSurfaceProbeJob?.cancel()
+        profileSurfaceProbeJob = null
+        nextVideoSurfaceSignatureBeforeSwipe = null
         logger.info(
             "comment_runtime_terminal",
             attributes = mapOf("outcome" to outcome.name, "candidate_count" to ledger.size),
@@ -1655,6 +1941,19 @@ class CommentPrivateMessageRuntime(
         const val FIRST_VIDEO_TRANSITION_PROBE_ATTEMPTS = 3
         const val FIRST_VIDEO_TRANSITION_INITIAL_DELAY_MS = 450L
         const val FIRST_VIDEO_TRANSITION_PROBE_INTERVAL_MS = 550L
+        const val NEXT_VIDEO_TRANSITION_PROBE_ATTEMPTS = 24
+        const val NEXT_VIDEO_TRANSITION_INITIAL_GRACE_MS = 180L
+        const val NEXT_VIDEO_TRANSITION_PROBE_INTERVAL_MS = 500L
+        // Each negative observation can include a full-screen OCR capture. Two strict OCR
+        // samples are enough to prove that the malformed rail is still not safely actionable;
+        // skip then rather than allowing the next-video watchdog to race a third/fourth probe.
+        const val NEXT_VIDEO_HIDDEN_ENTRY_LIMIT = 2
+        const val NEXT_VIDEO_OCR_PROBE_LIMIT = 2
+        const val VIDEO_CONTROLS_REVEAL_SETTLE_MS = 450L
+        const val PROFILE_CONTENT_TIMEOUT_MS = 12_000L
+        const val PROFILE_SURFACE_PROBE_ATTEMPTS = 20
+        const val PROFILE_SURFACE_PROBE_INITIAL_DELAY_MS = 250L
+        const val PROFILE_SURFACE_PROBE_INTERVAL_MS = 500L
         const val COMMENT_PANEL_PROBE_ATTEMPTS = 6
         const val COMMENT_PANEL_PROBE_INITIAL_DELAY_MS = 350L
         const val COMMENT_PANEL_PROBE_INTERVAL_MS = 500L

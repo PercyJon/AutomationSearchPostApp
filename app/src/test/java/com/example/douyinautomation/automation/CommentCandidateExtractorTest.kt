@@ -826,6 +826,33 @@ class CommentCandidateExtractorTest {
         assertTrue(comments.confidence >= 0.9f)
     }
 
+    @Test
+    fun `inline video composer and decorative left images are not a comment sheet`() {
+        val video = CommentSurfaceDetector.detect(
+            ScreenContext(
+                screenSize = screen,
+                nodes = listOf(
+                    node("期待你的评论", 80, 2220, 560, 2280),
+                    node("评论", 940, 1540, 1020, 1600),
+                    NodeSnapshot(
+                        className = "android.widget.ImageView",
+                        bounds = ScreenBounds(44, 880, 144, 980),
+                    ),
+                    NodeSnapshot(
+                        className = "android.widget.ImageView",
+                        bounds = ScreenBounds(44, 1100, 144, 1200),
+                    ),
+                    NodeSnapshot(
+                        className = "android.widget.ImageView",
+                        bounds = ScreenBounds(44, 1320, 144, 1420),
+                    ),
+                ),
+            ),
+        )
+
+        assertFalse(video.isCommentSurface)
+    }
+
     private fun node(
         text: String,
         left: Int,
