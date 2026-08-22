@@ -1314,6 +1314,7 @@ private fun HomeDashboardContent(
                 FunctionEntryCard(
                     title = "B端私信",
                     description = "搜索用户并安全探测",
+                    actionLabel = "立即创建",
                     icon = Icons.Default.Business,
                     color = AutomationBlue,
                     onClick = onOpenCreateTask,
@@ -1322,6 +1323,7 @@ private fun HomeDashboardContent(
                 FunctionEntryCard(
                     title = "评论私信",
                     description = "评论区触达功能",
+                    actionLabel = "立即创建",
                     icon = Icons.Default.Forum,
                     color = Color(0xFFE83A55),
                     onClick = onOpenCommentTask,
@@ -1417,6 +1419,7 @@ private fun OverviewMetric(
 private fun FunctionEntryCard(
     title: String,
     description: String,
+    actionLabel: String,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     color: Color,
     onClick: () -> Unit,
@@ -1437,7 +1440,7 @@ private fun FunctionEntryCard(
             ) {
                 Text(title, color = Color.White, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Text(description, color = Color.White.copy(alpha = 0.82f), style = MaterialTheme.typography.bodySmall)
-                Text(if (title == "B端私信") "立即创建" else "敬请期待", color = Color.White, style = MaterialTheme.typography.labelLarge)
+                Text(actionLabel, color = Color.White, style = MaterialTheme.typography.labelLarge)
             }
             Icon(
                 imageVector = icon,
