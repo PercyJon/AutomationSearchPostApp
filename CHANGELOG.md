@@ -4,6 +4,33 @@
 
 ---
 
+## [未发布] 2026-08-22 —— 评论首行、空评论面板与空格探测稳健性
+
+### 修改内容
+
+- [`CommentSurfaceSignals.kt`](app/src/main/java/com/example/douyinautomation/automation/CommentSurfaceSignals.kt)：把「评论 0 + 作者发布动态 + 空状态」纳入空评论终态判断。若“去评论”按钮没有进入无障碍树，只要同时存在 `评论 0`、`发布了作品` 与「期待你的评论/发条评论表达你的想法」空状态，仍会直接关闭面板并进入下一个视频；不会把作者动态当作评论用户。
+- [`CommentCandidateExtractor.kt`](app/src/main/java/com/example/douyinautomation/automation/CommentCandidateExtractor.kt)：
+  - 排除右侧点赞/踩操作栏中的独立数字计数，避免它进入作者—正文配对；
+  - 将昵称至正文的配对间距限制为同一评论行内的 32–96px，避免下一位用户昵称跨行“认领”上一条没有句末标点的正文；
+  - 保留单字符昵称（如 `1`）作为合法首位评论用户。头像仍须是左侧固定轨道的可验证节点，右侧心形从不具备候选资格。
+- [`CommentPrivateMessageRuntime.kt`](app/src/main/java/com/example/douyinautomation/automation/CommentPrivateMessageRuntime.kt)：
+  - 空格探测在点击“发送”**之前**开始监听原生 transient 提示，避免“不能发送空白消息”在同一事件轮次出现而漏判；
+  - 头像动作报告成功但页面仍被确认是评论面板时，只对同一可验证头像进行一次有界重试；未知页、用户主页、私信页均不会重试，且绝不退化为点击昵称、正文或点赞控件。
+- [`NodeTreeInspector.kt`](app/src/main/java/com/example/douyinautomation/automation/NodeTreeInspector.kt)：私有节点诊断补充资源 id 与可见性，便于定位无障碍树差异；不写入 logcat。
+
+### 已验证项（真机 OnePlus NE2210 / b33aa309）
+
+- 干跑：目标严格为 `designer`；首个候选头像为 `(48, 1139)`，对应首位昵称 `1`，`candidate_count=4`，以 `comment_dry_run_candidate_selected` 正常结束，未点击头像、私信或点赞。
+- 单用户真实链路：仅点击上述左侧头像；确认没有点赞动作，并在不能确认私信入口时从用户页返回原评论区。该首位用户页没有可见或可访问的纸飞机/“发私信”入口，因此正确记为 `PRIVATE_MESSAGE_UNAVAILABLE`，未尝试或发送空格，也没有跳过到下一位用户。
+- **8 人完整闭环复测**：`designer` → 搜索结果第一个用户 → 第一条视频 → `maxVideos=1` / `maxUsersPerVideo=8`。最终任务 `COMPLETED`，`latest_records=8`：7 位 `BLANK_PROBE_VERIFIED`（进入私信、提交单个空格、收到抖音原生空白消息拒绝）、1 位 `PRIVATE_MESSAGE_UNAVAILABLE`；所有用户均从评论区左侧头像进入，并在每次处理后恢复评论区。首个视口后仅滚动一次加载后续候选；未出现头像打开失败或点赞动作。
+- 自动化验证：`./gradlew testDebugUnitTest lintDebug assembleDebug` 与 `git diff --check` 均通过。
+
+### 已知限制
+
+- 首位评论用户是否允许私信由抖音账号权限决定；无入口时按安全策略记录为 `PRIVATE_MESSAGE_UNAVAILABLE` 后继续既定候选顺序，不会跳过首位改选其他人。
+
+---
+
 ## [未发布] 2026-08-22 —— M3 有界真机回归与匹配词过滤（5/10/20 条 + 关键词 + 分支回归）
 
 ### 修改内容

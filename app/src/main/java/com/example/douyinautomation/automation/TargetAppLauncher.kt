@@ -26,13 +26,21 @@ object TargetAppLauncher {
             // longer be reached.  NEW_TASK lets Android bring the existing Douyin task forward
             // while preserving its current top activity.  This is also safer for the normal
             // search flow: the controller still waits for a detected page before acting.
-            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            // getLaunchIntentForPackage() includes RESET_TASK_IF_NEEDED on current Android
+            // builds. That flag resets Douyin to its launcher activity when our form hands the
+            // foreground back, discarding the profile the operator intentionally prepared for a
+            // CURRENT_PROFILE comment task. Preserve the existing task stack instead.
+            launchIntent.flags = launchFlagsPreservingTask(launchIntent.flags)
             context.startActivity(launchIntent)
             LaunchResult.Started
         }.getOrElse { error ->
             LaunchResult.Failed(error.message ?: "Could not launch Douyin")
         }
     }
+
+    /** Pure flag transform kept separately so CURRENT_PROFILE task-stack preservation is testable. */
+    internal fun launchFlagsPreservingTask(originalFlags: Int): Int =
+        (originalFlags and Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED.inv()) or Intent.FLAG_ACTIVITY_NEW_TASK
 }
 
 sealed interface LaunchResult {

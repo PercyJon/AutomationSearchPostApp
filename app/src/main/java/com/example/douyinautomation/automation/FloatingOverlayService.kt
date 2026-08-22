@@ -184,8 +184,12 @@ class FloatingOverlayService : Service() {
             minimumHeight = 0
             setPadding(dp(8), 0, dp(8), 0)
             setOnClickListener {
-                val paused = AutomationStore.uiState.value.phase == AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF
-                AutomationStore.send(if (paused) AutomationCommand.Resume else AutomationCommand.Pause)
+                val phase = AutomationStore.uiState.value.phase
+                val canResume = phase in setOf(
+                    AutomationPhase.SUSPENDED_BEFORE_START,
+                    AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF,
+                )
+                AutomationStore.send(if (canResume) AutomationCommand.Resume else AutomationCommand.Pause)
             }
         }
         val stopButton = Button(this).apply {
@@ -315,7 +319,11 @@ class FloatingOverlayService : Service() {
         stageText?.text = "${taskName.take(20)} · ${phaseLabel(state.phase)}"
         progressText?.text = "处理 $handled / ${if (total > 0) total else "—"}"
         detailText?.text = "成功 $success · 失败 $failed · 总数 ${records.size}"
-        actionButton?.text = if (state.phase == AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF) "继续" else "暂停"
+        actionButton?.text = when (state.phase) {
+            AutomationPhase.SUSPENDED_BEFORE_START -> "恢复"
+            AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF -> "继续"
+            else -> "暂停"
+        }
         actionButton?.isEnabled = state.phase !in setOf(
             AutomationPhase.COMPLETED_TASK,
             AutomationPhase.FAILED,
@@ -359,6 +367,7 @@ class FloatingOverlayService : Service() {
     }
 
     private fun phaseLabel(phase: AutomationPhase): String = when (phase) {
+        AutomationPhase.SUSPENDED_BEFORE_START -> "已挂起"
         AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF -> "已暂停"
         AutomationPhase.COMPLETED_TASK -> "已完成"
         AutomationPhase.FAILED -> "执行失败"

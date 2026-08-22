@@ -115,6 +115,12 @@ class DouyinNavigationController(
      */
     private var commentProfileHandoffObserved = false
     /**
+     * Search-target mode must ignore a queued profile snapshot from before the selected result
+     * was tapped. CURRENT_PROFILE does not use this barrier because its current page is the
+     * operator's explicit target.
+     */
+    private var commentProfileHandoffNotBeforeMillis: Long = 0L
+    /**
      * Search-entry comment tasks deliberately defer the isolated comment runtime until the
      * source profile has actually been reached.  The ordinary search/User-tab controller is
      * responsible for that first leg, so a service rebind on a result page can never spend the
@@ -198,6 +204,7 @@ class DouyinNavigationController(
                     safetyProbe = command.safetyProbe,
                     taskSnapshot = command.taskSnapshot,
                     remoteResume = command.remoteResume,
+                    suspendedBeforeStart = command.suspendedBeforeStart,
                 )
             }
             is AutomationCommand.StartBatch -> startBatch(command.tasks)
@@ -222,6 +229,10 @@ class DouyinNavigationController(
         if (context.ocrBlocks.isNotEmpty() || detection.reasons.any { it.contains("OCR", ignoreCase = true) }) {
             latestOcrContext = context
         }
+        // A suspended comment task must not react to the accessibility events generated while the
+        // operator navigates to the intended profile. Only the explicit overlay Resume action may
+        // hand the verified profile to the comment runtime.
+        if (phase == AutomationPhase.SUSPENDED_BEFORE_START) return
         if (detection.kind == PageKind.HUMAN_INTERVENTION) {
             pause("Verification or risk screen detected; manual handoff required")
             return
@@ -341,6 +352,7 @@ class DouyinNavigationController(
         safetyProbe: Boolean,
         taskSnapshot: TaskSnapshot?,
         remoteResume: RemoteTaskResume?,
+        suspendedBeforeStart: Boolean,
     ) {
         val commentConfig = taskSnapshot?.commentConfig
             ?.takeIf { taskSnapshot.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE }
@@ -351,6 +363,11 @@ class DouyinNavigationController(
             return
         }
         val startsFromCurrentProfile = commentConfig?.entryMode == CommentPrivateMessageEntryMode.CURRENT_PROFILE
+        if (suspendedBeforeStart && !startsFromCurrentProfile) {
+            AutomationStore.publishFailure("仅“当前用户主页”评论任务支持挂起后恢复")
+            logger.warn("comment_task_suspend_rejected", message = "Suspended start requires CURRENT_PROFILE entry mode")
+            return
+        }
         val sanitizedKeyword = taskSnapshot?.composedQueries?.firstOrNull()?.trim()
             ?.takeIf { it.isNotEmpty() }
             ?: searchKeyword.trim()
@@ -432,6 +449,7 @@ class DouyinNavigationController(
         cachedUserResultsOcrBlocks = emptyList()
         userResultsSignatureBeforeSwipe = null
         commentProfileHandoffObserved = false
+        commentProfileHandoffNotBeforeMillis = 0L
         messageEntryPostconditionJob?.cancel()
         messageResultJob?.cancel()
         profilePostconditionJob?.cancel()
@@ -442,6 +460,15 @@ class DouyinNavigationController(
         // In a queued batch, publishing LAUNCHING_TARGET while currentTaskId still points to
         // the previous task would regress its terminal COMPLETED status back to RUNNING.
         AutomationStore.beginTask(sanitizedKeyword, taskSnapshot)
+        if (suspendedBeforeStart) {
+            phase = AutomationPhase.SUSPENDED_BEFORE_START
+            AutomationStore.publishPhase(phase)
+            logger.info(
+                "comment_task_suspended_before_start",
+                attributes = mapOf("task_type" to taskSnapshot?.taskType?.name.orEmpty()),
+            )
+            return
+        }
         phase = AutomationPhase.LAUNCHING_TARGET
         AutomationStore.publishPhase(phase)
         logger.info(
@@ -530,11 +557,12 @@ class DouyinNavigationController(
         )
         val first = validTasks.first()
         start(
-            searchKeyword = first.composedQueries.first(),
+            searchKeyword = first.composedQueries.firstOrNull().orEmpty(),
             startMessage = first.messageTemplate.orEmpty(),
             safetyProbe = first.executionMode == TaskExecutionMode.SAFE_BLANK_PROBE,
             taskSnapshot = first,
             remoteResume = null,
+            suspendedBeforeStart = false,
         )
     }
 
@@ -558,6 +586,7 @@ class DouyinNavigationController(
                     safetyProbe = next.executionMode == TaskExecutionMode.SAFE_BLANK_PROBE,
                     taskSnapshot = next,
                     remoteResume = null,
+                    suspendedBeforeStart = false,
                 )
             }
         }
@@ -766,6 +795,7 @@ class DouyinNavigationController(
         cachedUserResultsOcrBlocks = emptyList()
         userResultsSignatureBeforeSwipe = null
         commentProfileHandoffObserved = false
+        commentProfileHandoffNotBeforeMillis = 0L
         pendingCommentRuntimeSnapshot = null
         messageEntryPostconditionJob?.cancel()
         messageResultJob?.cancel()
@@ -830,9 +860,39 @@ class DouyinNavigationController(
     }
 
     private suspend fun resume() {
-        if (phase != AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF || keyword.isNullOrBlank()) {
+        // AccessibilityService instances can be destroyed and rebound independently from the
+        // overlay (observed on physical devices when switching foreground apps).  The overlay
+        // still correctly shows “恢复”, but a new controller otherwise starts at IDLE and rejects
+        // that explicit Resume command. Rehydrate only a deliberately suspended current-profile
+        // task; do not auto-start it and do not apply this recovery to general paused runs.
+        if (!taskActive && phase != AutomationPhase.SUSPENDED_BEFORE_START) {
+            AutomationStore.getSuspendedCurrentProfileCheckpoint()?.let { checkpoint ->
+                restoreSuspendedCurrentProfileTask(checkpoint)
+            }
+        }
+        val resumesCurrentProfileCommentTask = activeTaskSnapshot
+            ?.takeIf { it.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE }
+            ?.commentConfig
+            ?.entryMode == CommentPrivateMessageEntryMode.CURRENT_PROFILE
+        if (phase == AutomationPhase.SUSPENDED_BEFORE_START) {
+            if (!resumesCurrentProfileCommentTask) {
+                AutomationStore.publishFailure("挂起任务缺少“当前用户主页”评论配置")
+                logger.warn("resume_rejected", message = "Suspended task does not support current-profile resume")
+                return
+            }
+            resumeCurrentProfileCommentTask(source = "suspended_before_start")
+            return
+        }
+        if (phase != AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF ||
+            (keyword.isNullOrBlank() && !resumesCurrentProfileCommentTask)
+        ) {
             AutomationStore.publishFailure("There is no paused run ready to resume.")
             logger.warn("resume_rejected", message = "No paused run is available")
+            return
+        }
+
+        if (resumesCurrentProfileCommentTask) {
+            resumeCurrentProfileCommentTask(source = "manual_handoff")
             return
         }
 
@@ -870,6 +930,94 @@ class DouyinNavigationController(
             PageKind.DIRECT_MESSAGE -> completeAtMessagePage()
             else -> Unit
         }
+    }
+
+    /** Restores only enough durable state for an explicit suspended-task Resume to be safe. */
+    private fun restoreSuspendedCurrentProfileTask(checkpoint: TaskCheckpoint) {
+        val snapshot = checkpoint.snapshot
+        val commentConfig = snapshot.commentConfig
+        if (snapshot.taskType != AutomationTaskType.COMMENT_PRIVATE_MESSAGE ||
+            commentConfig?.entryMode != CommentPrivateMessageEntryMode.CURRENT_PROFILE
+        ) {
+            return
+        }
+        taskActive = true
+        keyword = snapshot.composedQueries.getOrNull(checkpoint.queryIndex).orEmpty()
+        activeTaskSnapshot = snapshot
+        taskQueryIndex = checkpoint.queryIndex
+        remotePageNumber = 1
+        remoteResumePending = false
+        remoteResumeAnchor = null
+        remoteResumeTargetPageNumber = null
+        remoteResumeMaxSwipes = 0
+        queryTransitionHandled = false
+        pendingStartMessage = snapshot.messageTemplate.orEmpty()
+        pendingSafetyProbe = snapshot.executionMode == TaskExecutionMode.SAFE_BLANK_PROBE
+        pausedPhase = null
+        latestContext = null
+        latestOcrContext = null
+        currentUserIdentityHash = null
+        currentUserDisplayName = null
+        currentUserDisplayNameSource = null
+        processedUserIdentities.clear()
+        processedUserIdentityRecords.clear()
+        processedIdentityHashes.clear()
+        processedIdentityHashes.addAll(checkpoint.processedIdentityHashes)
+        commentProfileHandoffObserved = false
+        commentProfileHandoffNotBeforeMillis = 0L
+        commentRuntime.stop()
+        pendingCommentRuntimeSnapshot = null
+        phase = AutomationPhase.SUSPENDED_BEFORE_START
+        AutomationStore.restoreSuspendedTask(checkpoint)
+        AutomationStore.publishPhase(phase)
+        logger.info(
+            "comment_suspended_task_rehydrated",
+            attributes = mapOf("task_id_hash" to checkpoint.taskId.hashCode()),
+        )
+    }
+
+    /**
+     * Starts a CURRENT_PROFILE comment task only after the operator explicitly resumes it from a
+     * verified Douyin profile. This intentionally does not call TargetAppLauncher: the suspended
+     * flow exists to preserve the page the operator navigated to by hand.
+     */
+    private suspend fun resumeCurrentProfileCommentTask(source: String) {
+        val context = currentProfileObservationContext()
+        if (context == null) {
+            keepCurrentProfileTaskSuspended("未检测到抖音窗口，请先打开目标用户主页后再恢复")
+            return
+        }
+        val detection = pageDetector.detect(context)
+        AutomationStore.publishObservation(detection)
+        if (detection.kind != PageKind.USER_PROFILE) {
+            keepCurrentProfileTaskSuspended("请先停留在抖音目标用户主页后再恢复")
+            return
+        }
+
+        taskActive = true
+        phase = AutomationPhase.WAITING_FOR_PROFILE
+        pausedPhase = null
+        latestContext = context
+        if (context.ocrBlocks.isNotEmpty() || detection.reasons.any { it.contains("OCR", ignoreCase = true) }) {
+            latestOcrContext = context
+        }
+        AutomationStore.publishPhase(phase)
+        if (!handoffCommentProfileObservation(context, detection, source = source)) {
+            failTaskWithoutManualHandoff("无法将当前用户主页交给评论私信流程")
+            return
+        }
+        logger.info("comment_current_profile_resumed", attributes = mapOf("source" to source))
+        scheduleCurrentProfileCommentObservation()
+    }
+
+    /** Keeps the pre-start flow recoverable when the operator has not reached a usable profile. */
+    private fun keepCurrentProfileTaskSuspended(reason: String) {
+        if (phase == AutomationPhase.SUSPENDED_BEFORE_START) {
+            AutomationStore.publishPhase(AutomationPhase.SUSPENDED_BEFORE_START)
+        } else {
+            AutomationStore.publishManualHandoff(reason)
+        }
+        logger.warn("comment_current_profile_resume_waiting", message = reason)
     }
 
     private suspend fun openSearch(context: ScreenContext) {
@@ -1427,8 +1575,27 @@ class DouyinNavigationController(
         // room instead of the user's profile.
         var rowContext = context
         var rowMatch: StructuralUserRowMatch? = null
-        for (attempt in 1..USER_ROW_POSTCONDITION_ATTEMPTS) {
-            if (attempt > 1) delay(USER_ROW_POSTCONDITION_INTERVAL_MS)
+        // The P0 search route has already verified that the User tab is active. On the known
+        // custom-rendered variant, eight full accessibility-tree reads can consume more than ten
+        // seconds even though no structural row will ever appear. Probe that structure twice to
+        // cover a settling frame, then enter the independently verified OCR fallback. Other
+        // task types keep the longer bounded retry window.
+        val useFastP0RowFallback = minimumAnchorTop == null && isSearchTargetProfileCommentTask()
+        val rowProbeAttempts = if (useFastP0RowFallback) {
+            P0_USER_ROW_POSTCONDITION_ATTEMPTS
+        } else {
+            USER_ROW_POSTCONDITION_ATTEMPTS
+        }
+        for (attempt in 1..rowProbeAttempts) {
+            if (attempt > 1) {
+                delay(
+                    if (useFastP0RowFallback) {
+                        P0_USER_ROW_POSTCONDITION_INTERVAL_MS
+                    } else {
+                        USER_ROW_POSTCONDITION_INTERVAL_MS
+                    },
+                )
+            }
             val liveContext = currentWindowContext() ?: rowContext
             val liveDetection = pageDetector.detect(liveContext)
             if (liveDetection.kind != PageKind.USER_RESULTS) {
@@ -1616,6 +1783,12 @@ class DouyinNavigationController(
             // bounded scroll in this rare case rather than risking a duplicate tap.
             lastProcessedUserAnchorBottom = null
         }
+        if (isSearchTargetProfileCommentTask()) {
+            // Accessibility callbacks can be delivered late. Capture the click boundary before
+            // dispatching the gesture so a prior run's profile tree cannot satisfy the new
+            // task's WAITING_FOR_PROFILE phase.
+            commentProfileHandoffNotBeforeMillis = System.currentTimeMillis()
+        }
         val outcome = if (rowMatch != null) {
             logger.info(
                 "user_result_row_match",
@@ -1647,6 +1820,7 @@ class DouyinNavigationController(
             clickSelector(rowContext, DouyinSelectors.userResult)
         }
         if (!outcome.succeeded) {
+            commentProfileHandoffNotBeforeMillis = 0L
             skipMessageSendFailure(
                 "No unambiguous visible user result was found after bounded retries",
                 failurePage = PageKind.USER_RESULTS,
@@ -1858,7 +2032,12 @@ class DouyinNavigationController(
     ): Boolean {
         val snapshot = activeTaskSnapshot ?: return false
         if (snapshot.taskType != AutomationTaskType.COMMENT_PRIVATE_MESSAGE) return false
-        if (snapshot.commentConfig == null) {
+        // The generic profile postcondition polls while the user-result animation is still
+        // settling. A result page is never a valid handoff surface, even if the controller has
+        // already advanced to WAITING_FOR_PROFILE.
+        if (detection.kind != PageKind.USER_PROFILE) return false
+        val commentConfig = snapshot.commentConfig
+        if (commentConfig == null) {
             logger.error(
                 "comment_profile_handoff_invalid",
                 message = "Comment task has no comment configuration",
@@ -1867,8 +2046,35 @@ class DouyinNavigationController(
             failTaskWithoutManualHandoff("评论私信任务配置缺失，无法进入评论区流程")
             return true
         }
+        // Search-target tasks may be launched while Douyin still displays the profile from a
+        // previous run. That is not the profile selected by this task. Accept a profile handoff
+        // only after the user-result action has advanced the controller to WAITING_FOR_PROFILE;
+        // CURRENT_PROFILE reaches the same phase explicitly when the operator taps Resume.
+        if (phase != AutomationPhase.WAITING_FOR_PROFILE) {
+            logger.info(
+                "comment_profile_handoff_deferred",
+                attributes = mapOf(
+                    "source" to source,
+                    "entry_mode" to commentConfig.entryMode.name,
+                    "phase" to phase.name,
+                ),
+            )
+            return false
+        }
+        if (commentConfig.entryMode == CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE &&
+            context.capturedAtMillis < commentProfileHandoffNotBeforeMillis
+        ) {
+            logger.info(
+                "comment_profile_handoff_stale_snapshot",
+                attributes = mapOf(
+                    "source" to source,
+                    "captured_before_selection" to true,
+                ),
+            )
+            return false
+        }
         if (!commentRuntime.isRunning) {
-            val snapshot = pendingCommentRuntimeSnapshot ?: snapshot.commentConfig
+            val snapshot = pendingCommentRuntimeSnapshot ?: commentConfig
             pendingCommentRuntimeSnapshot = null
             commentRuntime.start(snapshot)
             logger.info(
@@ -1989,10 +2195,15 @@ class DouyinNavigationController(
 
     /** Poll the profile transition independently of accessibility callbacks, which OEM builds may drop. */
     private fun scheduleProfilePostconditionCheck() {
+        // An accessibility event may already have handed the verified profile to the isolated
+        // comment runtime before this delayed fallback is scheduled. Do not start a second
+        // poller that repeatedly re-reads the full target tree while the comment flow is moving.
+        if (commentRuntime.isRunning) return
         profilePostconditionJob?.cancel()
         profilePostconditionJob = scope.launch {
             repeat(PROFILE_POSTCONDITION_ATTEMPTS) { attempt ->
                 delay(if (attempt == 0) PROFILE_POSTCONDITION_INITIAL_DELAY_MS else PROFILE_POSTCONDITION_INTERVAL_MS)
+                var handedOff = false
                 mutex.withLock {
                     if (!taskActive || phase != AutomationPhase.WAITING_FOR_PROFILE) return@withLock
                     val context = currentWindowContext() ?: return@withLock
@@ -2010,6 +2221,7 @@ class DouyinNavigationController(
                     // runtime. The legacy profile postcondition must never click a private
                     // message control for this task type.
                     if (handoffCommentProfileObservation(context, detection, source = "profile_postcondition")) {
+                        handedOff = true
                         return@withLock
                     }
                     when (detection.kind) {
@@ -2018,6 +2230,10 @@ class DouyinNavigationController(
                         PageKind.LOGIN -> pause("Douyin login is required before opening private messages")
                         else -> Unit
                     }
+                }
+                if (handedOff) {
+                    profilePostconditionJob = null
+                    return@launch
                 }
                 if (!taskActive || phase != AutomationPhase.WAITING_FOR_PROFILE) return@launch
             }
@@ -4748,6 +4964,8 @@ class DouyinNavigationController(
         const val USER_RESULTS_POSTCONDITION_INTERVAL_MS = 500L
         const val USER_ROW_POSTCONDITION_ATTEMPTS = 8
         const val USER_ROW_POSTCONDITION_INTERVAL_MS = 350L
+        const val P0_USER_ROW_POSTCONDITION_ATTEMPTS = 2
+        const val P0_USER_ROW_POSTCONDITION_INTERVAL_MS = 120L
         const val IDENTITY_RETRY_ATTEMPTS = 3
         const val IDENTITY_RETRY_INTERVAL_MS = 450L
         /** Two exception-only OCR samples must settle before P0 may use geometry fallback. */
@@ -4771,8 +4989,8 @@ class DouyinNavigationController(
         const val MAX_INITIAL_HOME_BACK_ACTIONS = 5
         const val MAX_INITIAL_BLIND_BACK_ACTIONS = 4
         const val PROFILE_POSTCONDITION_ATTEMPTS = 16
-        const val PROFILE_POSTCONDITION_INITIAL_DELAY_MS = 450L
-        const val PROFILE_POSTCONDITION_INTERVAL_MS = 400L
+        const val PROFILE_POSTCONDITION_INITIAL_DELAY_MS = 180L
+        const val PROFILE_POSTCONDITION_INTERVAL_MS = 250L
         const val PROFILE_NAME_CONFIRM_ATTEMPTS = 2
         const val PROFILE_NAME_CONFIRM_INTERVAL_MS = 110L
         const val USER_NEXT_RESULT_DELAY_MS = 700L

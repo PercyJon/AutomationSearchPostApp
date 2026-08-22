@@ -127,14 +127,6 @@ class PageDetector {
                 reasons = reasonsFor("Blank-message probe rejection", emptyMessageRejectionSignals),
             )
         }
-        if (isDirectMessage && (privateMessageRestrictionSignals.isNotEmpty() || messageSendFailureSignals.isNotEmpty())) {
-            val signals = privateMessageRestrictionSignals + messageSendFailureSignals
-            return PageDetection(
-                kind = PageKind.MESSAGE_SEND_FAILED,
-                confidence = confidence(signals, base = 0.90f),
-                reasons = reasonsFor("Message-send failure", signals),
-            )
-        }
         if (!isDirectMessage && privateMessageRestrictionSignals.isNotEmpty()) {
             return PageDetection(
                 kind = PageKind.PRIVATE_MESSAGE_RESTRICTED,
@@ -142,13 +134,12 @@ class PageDetector {
                 reasons = reasonsFor("Private-message restriction", privateMessageRestrictionSignals),
             )
         }
-        // A conversation can open successfully even when the recipient will reject the first
-        // message. Douyin renders a red exclamation marker beside the bubble and a textual reason
-        // such as “对方设置了仅他关注的人可发消息，需要对方修改权限后可发消息”. The marker itself
-        // is not reliably exposed by Accessibility, so the fuzzy text signal is authoritative;
-        // OCR is allowed through matchingMessageSendFailureSignals when the custom chat surface
-        // has no node text.
-        if (messageSendFailureSignals.isNotEmpty()) {
+        // A delivery restriction can already be rendered in a real conversation before the
+        // safety probe runs. It is diagnostic evidence, not a reason to skip the probe: the
+        // contract is to put exactly one ASCII space in the composer and let Douyin reject it.
+        // Keep MESSAGE_SEND_FAILED for non-conversation surfaces below, but classify a usable
+        // composer as DIRECT_MESSAGE so the runtime always executes that harmless probe.
+        if (!isDirectMessage && messageSendFailureSignals.isNotEmpty()) {
             return PageDetection(
                 kind = PageKind.MESSAGE_SEND_FAILED,
                 confidence = confidence(messageSendFailureSignals, base = 0.90f),
@@ -173,7 +164,11 @@ class PageDetector {
                 },
                 reasons = listOfNotNull(composerReason, structuralComposerReason) +
                     (if (hasOcrComposer) listOf("OCR conversation composer in bottom band") else emptyList()) +
-                    reasonsFor("Message page label", messageHeader + sendButton),
+                    reasonsFor("Message page label", messageHeader + sendButton) +
+                    reasonsFor(
+                        "Pre-probe delivery restriction",
+                        privateMessageRestrictionSignals + messageSendFailureSignals,
+                    ),
             )
         }
 

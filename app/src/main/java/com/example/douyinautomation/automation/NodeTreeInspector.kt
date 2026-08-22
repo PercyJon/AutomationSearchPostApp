@@ -51,6 +51,12 @@ class NodeTreeInspector {
             append("  ".repeat(node.depth))
             append('[').append(node.stableId).append("] ")
             append(node.className ?: "<class?>")
+            // Resource ids and interaction flags are retained only in the app-private
+            // diagnostic dump. They let a no-click safety stop distinguish two visually
+            // identical comment avatars whose accessibility roles differ between rows.
+            node.viewIdResourceName?.takeIf(String::isNotBlank)?.let {
+                append(" id=\"").append(it).append('"')
+            }
             node.text?.takeIf(String::isNotBlank)?.let { append(" text=\"").append(it).append('"') }
             node.contentDescription?.takeIf(String::isNotBlank)?.let {
                 append(" desc=\"").append(it).append('"')
@@ -58,6 +64,7 @@ class NodeTreeInspector {
             append(" bounds=").append(node.bounds)
             if (node.isClickable) append(" clickable")
             if (node.isEditable) append(" editable")
+            if (!node.isVisibleToUser) append(" hidden")
         }
     }
 

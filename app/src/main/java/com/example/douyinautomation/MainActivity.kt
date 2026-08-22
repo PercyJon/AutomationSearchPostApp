@@ -27,6 +27,8 @@ data class CommentRegressionPreset(
     val maxVideos: Int = 1,
     val maxUsersPerVideo: Int = 1,
     val skipPinnedVideos: Boolean = false,
+    /** Debug-only: inspect the first safe candidate and stop before any profile interaction. */
+    val dryRun: Boolean = false,
 )
 
 class MainActivity : ComponentActivity() {
@@ -144,6 +146,7 @@ class MainActivity : ComponentActivity() {
             maxVideos = source.getIntExtra(EXTRA_COMMENT_MAX_VIDEOS, 1).coerceAtLeast(1),
             maxUsersPerVideo = source.getIntExtra(EXTRA_COMMENT_MAX_USERS, 1).coerceAtLeast(1),
             skipPinnedVideos = source.getBooleanExtra(EXTRA_COMMENT_SKIP_PINNED, false),
+            dryRun = source.getBooleanExtra(EXTRA_COMMENT_DRY_RUN, false),
         )
 
     companion object {
@@ -164,5 +167,7 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_COMMENT_MAX_VIDEOS = "com.example.douyinautomation.COMMENT_MAX_VIDEOS"
         const val EXTRA_COMMENT_MAX_USERS = "com.example.douyinautomation.COMMENT_MAX_USERS"
         const val EXTRA_COMMENT_SKIP_PINNED = "com.example.douyinautomation.COMMENT_SKIP_PINNED"
+        /** Debug-only candidate inspection; it never taps a commenter or opens private messages. */
+        const val EXTRA_COMMENT_DRY_RUN = "com.example.douyinautomation.COMMENT_DRY_RUN"
     }
 }

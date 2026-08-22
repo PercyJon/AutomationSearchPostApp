@@ -34,6 +34,8 @@ sealed interface AutomationCommand {
         val taskSnapshot: TaskSnapshot? = null,
         /** Optional backend progress fetched immediately before a remote task is resumed. */
         val remoteResume: RemoteTaskResume? = null,
+        /** Create a CURRENT_PROFILE comment task without launching Douyin; the overlay resumes it. */
+        val suspendedBeforeStart: Boolean = false,
     ) : AutomationCommand
     /** Runs a frozen list of local task snapshots sequentially. */
     data class StartBatch(
@@ -74,6 +76,8 @@ enum class AutomationPhase {
     SENDING_MESSAGE,
     WAITING_FOR_MESSAGE_RESULT,
     COMPLETED_MESSAGE_SENT,
+    /** The operator is navigating to a target profile before explicitly resuming the task. */
+    SUSPENDED_BEFORE_START,
     PAUSED_FOR_MANUAL_HANDOFF,
     STOPPED,
     FAILED,
@@ -278,6 +282,47 @@ object AutomationStore {
         checkpoint
     }
 
+    /**
+     * Returns a deliberately suspended CURRENT_PROFILE comment task after an accessibility
+     * service rebind.  Unlike [getCheckpointForServiceRebind], this must never auto-run: the
+     * operator still has to press the overlay's explicit “恢复” action after navigating to the
+     * intended profile.  It only lets the fresh controller recover the frozen task contract so
+     * that explicit action is not rejected merely because Android recreated the service.
+     */
+    fun getSuspendedCurrentProfileCheckpoint(): TaskCheckpoint? = synchronized(recordLock) {
+        val checkpoint = savedCheckpoint ?: return@synchronized null
+        val commentConfig = checkpoint.snapshot.commentConfig ?: return@synchronized null
+        if (checkpoint.snapshot.taskType != AutomationTaskType.COMMENT_PRIVATE_MESSAGE ||
+            commentConfig.entryMode != CommentPrivateMessageEntryMode.CURRENT_PROFILE
+        ) {
+            return@synchronized null
+        }
+        val history = taskHistory.firstOrNull { it.taskId == checkpoint.taskId } ?: return@synchronized null
+        checkpoint.takeIf { history.status == TaskRunStatus.PAUSED }
+    }
+
+    /** Reattaches a suspended task id to a freshly created service controller without starting it. */
+    fun restoreSuspendedTask(checkpoint: TaskCheckpoint) {
+        synchronized(recordLock) {
+            currentTaskId = checkpoint.taskId
+            savedCheckpoint = checkpoint
+        }
+        _uiState.update { current ->
+            current.copy(
+                taskId = checkpoint.taskId,
+                taskName = checkpoint.snapshot.taskName,
+                taskQueryIndex = checkpoint.queryIndex,
+                taskQueryCount = checkpoint.snapshot.composedQueries.size,
+                taskMaxUsers = checkpoint.snapshot.maxUsers,
+                taskBlockedKeywordCount = checkpoint.snapshot.normalizedBlockedKeywords.size,
+                savedTaskAvailable = true,
+                savedTaskName = checkpoint.snapshot.taskName,
+                savedTaskQueryIndex = checkpoint.queryIndex,
+                savedTaskQueryCount = checkpoint.snapshot.composedQueries.size,
+            )
+        }
+    }
+
     /** Persist the last task configuration so an operator can resume setup after app recreation. */
     fun loadTaskDraft(): TaskDraft? = synchronized(recordLock) {
         decodeTaskDraft(recordPreferences?.getString(TASK_DRAFT_KEY, null))
@@ -354,7 +399,7 @@ object AutomationStore {
         )
         send(
             AutomationCommand.Start(
-                keyword = snapshot.composedQueries.first(),
+                keyword = snapshot.composedQueries.firstOrNull().orEmpty(),
                 message = "",
                 safetyProbe = true,
                 taskSnapshot = snapshot,
@@ -944,6 +989,7 @@ object AutomationStore {
         put("max_videos", maxVideos)
         put("max_users_per_video", maxUsersPerVideo)
         put("skip_pinned_videos", skipPinnedVideos)
+        put("dry_run", dryRun)
     }
 
     private fun JSONObject.toCommentPrivateMessageConfig(): CommentPrivateMessageConfig? = runCatching {
@@ -962,6 +1008,7 @@ object AutomationStore {
                 CommentPrivateMessageConfig.DEFAULT_MAX_USERS_PER_VIDEO,
             ),
             skipPinnedVideos = optBoolean("skip_pinned_videos", false),
+            dryRun = optBoolean("dry_run", false),
         )
     }.getOrNull()
 
@@ -972,6 +1019,7 @@ object AutomationStore {
         put("max_videos", maxVideos)
         put("max_users_per_video", maxUsersPerVideo)
         put("skip_pinned_videos", skipPinnedVideos)
+        put("dry_run", dryRun)
     }
 
     private fun JSONObject.toCommentPrivateMessageSnapshot(): CommentPrivateMessageSnapshot? = runCatching {
@@ -990,6 +1038,7 @@ object AutomationStore {
                 CommentPrivateMessageConfig.DEFAULT_MAX_USERS_PER_VIDEO,
             ),
             skipPinnedVideos = optBoolean("skip_pinned_videos", false),
+            dryRun = optBoolean("dry_run", false),
         )
     }.getOrNull()
 
@@ -1352,7 +1401,9 @@ object AutomationStore {
     }
 
     private fun AutomationPhase.toRemoteTaskStatus(): Int? = when (this) {
-        AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF -> RemoteTaskStatus.PAUSED
+        AutomationPhase.SUSPENDED_BEFORE_START,
+        AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF,
+        -> RemoteTaskStatus.PAUSED
         AutomationPhase.STOPPED -> RemoteTaskStatus.CANCELLED
         AutomationPhase.FAILED -> RemoteTaskStatus.FAILED
         // COMPLETED_EMPTY_MESSAGE_PROBE and COMPLETED_MESSAGE_SENT are per-user/action
@@ -1364,7 +1415,9 @@ object AutomationStore {
     }
 
     private fun AutomationPhase.toTaskRunStatus(): TaskRunStatus? = when (this) {
-        AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF -> TaskRunStatus.PAUSED
+        AutomationPhase.SUSPENDED_BEFORE_START,
+        AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF,
+        -> TaskRunStatus.PAUSED
         AutomationPhase.STOPPED -> TaskRunStatus.STOPPED
         AutomationPhase.FAILED -> TaskRunStatus.FAILED
         AutomationPhase.COMPLETED_TASK,

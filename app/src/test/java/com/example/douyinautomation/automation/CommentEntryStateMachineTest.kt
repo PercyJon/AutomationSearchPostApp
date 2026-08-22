@@ -33,6 +33,21 @@ class CommentEntryStateMachineTest {
     }
 
     @Test
+    fun `delayed profile snapshot does not open the first video twice`() {
+        val machine = CommentEntryStateMachine()
+        val opened = machine.observe(
+            CommentEntryObservation(PageKind.USER_PROFILE, hasFirstVideoTarget = true),
+        )
+        val delayedProfile = machine.observe(
+            CommentEntryObservation(PageKind.USER_PROFILE, hasFirstVideoTarget = true),
+        )
+
+        assertEquals(CommentEntryAction.OPEN_FIRST_VIDEO, opened.action)
+        assertEquals(CommentEntryStage.WAITING_FOR_VIDEO, delayedProfile.stage)
+        assertEquals(CommentEntryAction.NONE, delayedProfile.action)
+    }
+
+    @Test
     fun `profile switches to works tab once when another tab is selected`() {
         val machine = CommentEntryStateMachine()
         val works = NodeSnapshot(
@@ -187,7 +202,10 @@ class CommentEntryStateMachineTest {
         assertEquals(PageKind.UNKNOWN, observation.page)
         assertTrue(observation.hasCommentEntry)
         assertTrue(observation.hasVideoSurface)
-        assertEquals(listOf(1), observation.commentButton?.hierarchyPath)
+        assertEquals(
+            listOf(1),
+            (observation.commentButton as? CommentButtonTarget.AccessibilityNode)?.node?.hierarchyPath,
+        )
         assertEquals(CommentEntryAction.OPEN_COMMENTS, decision.action)
     }
 
@@ -206,6 +224,26 @@ class CommentEntryStateMachineTest {
 
         assertEquals(CommentEntryStage.WAITING_FOR_COMMENTS, decision.stage)
         assertEquals(CommentEntryAction.OPEN_COMMENTS, decision.action)
+    }
+
+    @Test
+    fun `next video with the comment panel already open reads instead of toggling it closed`() {
+        val machine = CommentEntryStateMachine()
+
+        machine.prepareNextVideo()
+        val decision = machine.observe(
+            CommentEntryObservation(
+                page = PageKind.UNKNOWN,
+                hasVideoSurface = true,
+                hasCommentEntry = true,
+                commentSurface = CommentSurfaceDetection(true, 0.92f, listOf("composer")),
+            ),
+        )
+
+        // The panel is already open: toggling the comment button would close it and idle into the
+        // "等待评论区" watchdog. The route must read the already-open sheet directly.
+        assertEquals(CommentEntryStage.READY_TO_READ, decision.stage)
+        assertEquals(CommentEntryAction.READ_COMMENTS, decision.action)
     }
 
     @Test

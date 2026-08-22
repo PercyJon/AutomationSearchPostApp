@@ -33,6 +33,287 @@ class CommentCandidateExtractorTest {
     }
 
     @Test
+    fun `one character nickname remains the first eligible commenter`() {
+        val extraction = CommentCandidateExtractor.extract(
+            context = ScreenContext(
+                screenSize = screen,
+                nodes = listOf(
+                    node("270条评论", 380, 850, 650, 900),
+                    NodeSnapshot(
+                        className = "android.widget.ImageView",
+                        contentDescription = "用户头像",
+                        bounds = ScreenBounds(48, 970, 156, 1078),
+                        isVisibleToUser = true,
+                    ),
+                    node("1", 180, 980, 240, 1038),
+                    node("这个评论匹配测试词", 180, 1040, 800, 1110),
+                    NodeSnapshot(
+                        className = "android.widget.ImageView",
+                        contentDescription = "用户头像",
+                        bounds = ScreenBounds(48, 1230, 156, 1338),
+                        isVisibleToUser = true,
+                    ),
+                    node("后续用户", 180, 1240, 420, 1298),
+                    node("这个评论同样匹配测试词", 180, 1300, 820, 1370),
+                ),
+            ),
+            matchKeywords = listOf("匹配测试词"),
+        )
+
+        assertEquals(listOf("1", "后续用户"), extraction.candidates.map { it.authorText })
+        assertEquals(ScreenBounds(48, 970, 156, 1078), extraction.candidates.first().avatarBounds)
+    }
+
+    @Test
+    fun `right-side like count cannot consume a punctuation-free first comment`() {
+        val extraction = CommentCandidateExtractor.extract(
+            context = ScreenContext(
+                screenSize = screen,
+                nodes = listOf(
+                    node("270条评论", 380, 850, 650, 900),
+                    NodeSnapshot(
+                        className = "按钮",
+                        viewIdResourceName = "com.ss.android.ugc.aweme:id/avatar",
+                        contentDescription = "1的头像",
+                        bounds = ScreenBounds(48, 970, 156, 1078),
+                        isClickable = true,
+                    ),
+                    node("1", 180, 970, 240, 1028),
+                    // No sentence-ending punctuation: this is the case that was previously
+                    // swallowed when the heart's standalone number was treated as a comment.
+                    node("设计得很有创意", 180, 1040, 800, 1110),
+                    node("2", 884, 1120, 906, 1173),
+                    NodeSnapshot(
+                        className = "按钮",
+                        viewIdResourceName = "com.ss.android.ugc.aweme:id/avatar",
+                        contentDescription = "后续用户的头像",
+                        bounds = ScreenBounds(48, 1230, 156, 1338),
+                        isClickable = true,
+                    ),
+                    node("后续用户", 180, 1240, 420, 1298),
+                    node("这是一条后续评论！", 180, 1300, 820, 1370),
+                    node("0", 884, 1380, 906, 1433),
+                ),
+            ),
+            matchKeywords = emptyList(),
+        )
+
+        assertEquals(listOf("1", "后续用户"), extraction.candidates.map { it.authorText })
+        assertEquals("设计得很有创意", extraction.candidates.first().commentText)
+        assertEquals(ScreenBounds(48, 970, 156, 1078), extraction.candidates.first().avatarBounds)
+    }
+
+    @Test
+    fun `first avatar comment remains eligible when nickname is virtualized`() {
+        val extraction = CommentCandidateExtractor.extract(
+            context = ScreenContext(
+                screenSize = screen,
+                nodes = listOf(
+                    node("270条评论", 380, 850, 650, 900),
+                    NodeSnapshot(
+                        className = "android.widget.ImageView",
+                        contentDescription = "用户头像",
+                        bounds = ScreenBounds(48, 970, 156, 1078),
+                        isVisibleToUser = true,
+                    ),
+                    // The first row's name is virtualized by Douyin, but its body and avatar
+                    // still form a complete, tappable comment row.
+                    node("首条评论正文", 180, 1040, 800, 1110),
+                    NodeSnapshot(
+                        className = "android.widget.ImageView",
+                        contentDescription = "用户头像",
+                        bounds = ScreenBounds(48, 1570, 156, 1678),
+                        isVisibleToUser = true,
+                    ),
+                    node("后续用户", 180, 1580, 420, 1638),
+                    node("第二条评论", 180, 1640, 820, 1710),
+                ),
+            ),
+            matchKeywords = emptyList(),
+        )
+
+        assertEquals(2, extraction.candidates.size)
+        val first = extraction.candidates.first()
+        assertEquals(null, first.authorText)
+        assertEquals("首条评论正文", first.commentText)
+        assertEquals(ScreenBounds(48, 970, 156, 1078), first.avatarBounds)
+        assertTrue(CommentCandidateExtractor.belongsToAvatarRow(first, extraction.firstVisibleCommentAvatar!!))
+    }
+
+    @Test
+    fun `first visible avatar remains anchored when comment count header is virtualized`() {
+        val extraction = CommentCandidateExtractor.extract(
+            context = ScreenContext(
+                screenSize = screen,
+                nodes = listOf(
+                    NodeSnapshot(
+                        className = "android.widget.ImageView",
+                        contentDescription = "用户头像",
+                        bounds = ScreenBounds(48, 970, 156, 1078),
+                        isVisibleToUser = true,
+                    ),
+                    node("首位用户", 180, 980, 360, 1038),
+                    node("首条评论正文", 180, 1040, 800, 1110),
+                ),
+            ),
+            matchKeywords = emptyList(),
+        )
+
+        assertEquals(ScreenBounds(48, 970, 156, 1078), extraction.firstVisibleCommentAvatar)
+        assertTrue(CommentCandidateExtractor.belongsToAvatarRow(
+            extraction.candidates.single(),
+            extraction.firstVisibleCommentAvatar!!,
+        ))
+    }
+
+    @Test
+    fun `opaque location icon excludes its adjacent card without reading place text`() {
+        val extraction = CommentCandidateExtractor.extract(
+            context = ScreenContext(
+                screenSize = screen,
+                nodes = listOf(
+                    // This opaque resource id intentionally carries no location text. The rule
+                    // must use the small left-side icon plus its adjacent layout, not a city or
+                    // street-name heuristic.
+                    NodeSnapshot(
+                        className = "android.widget.ImageView",
+                        viewIdResourceName = "com.ss.android.ugc.aweme:id/ery",
+                        bounds = ScreenBounds(48, 800, 112, 864),
+                        isVisibleToUser = true,
+                    ),
+                    node("任意地点名称", 156, 790, 600, 840),
+                    node("任意地点说明", 156, 850, 850, 910),
+                    NodeSnapshot(
+                        className = "android.widget.ImageView",
+                        contentDescription = "用户头像",
+                        bounds = ScreenBounds(48, 1200, 156, 1308),
+                        isVisibleToUser = true,
+                    ),
+                    node("首位评论用户", 180, 1210, 480, 1268),
+                    node("这是首条真实评论", 180, 1270, 860, 1340),
+                ),
+            ),
+            matchKeywords = emptyList(),
+        )
+
+        assertEquals(1, extraction.candidates.size)
+        assertEquals("首位评论用户", extraction.candidates.single().authorText)
+    }
+
+    @Test
+    fun `official everyone is searching shortcut is never a comment row`() {
+        val extraction = CommentCandidateExtractor.extract(
+            context = ScreenContext(
+                screenSize = screen,
+                nodes = listOf(
+                    node("大家都在搜：生命数字1到9对照表", 156, 760, 900, 824),
+                    // The shortcut may expose a compact leading ImageView. It is not an avatar
+                    // and its dynamic search phrase must never enter commenter matching.
+                    NodeSnapshot(
+                        className = "android.widget.ImageView",
+                        viewIdResourceName = "com.ss.android.ugc.aweme:id/search_icon",
+                        bounds = ScreenBounds(48, 760, 112, 824),
+                        isVisibleToUser = true,
+                    ),
+                    node("4480条评论", 380, 850, 650, 900),
+                    NodeSnapshot(
+                        className = "android.widget.ImageView",
+                        contentDescription = "用户头像",
+                        bounds = ScreenBounds(48, 970, 156, 1078),
+                        isVisibleToUser = true,
+                    ),
+                    node("首位评论用户", 180, 980, 480, 1038),
+                    node("这是首条真实评论", 180, 1040, 860, 1110),
+                ),
+            ),
+            matchKeywords = emptyList(),
+        )
+
+        assertEquals(listOf("首位评论用户"), extraction.candidates.map { it.authorText })
+    }
+
+    @Test
+    fun `location display is ignored by pin structure without reading country or venue`() {
+        val extraction = CommentCandidateExtractor.extract(
+            context = ScreenContext(
+                screenSize = screen,
+                nodes = listOf(
+                    NodeSnapshot(
+                        className = "android.widget.ImageView",
+                        contentDescription = "位置",
+                        bounds = ScreenBounds(48, 760, 112, 824),
+                        isVisibleToUser = true,
+                    ),
+                    // The wording deliberately mirrors a common foreign-location presentation.
+                    // No country, city, street or venue text is part of the detection rule.
+                    node("澳大利亚 | Wright Park", 156, 760, 780, 824),
+                    node("791条评论", 380, 850, 650, 900),
+                    NodeSnapshot(
+                        className = "android.widget.ImageView",
+                        contentDescription = "用户头像",
+                        bounds = ScreenBounds(48, 970, 156, 1078),
+                        isVisibleToUser = true,
+                    ),
+                    node("首位评论用户", 180, 980, 480, 1038),
+                    node("这是首条真实评论", 180, 1040, 860, 1110),
+                ),
+            ),
+            matchKeywords = emptyList(),
+        )
+
+        assertEquals(listOf("首位评论用户"), extraction.candidates.map { it.authorText })
+    }
+
+    @Test
+    fun `right side heart image can never become a commenter avatar`() {
+        val extraction = CommentCandidateExtractor.extract(
+            context = ScreenContext(
+                screenSize = screen,
+                nodes = listOf(
+                    node("270条评论", 380, 850, 650, 900),
+                    node("首位评论用户", 760, 980, 980, 1038),
+                    node("评论正文", 760, 1040, 1000, 1110),
+                    NodeSnapshot(
+                        className = "android.widget.ImageView",
+                        viewIdResourceName = "com.ss.android.ugc.aweme:id/gmn",
+                        bounds = ScreenBounds(831, 1040, 885, 1094),
+                        isVisibleToUser = true,
+                    ),
+                ),
+            ),
+            matchKeywords = emptyList(),
+        )
+
+        assertTrue(extraction.candidates.isEmpty())
+    }
+
+    @Test
+    fun `left side image below comment text can never be paired as its avatar`() {
+        val extraction = CommentCandidateExtractor.extract(
+            context = ScreenContext(
+                screenSize = screen,
+                nodes = listOf(
+                    node("270条评论", 380, 850, 650, 900),
+                    node("首位评论用户", 180, 980, 480, 1038),
+                    node("评论正文", 180, 1040, 860, 1110),
+                    // This is in the same left rail but starts after the text block. It could be
+                    // a location/decorative image from a lower card, never this commenter's
+                    // avatar.
+                    NodeSnapshot(
+                        className = "android.widget.ImageView",
+                        viewIdResourceName = "com.ss.android.ugc.aweme:id/ery",
+                        bounds = ScreenBounds(48, 1160, 112, 1224),
+                        isVisibleToUser = true,
+                    ),
+                ),
+            ),
+            matchKeywords = emptyList(),
+        )
+
+        assertTrue(extraction.candidates.isEmpty())
+    }
+
+    @Test
     fun `ocr is used only when semantic node text is absent`() {
         val extraction = CommentCandidateExtractor.extract(
             context = ScreenContext(
@@ -447,7 +728,7 @@ class CommentCandidateExtractorTest {
     }
 
     @Test
-    fun `leading excluded author row carries text while a virtualized row does not`() {
+    fun `only an explicit author badge permits skipping a leading row`() {
         // The video author's own comment: the “作者” label excludes the row from candidates, but
         // the row still exposes visible text beside the avatar and may safely be skipped.
         val authorContext = ScreenContext(
@@ -468,6 +749,31 @@ class CommentCandidateExtractorTest {
                 ScreenBounds(48, 940, 156, 1048),
             ),
         )
+        assertTrue(
+            CommentCandidateExtractor.hasVideoAuthorBadge(
+                authorContext,
+                ScreenBounds(48, 940, 156, 1048),
+            ),
+        )
+
+        // Text near the leading left-side image is not an author badge. It could belong to a
+        // location card or to a first row whose content is still incomplete.
+        val nonAuthorContext = ScreenContext(
+            screenSize = screen,
+            nodes = listOf(
+                NodeSnapshot(
+                    className = "android.widget.ImageView",
+                    bounds = ScreenBounds(48, 940, 156, 1048),
+                ),
+                node("大家都在搜：任意快捷词", 180, 948, 680, 1000),
+            ),
+        )
+        assertFalse(
+            CommentCandidateExtractor.hasVideoAuthorBadge(
+                nonAuthorContext,
+                ScreenBounds(48, 940, 156, 1048),
+            ),
+        )
 
         // A partially virtualized first row exposes the avatar but no text; it must still be
         // treated as unresolved rather than skipped.
@@ -483,6 +789,12 @@ class CommentCandidateExtractorTest {
         )
         assertFalse(
             CommentCandidateExtractor.hasRowText(
+                virtualizedContext,
+                ScreenBounds(48, 940, 156, 1048),
+            ),
+        )
+        assertFalse(
+            CommentCandidateExtractor.hasVideoAuthorBadge(
                 virtualizedContext,
                 ScreenBounds(48, 940, 156, 1048),
             ),

@@ -112,6 +112,7 @@ data class TaskDraft(
                     maxVideos = config.maxVideos,
                     maxUsersPerVideo = config.maxUsersPerVideo,
                     skipPinnedVideos = config.skipPinnedVideos,
+                    dryRun = config.dryRun,
                 )
             },
         )

@@ -46,7 +46,7 @@ data class CommentEntryObservation(
     val skipPinnedVideos: Boolean = false,
     val hasVideoSurface: Boolean = false,
     val hasCommentEntry: Boolean = false,
-    val commentButton: NodeSnapshot? = null,
+    val commentButton: CommentButtonTarget? = null,
     val commentSurface: CommentSurfaceDetection? = null,
     val riskReason: String? = null,
 ) {
@@ -69,6 +69,8 @@ class CommentEntryStateMachine {
     var stage: CommentEntryStage = CommentEntryStage.WAITING_FOR_PROFILE
         private set
     private var worksTabVisited = false
+    /** Prevent a delayed pre-click profile snapshot from opening the same first video twice. */
+    private var firstVideoOpenRequested = false
 
     fun observe(observation: CommentEntryObservation): CommentEntryDecision {
         observation.riskReason?.let { return pause("检测到风险或验证码：$it") }
@@ -106,6 +108,7 @@ class CommentEntryStateMachine {
                     decision(CommentEntryAction.OPEN_WORKS_TAB, "先切换到作品标签")
                 } else if (observation.hasFirstVideoTarget) {
                     stage = CommentEntryStage.WAITING_FOR_VIDEO
+                    firstVideoOpenRequested = true
                     decision(CommentEntryAction.OPEN_FIRST_VIDEO, "已确认主页，准备打开第一个视频")
                 } else {
                     decision(CommentEntryAction.NONE, "已在用户主页，但暂未确认第一个视频入口")
@@ -117,11 +120,25 @@ class CommentEntryStateMachine {
                     decision(CommentEntryAction.DISMISS_WORKS_SORT, "作品标签已打开排序菜单，确认最新作品")
                 } else if (observation.profileHasNoWorks) {
                     decision(CommentEntryAction.SKIP_PROFILE, "作品标签没有可处理的视频")
+                } else if (firstVideoOpenRequested && observation.page == PageKind.USER_PROFILE) {
+                    // The click is already in flight. Accessibility frequently delivers one or
+                    // more old profile snapshots after it succeeds; tapping their thumbnail a
+                    // second time can reopen/close a detail surface and strand the watchdog.
+                    decision(CommentEntryAction.NONE, "首个视频已请求打开，等待视频页面切换")
                 } else if (observation.hasFirstVideoTarget) {
+                    firstVideoOpenRequested = true
                     decision(CommentEntryAction.OPEN_FIRST_VIDEO, "已确认作品标签，准备打开第一个视频")
                 } else if (observation.hasVideoSurface && observation.hasCommentEntry) {
-                    stage = CommentEntryStage.WAITING_FOR_COMMENTS
-                    decision(CommentEntryAction.OPEN_COMMENTS, "已确认视频页面，准备打开评论区")
+                    // 切换视频后，上一个视频的评论面板可能尚未关闭（或抖音在新视频上自动弹回
+                    // 面板）。此时评论按钮是 toggle：再点一次会把已打开的面板关掉，让 12 秒
+                    // 看门狗在“等待评论区”上超时。面板已就绪就直接读取，绝不再点评论按钮。
+                    if (observation.isCommentSurfaceReady) {
+                        stage = CommentEntryStage.READY_TO_READ
+                        decision(CommentEntryAction.READ_COMMENTS, "评论区已打开，直接读取评论")
+                    } else {
+                        stage = CommentEntryStage.WAITING_FOR_COMMENTS
+                        decision(CommentEntryAction.OPEN_COMMENTS, "已确认视频页面，准备打开评论区")
+                    }
                 } else {
                     decision(CommentEntryAction.NONE, "等待视频页面和评论入口稳定")
                 }
@@ -155,6 +172,7 @@ class CommentEntryStateMachine {
     fun reset() {
         stage = CommentEntryStage.WAITING_FOR_PROFILE
         worksTabVisited = false
+        firstVideoOpenRequested = false
     }
 
     /**
@@ -164,6 +182,7 @@ class CommentEntryStateMachine {
      */
     fun prepareNextVideo() {
         stage = CommentEntryStage.WAITING_FOR_VIDEO
+        firstVideoOpenRequested = false
     }
 
     private fun pause(reason: String): CommentEntryDecision {
@@ -202,7 +221,8 @@ object CommentEntrySignalDetector {
         val commentButton = VideoCommentButtonDetector.find(context)
         // Comment text in a caption is not permission to click. The state machine is only told
         // that a comment entry exists when the semantic/structural speech-bubble selector found
-        // a clickable node in the video action rail.
+        // a verified action-rail node, or when its malformed bounds require the detector's
+        // narrowly-scoped right-rail OCR fallback.
         val hasCommentEntry = commentButton != null
         val firstVideoTarget = firstVideoTarget(
             context,

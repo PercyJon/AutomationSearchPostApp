@@ -441,7 +441,7 @@ class PageDetectorTest {
     }
 
     @Test
-    fun `message privacy failure takes precedence over the open composer`() {
+    fun `open composer remains probeable when a delivery restriction is already visible`() {
         val context = contextOf(
             NodeSnapshot(text = "发消息或按住说话...", isEditable = true),
             NodeSnapshot(
@@ -452,8 +452,8 @@ class PageDetectorTest {
 
         val detection = detector.detect(context)
 
-        assertEquals(PageKind.MESSAGE_SEND_FAILED, detection.kind)
-        assertTrue(detection.reasons.any { it.contains("Message-send failure") })
+        assertEquals(PageKind.DIRECT_MESSAGE, detection.kind)
+        assertTrue(detection.reasons.any { it.contains("Pre-probe delivery restriction") })
     }
 
     @Test
@@ -491,7 +491,7 @@ class PageDetectorTest {
             ),
         )
 
-        assertEquals(PageKind.MESSAGE_SEND_FAILED, detector.detect(context).kind)
+        assertEquals(PageKind.DIRECT_MESSAGE, detector.detect(context).kind)
     }
 
     @Test

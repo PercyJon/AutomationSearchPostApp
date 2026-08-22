@@ -954,6 +954,7 @@ private fun CommentTaskScreen(
         maxVideos = maxVideos.toIntOrNull() ?: 0,
         maxUsersPerVideo = maxUsers.toIntOrNull() ?: 0,
         skipPinnedVideos = skipPinnedVideos,
+        dryRun = regressionPreset?.dryRun == true,
     )
     val draft = TaskDraft(
         id = java.util.UUID.randomUUID().toString(),
@@ -983,7 +984,10 @@ private fun CommentTaskScreen(
     val autoStartLatchToken = if (autoStartP0) autoStartToken else 0
     var autoStartTriggeredForToken by rememberSaveable { mutableStateOf(0) }
 
-    fun startPreparedTask(prepared: com.example.douyinautomation.automation.TaskSnapshot?) {
+    fun startPreparedTask(
+        prepared: com.example.douyinautomation.automation.TaskSnapshot?,
+        suspendedBeforeStart: Boolean = false,
+    ) {
         if (prepared == null) {
             message = errors.firstOrNull() ?: "任务配置暂不可执行"
         } else {
@@ -993,6 +997,7 @@ private fun CommentTaskScreen(
                     message = "",
                     safetyProbe = true,
                     taskSnapshot = prepared,
+                    suspendedBeforeStart = suspendedBeforeStart,
                 ),
             )
             onClose()
@@ -1012,6 +1017,7 @@ private fun CommentTaskScreen(
             maxVideos = maxVideos.toIntOrNull() ?: 0,
             maxUsersPerVideo = maxUsers.toIntOrNull() ?: 0,
             skipPinnedVideos = skipPinnedVideos,
+            dryRun = regressionPreset?.dryRun == true,
         )
         val liveDraft = TaskDraft(
             id = java.util.UUID.randomUUID().toString(),
@@ -1176,6 +1182,14 @@ private fun CommentTaskScreen(
                 modifier = Modifier.weight(1f).height(50.dp),
                 shape = RoundedCornerShape(25.dp),
             ) { Text("保存") }
+            if (entryMode == CommentPrivateMessageEntryMode.CURRENT_PROFILE) {
+                FilledTonalButton(
+                    onClick = { startPreparedTask(snapshot, suspendedBeforeStart = true) },
+                    enabled = canRun,
+                    modifier = Modifier.weight(1f).height(50.dp),
+                    shape = RoundedCornerShape(25.dp),
+                ) { Text("挂起") }
+            }
             Button(
                 onClick = {
                     startPreparedTask(snapshot)
@@ -1920,7 +1934,11 @@ private fun CurrentTaskCard(
             }
             if (isTaskActivePhase(state.phase)) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (state.phase != AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF) {
+                    if (state.phase !in setOf(
+                            AutomationPhase.SUSPENDED_BEFORE_START,
+                            AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF,
+                        )
+                    ) {
                         FilledTonalButton(onClick = { AutomationStore.send(AutomationCommand.Pause) }, modifier = Modifier.weight(1f)) {
                             Icon(Icons.Default.Pause, contentDescription = null)
                             Spacer(Modifier.padding(horizontal = 2.dp))
@@ -1930,7 +1948,7 @@ private fun CurrentTaskCard(
                         Button(onClick = { AutomationStore.send(AutomationCommand.Resume) }, modifier = Modifier.weight(1f)) {
                             Icon(Icons.Default.PlayArrow, contentDescription = null)
                             Spacer(Modifier.padding(horizontal = 2.dp))
-                            Text("继续任务")
+                            Text(if (state.phase == AutomationPhase.SUSPENDED_BEFORE_START) "恢复任务" else "继续任务")
                         }
                     }
                     OutlinedButton(onClick = { AutomationStore.send(AutomationCommand.Stop) }, modifier = Modifier.weight(1f)) {
@@ -1973,7 +1991,9 @@ private fun statusTone(phase: AutomationPhase): StatusTone = when (phase) {
     AutomationPhase.COMPLETED_TASK,
     AutomationPhase.COMPLETED_AT_MESSAGE_PAGE,
     -> StatusTone.SUCCESS
-    AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF -> StatusTone.WARNING
+    AutomationPhase.SUSPENDED_BEFORE_START,
+    AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF,
+    -> StatusTone.WARNING
     AutomationPhase.FAILED -> StatusTone.ERROR
     AutomationPhase.IDLE,
     AutomationPhase.SERVICE_READY,
@@ -2844,6 +2864,7 @@ private fun licenseStatusLabel(status: LicenseStatus): String = when (status) {
 
 private fun phaseLabel(phase: AutomationPhase): String = when (phase) {
     AutomationPhase.IDLE, AutomationPhase.SERVICE_READY -> "准备执行"
+    AutomationPhase.SUSPENDED_BEFORE_START -> "已挂起，等待导航"
     AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF -> "需要人工处理"
     AutomationPhase.STOPPED -> "已停止"
     AutomationPhase.FAILED -> "执行失败"

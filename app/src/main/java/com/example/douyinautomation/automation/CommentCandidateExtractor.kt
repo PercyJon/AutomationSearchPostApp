@@ -55,7 +55,10 @@ data class CommentCandidateExtraction(
  * transition; the controller must perform those actions only after a verified candidate.
  */
 object CommentCandidateExtractor {
-    private const val MIN_TEXT_LENGTH = 2
+    // A Douyin display name may legitimately be one character (for example "1").  Do not
+    // discard that row before it can be paired with its avatar and comment body: the avatar +
+    // two-line geometry checks below are the safety boundary, not a nickname-length heuristic.
+    private const val MIN_TEXT_LENGTH = 1
     private const val MAX_AUTHOR_LENGTH = 40
     private const val HEADER_EXCLUSION_RATIO = 0.14f
     private const val MAX_AUTHOR_GAP_MULTIPLIER = 3f
@@ -71,12 +74,19 @@ object CommentCandidateExtractor {
         // bottom edge as a hard content boundary so a split/atypical location label cannot be
         // promoted to an author/comment pair by geometry alone.
         val commentContentTop = commentCountBottom(context)
-        val firstVisibleCommentAvatar = firstCommentAvatar(context, commentContentTop)
+        val locationCardBottom = locationCardBottom(context, commentContentTop)
+        val headerAnchoredFirstAvatar = firstCommentAvatar(context, commentContentTop)
         val commentFragments = fragments.filter { fragment ->
             fragment.bounds != ScreenBounds.EMPTY &&
                 fragment.bounds.top >= (context.screenSize.height * HEADER_EXCLUSION_RATIO).toInt() &&
                 (commentContentTop == null || fragment.bounds.top >= commentContentTop) &&
+                (locationCardBottom == null || fragment.bounds.top >= locationCardBottom) &&
                 isLikelyCommentText(fragment.text) &&
+                // A bare number at the far right belongs to the like/dislike action rail. It
+                // must not participate in author pairing: otherwise a punctuation-free comment
+                // immediately to its left can be mistaken for that number's author and be
+                // removed from the candidate list (including a valid first commenter named “1”).
+                !isRightActionCount(fragment, context.screenSize) &&
                 CommentKeywordMatcher.matches(fragment.text, terms)
         }
         // With no match keywords every visible text row is eligible initially. Remove fragments
@@ -90,10 +100,6 @@ object CommentCandidateExtractor {
             if (comment in authorFragments) return@mapNotNull null
             val author = findAuthor(comment, fragments, context.screenSize.width)
             val authorText = author?.text?.trim()?.takeIf(::isLikelyAuthorText)
-            // A location/metadata row (for example “5小时前 · 广东”) has no author line and
-            // must never become a message target. Real comments have the two-line author/comment
-            // structure shown by Douyin, so a missing author is a hard rejection.
-            if (author == null || authorText == null) return@mapNotNull null
             // When the accessibility tree exposes avatar images, require the avatar to be to the
             // left of the author/comment pair. This rejects the top location row even if OCR or a
             // custom text node made it look like a comment. If no image nodes are exposed (pure
@@ -102,22 +108,29 @@ object CommentCandidateExtractor {
             if (avatarSignalsAvailable && avatar == null) {
                 return@mapNotNull null
             }
-            val identitySeed = authorText
+            // Some Douyin versions expose the first row's avatar and comment body but virtualize
+            // its nickname into an unlabeled custom node. That is still a verified comment row:
+            // the left avatar + comment-body geometry is a stronger interaction contract than
+            // nickname text. Keep it as an anonymous candidate rather than silently selecting a
+            // later commenter. Without a real avatar (OCR-only data), retain the old requirement
+            // for an identifiable author because the runtime may not tap OCR coordinates.
+            if (authorText == null && avatar == null) return@mapNotNull null
+            val identitySeed = authorText ?: "avatar-comment:${IdentityTextCanonicalizer.normalize(comment.text)}"
             val key = "comment-user:${IdentityTextCanonicalizer.normalize(identitySeed)}"
             CommentUserCandidate(
                 authorText = authorText,
                 commentText = comment.text.trim(),
-                authorBounds = author.bounds,
+                authorBounds = author?.bounds,
                 commentBounds = comment.bounds,
                 // The avatar is the explicit, stable profile-entry affordance. Keep the author
                 // bounds only for OCR-only fixtures; the runtime requires a real avatar node.
-                interactionBounds = avatar?.bounds ?: author.bounds,
+                interactionBounds = avatar?.bounds ?: author?.bounds ?: return@mapNotNull null,
                 matchedKeywords = terms.filter { term ->
                     IdentityTextCanonicalizer.normalize(comment.text).contains(term)
                 },
                 identityKey = key,
                 source = comment.source,
-                interactionHierarchyPath = avatar?.hierarchyPath ?: author.hierarchyPath,
+                interactionHierarchyPath = avatar?.hierarchyPath ?: author?.hierarchyPath.orEmpty(),
                 avatarBounds = avatar?.bounds,
                 avatarHierarchyPath = avatar?.hierarchyPath.orEmpty(),
             )
@@ -144,7 +157,11 @@ object CommentCandidateExtractor {
         return CommentCandidateExtraction(
             candidates = candidates,
             fragments = fragments,
-            firstVisibleCommentAvatar = firstVisibleCommentAvatar,
+            // The count header is sometimes virtualized. Once a candidate has passed the strict
+            // avatar-row checks, its top-most avatar is the only safe fallback anchor; never
+            // scan arbitrary images in the sheet because POI/location cards can contain their
+            // own left-side image controls.
+            firstVisibleCommentAvatar = headerAnchoredFirstAvatar ?: candidates.firstOrNull()?.avatarBounds,
         )
     }
 
@@ -183,7 +200,12 @@ object CommentCandidateExtractor {
         fragments: List<CommentTextFragment>,
         screenWidth: Int,
     ): CommentTextFragment? {
-        val maxGap = (comment.bounds.height * MAX_AUTHOR_GAP_MULTIPLIER).coerceAtLeast(96f)
+        // A nickname and its body are adjacent within one row. The earlier unbounded
+        // height-based allowance could stretch across the previous row's body to the next
+        // commenter's nickname, then mark that previous body as an "author" and drop it. Cap
+        // the gap to the actual two-line row spacing; this preserves long comment bodies while
+        // preventing cross-row pairing.
+        val maxGap = (comment.bounds.height * MAX_AUTHOR_GAP_MULTIPLIER).coerceIn(32f, 96f)
         val maxColumnOffset = screenWidth * MAX_AUTHOR_COLUMN_OFFSET_RATIO
         return fragments.asSequence()
             .filter { it !== comment }
@@ -229,6 +251,18 @@ object CommentCandidateExtractor {
         return normalized.none { it in "。！？!?；;" }
     }
 
+    /**
+     * Douyin exposes the number beside the heart as a standalone TextView (for example “2” or
+     * “709”). A real comment body is always in the left text column, so position is the decisive
+     * signal here rather than the number's value; numeric nicknames and comment bodies on the
+     * normal text rail remain valid.
+     */
+    private fun isRightActionCount(fragment: CommentTextFragment, screenSize: ScreenSize): Boolean {
+        val compact = TextNormalizer.normalize(fragment.text).replace(" ", "")
+        return fragment.bounds.centerX >= (screenSize.width * 0.70f).toInt() &&
+            compact.matches(Regex("\\d+(?:\\.\\d+)?(?:w|万)?"))
+    }
+
     private fun isUiNoise(value: String): Boolean {
         val normalized = TextNormalizer.normalize(value)
         if (normalized.isBlank()) return true
@@ -255,6 +289,9 @@ object CommentCandidateExtractor {
         if (normalized.contains("小时前") || normalized.contains("分钟前") ||
             normalized.contains("昨天") || normalized == "刚刚" ||
             normalized == "打卡" || normalized.endsWith("人打卡") ||
+            // This is Douyin's own top-of-sheet discovery shortcut, not a commenter name or
+            // body. Its suggested phrase is dynamic, so only the stable official label is used.
+            normalized.startsWith("大家都在搜") ||
             normalized == "免费开放" || normalized.endsWith("人浏览") ||
             normalized.endsWith("人参与") ||
             normalized.matches(Regex("\\d+条评论")) ||
@@ -264,14 +301,6 @@ object CommentCandidateExtractor {
             normalized == "点赞" || normalized == "不喜欢" ||
             normalized == "喜欢" || normalized == "回复" ||
             normalized.matches(Regex("\\d{4}[-/.]\\d{1,2}[-/.]\\d{1,2}.*"))
-        ) return true
-        // The top location card is rendered as a city/address pair (often with a vertical bar)
-        // followed by a second line such as “8076人打卡”. It is not an author/comment row even
-        // though the location pin is an ImageView and can look like an avatar to a loose matcher.
-        if ((normalized.contains("|") || normalized.contains("｜")) &&
-            (normalized.contains("市") || normalized.contains("区") ||
-                normalized.contains("县") || normalized.contains("街") ||
-                normalized.contains("路") || normalized.contains("镇"))
         ) return true
         // Douyin's location line is rendered as time · region. A normal comment may contain a
         // middle dot, but not together with the time metadata marker.
@@ -312,14 +341,137 @@ object CommentCandidateExtractor {
         return (nodeBottoms + ocrBottoms).maxOrNull()
     }
 
+    /**
+     * Detects the top location card from its leading location icon, never from a city, street or
+     * venue name.  Place names are unbounded and can legitimately appear in real comments.  A
+     * location icon is instead paired with text immediately to its right, then its short visual
+     * card is excluded before candidate extraction.  The centered comment-count header, when
+     * present, remains the stronger lower boundary for the whole sheet.
+     */
+    private fun locationCardBottom(
+        context: ScreenContext,
+        commentContentTop: Int?,
+    ): Int? {
+        // The centered count header is a verified hard boundary. Do not try to extend an icon
+        // card across it: compact card rows can otherwise chain through the count into the first
+        // real commenter. The icon-based branch below is specifically for builds that virtualize
+        // that header.
+        if (commentContentTop != null) return commentContentTop
+        val visibleTextBounds = buildList {
+            context.nodes.asSequence()
+                .filter { node ->
+                    node.isVisibleToUser && node.bounds != ScreenBounds.EMPTY && !node.text.isNullOrBlank()
+                }
+                .forEach { node -> add(node.bounds) }
+            context.ocrBlocks.asSequence()
+                .filter { block -> block.bounds != ScreenBounds.EMPTY && block.text.isNotBlank() }
+                .forEach { block -> add(block.bounds) }
+        }
+        return context.nodes.asSequence()
+            .filter { node -> isLocationIcon(node, context.screenSize, commentContentTop) }
+            .mapNotNull { icon ->
+                val nearbyText = visibleTextBounds.filter { bounds ->
+                    isTextBesideLocationIcon(bounds, icon.bounds, context.screenSize)
+                }
+                // An opaque ImageView is treated as a location icon only when it forms the
+                // icon-plus-text row promised by the UI contract. This prevents arbitrary small
+                // decorative images from creating an exclusion region.
+                if (nearbyText.isEmpty()) return@mapNotNull null
+                locationCardBottomFrom(icon.bounds, nearbyText, visibleTextBounds, context.screenSize)
+            }
+            .maxOrNull()
+    }
+
+    private fun isLocationIcon(
+        node: NodeSnapshot,
+        screenSize: ScreenSize,
+        commentContentTop: Int?,
+    ): Boolean {
+        if (!node.isVisibleToUser || node.bounds == ScreenBounds.EMPTY) return false
+        if (commentContentTop != null && node.bounds.bottom > commentContentTop) return false
+        // With a virtualized count header, only the upper sheet can host the location card. This
+        // conservative cutoff prevents a small image inside a later comment from becoming an
+        // icon anchor; it is preferable to leave an uncertain row untouched.
+        if (commentContentTop == null && node.bounds.top > (screenSize.height * 0.55f).toInt()) return false
+        val semantic = node.searchableText().joinToString(" ").let(TextNormalizer::normalize)
+        val viewId = TextNormalizer.normalize(node.viewIdResourceName)
+        val explicitLocationIcon = semantic.contains("位置") || semantic.contains("定位") ||
+            semantic.contains("地址") || semantic.contains("location") || semantic.contains("place") ||
+            semantic.contains("poi") || semantic.contains("map") ||
+            viewId.contains("location") || viewId.contains("place") ||
+            viewId.contains("poi") || viewId.contains("map")
+        val className = TextNormalizer.normalize(node.className)
+        val imageLike = className.contains("imageview") || className.contains("image") ||
+            viewId.contains("icon")
+        if (!imageLike && !explicitLocationIcon) return false
+        // A generic small ImageView next to text is indistinguishable from a compact avatar. An
+        // opaque but present resource id (as exposed by Douyin's location pin) or an explicit
+        // location semantic is required before applying the conservative icon-card exclusion.
+        if (!explicitLocationIcon && node.viewIdResourceName.isNullOrBlank()) return false
+        val width = node.bounds.width
+        val height = node.bounds.height
+        if (width !in 20..96 || height !in 20..96) return false
+        val ratio = width.toFloat() / height.toFloat()
+        if (ratio !in 0.55f..1.45f) return false
+        // The pin belongs to the same fixed left rail as avatars, but is smaller. In particular,
+        // do not inspect right-side action icons at all.
+        return node.bounds.centerX <= (screenSize.width * 0.16f).toInt()
+    }
+
+    private fun isTextBesideLocationIcon(
+        text: ScreenBounds,
+        icon: ScreenBounds,
+        screenSize: ScreenSize,
+    ): Boolean {
+        val lineAllowance = icon.height.coerceAtLeast(24)
+        return text.left >= icon.right - 8 &&
+            text.left <= (screenSize.width * 0.94f).toInt() &&
+            text.bottom >= icon.top - lineAllowance / 2 &&
+            text.top <= icon.bottom + (lineAllowance * 3) / 4
+    }
+
+    private fun locationCardBottomFrom(
+        icon: ScreenBounds,
+        nearbyText: List<ScreenBounds>,
+        allText: List<ScreenBounds>,
+        screenSize: ScreenSize,
+    ): Int {
+        val lineHeight = maxOf(
+            icon.height,
+            nearbyText.maxOfOrNull(ScreenBounds::height) ?: 0,
+        ).coerceAtLeast(24)
+        var bottom = maxOf(icon.bottom, nearbyText.maxOf(ScreenBounds::bottom))
+        // POI cards can add a short second/third line (rank, opening time, ticket information).
+        // Grow only across immediate lines to the right of the icon and cap the expansion, so a
+        // later real comment can never be swallowed merely because its rows happen to be dense.
+        repeat(3) {
+            val nextBottom = allText.asSequence()
+                .filter { bounds ->
+                    bounds.left >= icon.right - 8 &&
+                        bounds.left <= (screenSize.width * 0.94f).toInt() &&
+                        bounds.top >= icon.top - lineHeight / 2 &&
+                        // Do not bridge a full row-height gap. The first real commenter can be
+                        // close to a compact location header, and preserving that first row is
+                        // more important than absorbing a distant optional POI field.
+                        bounds.top <= bottom + (lineHeight * 3) / 4
+                }
+                .map(ScreenBounds::bottom)
+                .maxOrNull()
+                ?: return@repeat
+            if (nextBottom <= bottom) return@repeat
+            bottom = nextBottom
+        }
+        return bottom
+    }
+
     private fun findNearbyAvatar(
-        author: CommentTextFragment,
+        author: CommentTextFragment?,
         comment: CommentTextFragment,
         context: ScreenContext,
     ): NodeSnapshot? {
-        val textLeft = minOf(author.bounds.left, comment.bounds.left)
-        val rowTop = minOf(author.bounds.top, comment.bounds.top)
-        val rowBottom = maxOf(author.bounds.bottom, comment.bounds.bottom)
+        val textLeft = minOf(author?.bounds?.left ?: comment.bounds.left, comment.bounds.left)
+        val rowTop = minOf(author?.bounds?.top ?: comment.bounds.top, comment.bounds.top)
+        val rowBottom = maxOf(author?.bounds?.bottom ?: comment.bounds.bottom, comment.bounds.bottom)
         // A row avatar ends just before the text column.  The earlier 8%-of-screen allowance
         // was large enough to admit a right-side action image (or an image embedded in the
         // comment body) when it happened to be closer to the author text than the real avatar.
@@ -328,18 +480,23 @@ object CommentCandidateExtractor {
         return context.nodes
             .asSequence()
             .filter(::isAvatarLikeNode)
-            .filter { avatar -> isRowAvatar(avatar, textLeft, rowTop, rowBottom, horizontalAllowance) }
+            .filter { avatar ->
+                isRowAvatar(
+                    avatar,
+                    textLeft,
+                    rowTop,
+                    rowBottom,
+                    horizontalAllowance,
+                    context.screenSize.width,
+                )
+            }
             .minByOrNull { avatar ->
                 kotlin.math.abs(avatar.bounds.centerX - textLeft) +
                     kotlin.math.abs(avatar.bounds.centerY - (rowTop + rowBottom) / 2f)
             }
     }
 
-    /**
-     * Finds the first avatar-shaped node in the actual comment content region.  We only create
-     * this anchor after the centered “N条评论” boundary is available: without that boundary a
-     * profile/avatar above the sheet could be mistaken for a row and incorrectly block all work.
-     */
+    /** Finds the first avatar-shaped node below the verified centered “N条评论” header. */
     private fun firstCommentAvatar(context: ScreenContext, commentContentTop: Int?): ScreenBounds? {
         val contentTop = commentContentTop ?: return null
         val leftLimit = (context.screenSize.width * 0.30f).toInt()
@@ -366,13 +523,7 @@ object CommentCandidateExtractor {
             kotlin.math.abs(avatar.centerX - anchor.centerX) <= horizontalTolerance
     }
 
-    /**
-     * True when [anchor]'s visual row still carries visible text. The runtime uses this to tell
-     * an excluded-but-present leading row (most commonly the video author's own comment, whose
-     * author label ends with “作者”) from a partially virtualized first row whose paired name or
-     * comment text is absent from the accessibility tree. The former must be skipped; the latter
-     * must stop the probe to avoid opening the wrong commenter.
-     */
+    /** True when [anchor]'s visual row still carries visible text. Diagnostic-only. */
     fun hasRowText(context: ScreenContext, anchor: ScreenBounds): Boolean {
         val rowHeight = anchor.height.coerceAtLeast(1)
         val bandTop = anchor.top - rowHeight / 2
@@ -386,6 +537,31 @@ object CommentCandidateExtractor {
         return context.ocrBlocks.asSequence()
             .filter { it.bounds != ScreenBounds.EMPTY && it.text.isNotBlank() }
             .any { block -> overlaps(block.bounds) }
+    }
+
+    /**
+     * Returns true only for Douyin's explicit video-author badge on [anchor]'s own row. Visible
+     * text alone is deliberately insufficient: the comment sheet can place an official search
+     * shortcut, a location header, or a partially virtualized first row near the same left rail.
+     */
+    fun hasVideoAuthorBadge(context: ScreenContext, anchor: ScreenBounds): Boolean {
+        val rowHeight = anchor.height.coerceAtLeast(1)
+        val bandTop = anchor.top - rowHeight / 2
+        val bandBottom = anchor.bottom + rowHeight
+        fun overlaps(bounds: ScreenBounds): Boolean =
+            bounds.centerY >= bandTop && bounds.centerY <= bandBottom
+        fun isAuthorBadge(text: String): Boolean {
+            val normalized = TextNormalizer.normalize(text)
+            return normalized == "作者" || normalized.endsWith("作者")
+        }
+        val hasNodeBadge = context.nodes.asSequence()
+            .filter { it.isVisibleToUser && it.bounds != ScreenBounds.EMPTY && overlaps(it.bounds) }
+            .flatMap { it.searchableText().asSequence() }
+            .any(::isAuthorBadge)
+        if (hasNodeBadge) return true
+        return context.ocrBlocks.asSequence()
+            .filter { it.bounds != ScreenBounds.EMPTY && overlaps(it.bounds) }
+            .any { block -> isAuthorBadge(block.text) }
     }
 
     /** Re-resolves the avatar from a fresh tree before an interaction. */
@@ -407,13 +583,27 @@ object CommentCandidateExtractor {
         if (path.isNotEmpty()) {
             context.nodes.firstOrNull { node ->
                 node.hierarchyPath == path &&
-                    isRowAvatar(node, textLeft, rowTop, rowBottom, avatarTextOverlap(expected))
+                    isRowAvatar(
+                        node,
+                        textLeft,
+                        rowTop,
+                        rowBottom,
+                        avatarTextOverlap(expected),
+                        context.screenSize.width,
+                    )
             }?.let { return it }
         }
         return context.nodes.asSequence()
             .filter(::isAvatarLikeNode)
             .filter { node ->
-                isRowAvatar(node, textLeft, rowTop, rowBottom, avatarTextOverlap(expected)) &&
+                isRowAvatar(
+                    node,
+                    textLeft,
+                    rowTop,
+                    rowBottom,
+                    avatarTextOverlap(expected),
+                    context.screenSize.width,
+                ) &&
                     kotlin.math.abs(node.bounds.centerX - expected.centerX) <= expected.width * 1.5f &&
                     kotlin.math.abs(node.bounds.centerY - expected.centerY) <= expected.height * 1.5f
             }
@@ -452,7 +642,16 @@ object CommentCandidateExtractor {
             )
             context.nodes.asSequence()
                 .filter(::isAvatarLikeNode)
-                .count { node -> isRowAvatar(node, textLeft, rowTop, rowBottom, avatarTextOverlap(expected)) }
+                .count { node ->
+                    isRowAvatar(
+                        node,
+                        textLeft,
+                        rowTop,
+                        rowBottom,
+                        avatarTextOverlap(expected),
+                        context.screenSize.width,
+                    )
+                }
         } else {
             0
         }
@@ -508,12 +707,24 @@ object CommentCandidateExtractor {
         rowTop: Int,
         rowBottom: Int,
         horizontalAllowance: Int,
+        screenWidth: Int,
     ): Boolean {
         val bounds = node.bounds
         val rowHeight = (rowBottom - rowTop).coerceAtLeast(1)
         val verticalAllowance = maxOf(bounds.height * 0.55f, rowHeight * 0.9f)
-        return bounds.left < textLeft &&
+        // An avatar is aligned with the nickname at the start of a comment row. It may extend
+        // below the body, but it must never *start* after that text. This rejects a left-side
+        // location/decorative image from a lower row being paired with a header-like text row
+        // above it.
+        val latestAvatarTop = rowTop + maxOf(bounds.height * 0.55f, rowHeight * 0.35f)
+        // A commenter avatar always sits in the fixed left rail of the sheet. A right-side
+        // near-square action node (such as the heart/like control) can be left of a separately
+        // exposed count label, so relative-to-text geometry alone is insufficient.
+        val leftAvatarRail = (screenWidth * 0.30f).toInt()
+        return bounds.centerX <= leftAvatarRail &&
+            bounds.left < textLeft &&
             bounds.right <= textLeft + horizontalAllowance &&
+            bounds.top <= latestAvatarTop &&
             bounds.centerY >= rowTop - verticalAllowance &&
             bounds.centerY <= rowBottom + verticalAllowance &&
             bounds.width <= rowHeight * 2.1f &&
@@ -566,6 +777,7 @@ object CommentCandidateExtractor {
 
     private const val MAX_AUTHOR_COLUMN_OFFSET_RATIO = 0.22f
     private const val AVATAR_ROW_BAND = 60
+
 }
 
 data class CommentSurfaceDetection(

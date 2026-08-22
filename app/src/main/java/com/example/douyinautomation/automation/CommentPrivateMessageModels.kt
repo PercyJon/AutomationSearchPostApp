@@ -49,6 +49,8 @@ data class CommentPrivateMessageConfig(
     val maxUsersPerVideo: Int = DEFAULT_MAX_USERS_PER_VIDEO,
     /** When enabled, tiles carrying the semantic “置顶” marker are skipped. */
     val skipPinnedVideos: Boolean = false,
+    /** Debug-only inspection mode. Production-created tasks always retain the default false. */
+    val dryRun: Boolean = false,
 ) {
     fun normalizedKeywords(): List<String> = CommentKeywordMatcher.normalizeKeywords(matchKeywords)
 
@@ -85,6 +87,7 @@ data class CommentPrivateMessageSnapshot(
     val maxVideos: Int,
     val maxUsersPerVideo: Int,
     val skipPinnedVideos: Boolean = false,
+    val dryRun: Boolean = false,
 ) {
     fun matchesComment(comment: String): Boolean =
         CommentKeywordMatcher.matches(comment, matchKeywords)
