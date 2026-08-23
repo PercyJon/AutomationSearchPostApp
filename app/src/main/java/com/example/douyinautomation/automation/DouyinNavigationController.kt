@@ -1511,7 +1511,7 @@ class DouyinNavigationController(
         val candidate = selection.node
         val outcome = if (candidate == null) {
             ActionOutcome.failure(selection.reasons.joinToString())
-        } else if (!isVisibleUserTabCandidate(candidate, selection, liveContext)) {
+        } else if (!UserTabCandidatePolicy.isSafeCandidate(candidate, selection, liveContext)) {
             logger.warn(
                 "user_tab_candidate_rejected",
                 message = "A user-like label was not an exact, fully visible category tab",
@@ -1575,47 +1575,6 @@ class DouyinNavigationController(
             nextPhase = AutomationPhase.WAITING_FOR_USER_RESULTS,
             timeoutDescription = "User search results were not detected after choosing the User tab",
         )
-    }
-
-    private fun isVisibleUserTabCandidate(
-        candidate: NodeSnapshot,
-        selection: SelectionResult,
-        context: ScreenContext,
-    ): Boolean {
-        val directLabel = listOfNotNull(candidate.text, candidate.contentDescription, candidate.hintText)
-            .any { raw -> DouyinLabels.users.any { label -> TextNormalizer.normalize(raw) == TextNormalizer.normalize(label) } }
-        val ancestorLabel = selection.reasons.any { reason ->
-            DouyinLabels.users.any { label -> reason == "label=$label" }
-        }
-        val bounds = candidate.bounds
-        val tabStrip = context.nodes.firstOrNull { node ->
-            node.className?.contains("HorizontalScrollView", ignoreCase = true) == true &&
-                node.bounds.top <= bounds.top &&
-                node.bounds.bottom >= bounds.bottom
-        }
-        val viewportLeft = tabStrip?.bounds?.left ?: 0
-        val viewportRight = tabStrip?.bounds?.right
-            ?: (context.screenSize.width * USER_TAB_VIEWPORT_FALLBACK_RIGHT_RATIO).toInt()
-        val fullyOnScreen = bounds.left >= 0 &&
-            bounds.top >= 0 &&
-            bounds.right <= context.screenSize.width &&
-            bounds.bottom <= context.screenSize.height &&
-            bounds.width > 0 &&
-            bounds.height > 0
-        val insideVisibleTabStrip = bounds.left >= viewportLeft && bounds.right <= viewportRight
-        // A transient result/video surface can expose a descendant labelled “用户” inside a
-        // large clickable content container. It may satisfy the semantic label match but is not a
-        // category tab; accepting it can open a video detail page. Category tabs are always in
-        // the upper strip, have a compact height, and never occupy a substantial portion of the
-        // screen. Keep the geometry check as a guard in addition to semantic matching.
-        val topBandBottom = (context.screenSize.height * 0.36f).toInt()
-        val compactTabHeight = bounds.height <= (context.screenSize.height * 0.14f).toInt()
-        val inTopTabBand = bounds.top <= topBandBottom && bounds.bottom <= topBandBottom
-        return (directLabel || ancestorLabel) &&
-            fullyOnScreen &&
-            insideVisibleTabStrip &&
-            compactTabHeight &&
-            inTopTabBand
     }
 
     private suspend fun revealUserTab(context: ScreenContext): ActionOutcome {
@@ -4978,7 +4937,6 @@ class DouyinNavigationController(
         const val USER_ROW_CONTENT_TOP_RATIO = 0.12f
         const val USER_ROW_CONTENT_BOTTOM_RATIO = 0.58f
         const val USER_ROW_SAFE_TAP_RIGHT_RATIO = 0.70f
-        const val USER_TAB_VIEWPORT_FALLBACK_RIGHT_RATIO = 0.84f
 
         val searchSubmitSelector = SelectorRequest(
             name = "search-submit",
