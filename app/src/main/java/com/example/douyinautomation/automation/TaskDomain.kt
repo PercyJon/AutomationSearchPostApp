@@ -314,6 +314,14 @@ data class BlockedKeywordEvaluation(
     val matchedKeywords: List<String> get() = matches.map(BlockedKeywordMatch::keyword).distinct()
 }
 
+/** Parses the operator input accepted by the task form into independent block rules. */
+object BlockedKeywordInputParser {
+    fun parse(value: String): List<String> = value
+        .split(',', '，', '\n')
+        .map(String::trim)
+        .filter(String::isNotEmpty)
+}
+
 /**
  * User-supplied filters intentionally support contains matching only in M3. This keeps behavior
  * predictable and avoids turning a task rule into an unreviewed regular-expression engine.

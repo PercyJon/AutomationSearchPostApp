@@ -2540,6 +2540,7 @@ class DouyinNavigationController(
         var context = initialContext
         var lastIdentitySignature: String? = null
         var stableIdentityObservations = 0
+        var lastResolvedAnchor: UserResultsAnchorObservation? = null
         var remoteCheckpointSubmitted = false
         repeat(VIEWPORT_ANCHOR_PROBE_ATTEMPTS) { attempt ->
             if (attempt > 0) delay(VIEWPORT_ANCHOR_PROBE_INTERVAL_MS)
@@ -2578,9 +2579,9 @@ class DouyinNavigationController(
                 lastIdentitySignature = identitySignature
                 stableIdentityObservations = 1
             }
-            val identitiesStable = identities.all { it != null } &&
+            val completeIdentitiesStable = identities.all { it != null } &&
                 stableIdentityObservations >= VIEWPORT_IDENTITY_STABLE_OBSERVATIONS
-            if (identitiesStable && !remoteCheckpointSubmitted) {
+            if (completeIdentitiesStable && !remoteCheckpointSubmitted) {
                 val visibleKeys = identities.mapNotNull { it?.key }
                 val fingerprint = (identitySignature + visibleKeys.joinToString("|")).hashCode().toString(16)
                 AutomationStore.syncRemoteCheckpoint(
@@ -2615,6 +2616,16 @@ class DouyinNavigationController(
             val firstUnprocessedIndex = identities.indexOfFirst { identity ->
                 identity != null && processedUserIdentityMatchReason(identity) == null
             }
+            lastResolvedAnchor = UserResultsAnchorContinuationPolicy.observe(
+                previous = lastResolvedAnchor,
+                anchorIndex = anchorIndex,
+                anchorFingerprint = identities.getOrNull(anchorIndex)?.fingerprint,
+            )
+            val resolvedAnchorStable = UserResultsAnchorContinuationPolicy.canContinue(
+                observation = lastResolvedAnchor,
+                stableViewportObservations = stableIdentityObservations,
+                requiredObservations = VIEWPORT_IDENTITY_STABLE_OBSERVATIONS,
+            )
             logger.info(
                 "user_result_anchor_probe",
                 attributes = mapOf(
@@ -2622,16 +2633,17 @@ class DouyinNavigationController(
                     "attempt" to attempt + 1,
                     "row_count" to rows.size,
                     "identity_count" to identities.count { it != null },
-                    "identities_stable" to identitiesStable,
+                    "identities_stable" to completeIdentitiesStable,
                     "stable_identity_observations" to stableIdentityObservations,
                     "anchor_found" to (anchorIndex >= 0),
                     "anchor_index" to anchorIndex,
+                    "resolved_anchor_stable" to resolvedAnchorStable,
                     "anchor_candidate_count" to anchorCandidates.size,
                     "first_unprocessed_index" to firstUnprocessedIndex,
                 ),
             )
 
-            if (anchorIndex >= 0 && identitiesStable) {
+            if (anchorIndex >= 0 && resolvedAnchorStable) {
                 val nextIndex = (anchorIndex + 1).takeIf { it < rows.size }
                 if (nextIndex != null) {
                     logger.info(
@@ -2668,7 +2680,7 @@ class DouyinNavigationController(
             // network-backed list appends only half a page; in that case the first one or two
             // rows may still be duplicates even though the anchor itself is no longer visible.
             // Choosing the first unprocessed identity avoids guessing from scroll distance.
-            val allIdentitiesStable = identitiesStable && identities.size == rows.size
+            val allIdentitiesStable = completeIdentitiesStable && identities.size == rows.size
             if (allIdentitiesStable && firstUnprocessedIndex >= 0) {
                 val knownDuplicate = identities.any { identity ->
                     identity != null && processedUserIdentityMatchReason(identity) != null

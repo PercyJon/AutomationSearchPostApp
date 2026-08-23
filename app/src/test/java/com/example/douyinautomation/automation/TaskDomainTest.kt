@@ -7,6 +7,14 @@ import kotlin.test.assertTrue
 
 class TaskDomainTest {
     @Test
+    fun `blocked keyword input accepts English comma Chinese comma and new line`() {
+        assertEquals(
+            listOf("公司", "厂", "门店"),
+            BlockedKeywordInputParser.parse("公司, 厂，\n门店"),
+        )
+    }
+
+    @Test
     fun `checkpoint cursor accepts current profile comment tasks without search queries`() {
         val snapshot = TaskDraft(
             id = "current-profile-checkpoint",

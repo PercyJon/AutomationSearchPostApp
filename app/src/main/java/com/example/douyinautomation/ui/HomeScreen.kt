@@ -116,6 +116,7 @@ import com.example.douyinautomation.automation.RemoteTaskResumePolicy
 import com.example.douyinautomation.automation.RemoteTaskVisibilityStore
 import com.example.douyinautomation.automation.RegionCatalog
 import com.example.douyinautomation.automation.BlockKeywordCatalog
+import com.example.douyinautomation.automation.BlockedKeywordInputParser
 import com.example.douyinautomation.automation.FloatingOverlayService
 import com.example.douyinautomation.automation.PageKind
 import com.example.douyinautomation.automation.ProfileDisplayNameResolver
@@ -494,7 +495,7 @@ private fun TaskDashboard(
                         presetIds = selectedPresetIds.toList(),
                         customKeywords = listOf(keyword),
                         region = region,
-                        blockedKeywords = blockedKeywords.split(',', '，', '\n'),
+                        blockedKeywords = BlockedKeywordInputParser.parse(blockedKeywords),
                         maxUsers = maxUsers.toIntOrNull() ?: TaskDraft.DEFAULT_MAX_USERS,
                         executionMode = TaskExecutionMode.SAFE_BLANK_PROBE,
                     ),
@@ -514,7 +515,7 @@ private fun TaskDashboard(
         presetIds = selectedPresetIds.toList(),
         customKeywords = listOf(keyword),
         region = region,
-        blockedKeywords = blockedKeywords.split(',', '，', '\n'),
+        blockedKeywords = BlockedKeywordInputParser.parse(blockedKeywords),
         maxUsers = maxUsers.toIntOrNull() ?: TaskDraft.DEFAULT_MAX_USERS,
         executionMode = TaskExecutionMode.SAFE_BLANK_PROBE,
     )

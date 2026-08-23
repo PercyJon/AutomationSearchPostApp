@@ -19,6 +19,8 @@
 - P2-G2 抽取搜索入口选择优先级：新增 [`SearchEntrySelectionPolicy.kt`](app/src/main/java/com/example/douyinautomation/automation/SearchEntrySelectionPolicy.kt)，明确语义节点优先、结构节点次之、两者均失败才使用既有受限比例兜底；后置确认与暂停逻辑保持不变。
 - A1 用户结果行几何归一化：结构行与 OCR 行高度、OCR 卡片间距、关注标签宽度及双帧稳定性阈值均改为按实际屏幕尺寸计算；新增 [`OcrUserResultRowGeometry.kt`](app/src/main/java/com/example/douyinautomation/automation/OcrUserResultRowGeometry.kt)，删除未使用的历史固定行高常量，不改变页面跳转、点击、手势或安全证据顺序。
 - P3 稳定去重与恢复：搜索用户和评论用户的去重、检查点和记录关联改用 SHA-256 身份指纹，历史检查点和记录保留只读兼容；评论候选去重指纹随任务检查点持久化，进程恢复不会再次尝试同一候选；当前主页评论任务的空搜索词检查点也可安全保存和恢复。
+- B 端多页结果恢复：新增 [`UserResultsAnchorContinuationPolicy.kt`](app/src/main/java/com/example/douyinautomation/automation/UserResultsAnchorContinuationPolicy.kt)。翻页后只要“上一位已处理用户”的唯一身份锚点在两个稳定视口中保持相同，即可严格从该行之后继续；同屏某个无关行暂时无法解析身份时不再导致整任务超时。下一行仍由既有身份、OCR 与几何安全门验证后才能打开。
+- 屏蔽关键词输入规则收拢为 [`BlockedKeywordInputParser`](app/src/main/java/com/example/douyinautomation/automation/TaskDomain.kt)：英文逗号、中文全角逗号与换行都拆为独立规则，并新增单测防止回退。
 
 ### 已验证项（真机 OnePlus NE2210 / b33aa309）
 
@@ -27,6 +29,7 @@
 - 自动化验证：`./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` 与 `git diff --check` 均通过。
 - A1 真机干跑：用户结果页在结构行节点不足时执行 OCR 回退；首卡缺少可验证的关注标识，任务按安全门终止，未进入用户主页、私信或空白探测。
 - P3 真机干跑：`designer` → 用户标签 → OCR 身份指纹 → 用户主页 → 首条视频 → 评论面板 → 首位安全候选确认 → `COMPLETED`；未点击评论候选头像、未进入评论用户主页、私信或发送步骤。
+- **B 端多页真机验收**：搜索“红木沙发”，屏蔽词“公司，厂”，最多 15 位。两次正常翻页后任务以用户上限完成：15 个结果中 11 位 `BLANK_PROBE_VERIFIED`、4 位 `FILTERED_BY_KEYWORD`、重复 0、失败 0。所有私信页仅提交单个空格并获平台“不能发送空白消息”拒绝；未发送真实内容。表单同时验证英文逗号、中文全角逗号均能拆分为独立屏蔽词。
 
 ### 交接记录
 
