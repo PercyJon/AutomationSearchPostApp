@@ -144,6 +144,7 @@ object AutomationStore {
     private var taskHistory: List<TaskHistoryEntry> = emptyList()
     private var currentTaskId: String? = null
     private var savedCheckpoint: TaskCheckpoint? = null
+    private var localTaskQueueSession: LocalTaskQueueSession? = null
     private var remoteTaskId: Long? = null
     private var remoteGateway: AutomationTaskGateway? = null
     private var remoteSyncQueue: RemoteTaskSyncQueue? = null
@@ -191,6 +192,9 @@ object AutomationStore {
                 allTaskRecords = decodeRecords(recordPreferences?.getString(TASK_RECORDS_KEY, null))
                 taskHistory = decodeTaskHistory(recordPreferences?.getString(TASK_HISTORY_KEY, null))
                 savedCheckpoint = decodeCheckpoint(recordPreferences?.getString(TASK_CHECKPOINT_KEY, null))
+                localTaskQueueSession = decodeLocalTaskQueueSession(
+                    recordPreferences?.getString(LOCAL_TASK_QUEUE_SESSION_KEY, null),
+                )
             }
             // A process restart or accessibility-service rebind cannot keep an old controller
             // running. Reconcile persisted RUNNING entries before publishing the Records tab so
@@ -261,6 +265,28 @@ object AutomationStore {
     fun getSavedCheckpoint(): TaskCheckpoint? = synchronized(recordLock) { savedCheckpoint }
 
     fun getCurrentTaskId(): String? = synchronized(recordLock) { currentTaskId }
+
+    /** Returns the frozen local batch without starting it or inspecting the target application. */
+    fun getLocalTaskQueueSession(): LocalTaskQueueSession? = synchronized(recordLock) {
+        localTaskQueueSession
+    }
+
+    /** Persists only local task contracts, ordering, and status; user records stay in their own store. */
+    fun saveLocalTaskQueueSession(session: LocalTaskQueueSession) {
+        synchronized(recordLock) {
+            localTaskQueueSession = session
+            recordPreferences?.edit()
+                ?.putString(LOCAL_TASK_QUEUE_SESSION_KEY, encodeLocalTaskQueueSession(session).toString())
+                ?.apply()
+        }
+    }
+
+    fun clearLocalTaskQueueSession() {
+        synchronized(recordLock) {
+            localTaskQueueSession = null
+            recordPreferences?.edit()?.remove(LOCAL_TASK_QUEUE_SESSION_KEY)?.apply()
+        }
+    }
 
     /**
      * Returns the frozen task contract when Android has rebound the accessibility service while
@@ -1009,6 +1035,16 @@ object AutomationStore {
         put("snapshot", checkpoint.snapshot.toJson())
     }
 
+    private fun encodeLocalTaskQueueSession(session: LocalTaskQueueSession): JSONObject = JSONObject().apply {
+        put("queue_id", session.queueId)
+        put("queue_type", session.queueType.name)
+        put("tasks", JSONArray(session.tasks.map { it.toJson() }))
+        put("active_task_index", session.activeTaskIndex)
+        put("status", session.status.name)
+        put("paused_phase", session.pausedPhase?.name ?: JSONObject.NULL)
+        put("updated_at", session.updatedAtMillis)
+    }
+
     private fun encodeTaskDraft(draft: TaskDraft): JSONObject = JSONObject().apply {
         put("id", draft.id)
         put("name", draft.name)
@@ -1189,6 +1225,48 @@ object AutomationStore {
                 ?: root.optJSONArray("processed_identity_hashes"))?.let { hashes ->
                 buildList(hashes.length()) { for (index in 0 until hashes.length()) add(hashes.getInt(index)) }
             }.orEmpty(),
+            updatedAtMillis = root.getLong("updated_at"),
+        )
+    }.getOrNull()
+
+    private fun decodeLocalTaskQueueSession(raw: String?): LocalTaskQueueSession? = runCatching {
+        if (raw.isNullOrBlank()) return null
+        val root = JSONObject(raw)
+        val queueType = LocalTaskQueueType.valueOf(root.getString("queue_type"))
+        val tasksJson = root.getJSONArray("tasks")
+        val tasks = buildList(tasksJson.length()) {
+            for (index in 0 until tasksJson.length()) {
+                val item = tasksJson.optJSONObject(index) ?: return null
+                val snapshot = TaskSnapshot(
+                    taskId = item.getString("task_id"),
+                    taskName = item.getString("task_name"),
+                    presetVersion = item.getString("preset_version"),
+                    baseKeywords = item.getStringList("base_keywords"),
+                    region = item.getString("region"),
+                    composedQueries = item.getStringList("composed_queries"),
+                    normalizedBlockedKeywords = item.getStringList("blocked_keywords"),
+                    maxUsers = item.getInt("max_users"),
+                    messageTemplate = if (item.isNull("message_template")) null else item.getString("message_template"),
+                    executionMode = TaskExecutionMode.valueOf(item.getString("execution_mode")),
+                    createdAtMillis = item.getLong("created_at"),
+                    taskType = runCatching {
+                        AutomationTaskType.valueOf(item.optString("task_type"))
+                    }.getOrDefault(AutomationTaskType.PROFILE_PRIVATE_MESSAGE),
+                    commentConfig = item.optJSONObject("comment_config")?.toCommentPrivateMessageSnapshot(),
+                )
+                if (snapshot.composedQueries.isEmpty()) return null
+                add(snapshot)
+            }
+        }
+        LocalTaskQueueSession(
+            queueId = root.getString("queue_id"),
+            queueType = queueType,
+            tasks = tasks,
+            activeTaskIndex = root.getInt("active_task_index"),
+            status = LocalTaskQueueStatus.valueOf(root.getString("status")),
+            pausedPhase = root.optStringOrNull("paused_phase")?.let { phase ->
+                AutomationPhase.valueOf(phase)
+            },
             updatedAtMillis = root.getLong("updated_at"),
         )
     }.getOrNull()
@@ -1559,6 +1637,7 @@ object AutomationStore {
     private const val TASK_RECORDS_KEY = "records"
     private const val TASK_HISTORY_KEY = "history"
     private const val TASK_CHECKPOINT_KEY = "checkpoint"
+    private const val LOCAL_TASK_QUEUE_SESSION_KEY = "local_task_queue_session"
     private const val TASK_DRAFT_KEY = "draft"
     private const val SAVED_TASKS_KEY = "saved_tasks"
     private const val MAX_TASK_RECORDS = 2_000

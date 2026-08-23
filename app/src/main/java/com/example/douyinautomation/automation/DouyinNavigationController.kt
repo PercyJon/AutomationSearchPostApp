@@ -90,6 +90,8 @@ class DouyinNavigationController(
     private var profilePostconditionJob: Job? = null
     /** Pending local tasks are consumed only after the current task reaches a terminal state. */
     private val queuedTaskSnapshots = SequentialTaskQueue<TaskSnapshot>()
+    /** Durable contract for the active local batch; null for legacy and remote single-task runs. */
+    private var localTaskQueueSession: LocalTaskQueueSession? = null
     private var initialOcrAttempts = 0
     /** Number of bounded blind BACK actions used while the target tree is temporarily unavailable. */
     private var initialBlindBackAttempts = 0
@@ -238,6 +240,8 @@ class DouyinNavigationController(
         when (command) {
             is AutomationCommand.Start -> {
                 queuedTaskSnapshots.clear()
+                localTaskQueueSession = null
+                AutomationStore.clearLocalTaskQueueSession()
                 start(
                     searchKeyword = command.keyword,
                     startMessage = command.message,
@@ -610,21 +614,33 @@ class DouyinNavigationController(
             logger.warn("start_batch_ignored_active")
             return
         }
-        val validTasks = tasks.filter { snapshot ->
-            snapshot.composedQueries.any { it.isNotBlank() } ||
-                (snapshot.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE &&
-                    snapshot.commentConfig?.entryMode == CommentPrivateMessageEntryMode.CURRENT_PROFILE)
+        val queueType = LocalTaskQueuePolicy.validate(tasks)
+        if (queueType == null) {
+            AutomationStore.publishFailure("待办任务只能选择同一种类型，且评论任务必须使用“搜索指定用户”入口")
+            logger.warn(
+                "task_batch_rejected",
+                attributes = mapOf("task_count" to tasks.size, "reason" to "mixed_or_ineligible_type"),
+            )
+            return
         }
-        if (validTasks.isEmpty()) {
+        if (tasks.any { snapshot -> snapshot.composedQueries.none { it.isNotBlank() } }) {
             AutomationStore.publishFailure("没有可执行的待办任务")
             return
         }
-        queuedTaskSnapshots.replace(validTasks.drop(1))
+        val session = LocalTaskQueueSession(
+            queueId = java.util.UUID.randomUUID().toString(),
+            queueType = queueType,
+            tasks = tasks,
+            updatedAtMillis = System.currentTimeMillis(),
+        )
+        localTaskQueueSession = session
+        AutomationStore.saveLocalTaskQueueSession(session)
+        queuedTaskSnapshots.replace(tasks.drop(1))
         logger.info(
             "task_batch_started",
-            attributes = mapOf("task_count" to validTasks.size),
+            attributes = mapOf("task_count" to tasks.size, "queue_type" to queueType.name),
         )
-        val first = validTasks.first()
+        val first = session.activeTask
         start(
             searchKeyword = first.composedQueries.firstOrNull().orEmpty(),
             startMessage = first.messageTemplate.orEmpty(),
@@ -642,12 +658,33 @@ class DouyinNavigationController(
      */
     private fun scheduleNextQueuedTask(): Boolean {
         val next = queuedTaskSnapshots.poll() ?: return false
+        val queueId = localTaskQueueSession?.queueId
         scope.launch {
             delay(NEXT_TASK_SETTLE_DELAY_MS)
             mutex.withLock {
+                if (queueId != null && localTaskQueueSession?.queueId != queueId) {
+                    logger.info("task_batch_next_cancelled", attributes = mapOf("reason" to "queue_replaced"))
+                    return@withLock
+                }
                 if (taskActive) {
                     queuedTaskSnapshots.replace(listOf(next) + queuedTaskSnapshots.asList())
                     return@withLock
+                }
+                val advancedSession = localTaskQueueSession?.advance(System.currentTimeMillis())
+                if (advancedSession != null &&
+                    (advancedSession.status != LocalTaskQueueStatus.RUNNING ||
+                        advancedSession.activeTask.taskId != next.taskId)
+                ) {
+                    queuedTaskSnapshots.replace(listOf(next) + queuedTaskSnapshots.asList())
+                    logger.error(
+                        "task_batch_next_rejected",
+                        attributes = mapOf("reason" to "session_mismatch"),
+                    )
+                    return@withLock
+                }
+                if (advancedSession != null) {
+                    localTaskQueueSession = advancedSession
+                    AutomationStore.saveLocalTaskQueueSession(advancedSession)
                 }
                 start(
                     searchKeyword = next.composedQueries.firstOrNull().orEmpty(),
@@ -674,6 +711,12 @@ class DouyinNavigationController(
         }
         if (hasNext) {
             scheduleNextQueuedTask()
+        } else {
+            localTaskQueueSession?.let { session ->
+                val completedSession = session.advance(System.currentTimeMillis())
+                localTaskQueueSession = completedSession
+                AutomationStore.saveLocalTaskQueueSession(completedSession)
+            }
         }
     }
 
@@ -828,7 +871,7 @@ class DouyinNavigationController(
         return selected
     }
 
-    private suspend fun resumeSavedTask() {
+    private suspend fun resumeSavedTask(forceInitialRestart: Boolean = false) {
         val checkpoint = AutomationStore.getSavedCheckpoint()
         if (checkpoint == null) {
             AutomationStore.publishFailure("没有可恢复的任务检查点")
@@ -839,6 +882,12 @@ class DouyinNavigationController(
             logger.warn("saved_task_resume_ignored_active")
             return
         }
+        AutomationStore.getLocalTaskQueueSession()
+            ?.takeIf { session ->
+                session.status == LocalTaskQueueStatus.RUNNING &&
+                    session.activeTask.taskId == checkpoint.snapshot.taskId
+            }
+            ?.let(::restoreLocalTaskQueue)
         val query = checkpoint.snapshot.composedQueries.getOrNull(checkpoint.queryIndex)
         val restoredCommentConfig = checkpoint.snapshot.commentConfig
             ?.takeIf { checkpoint.snapshot.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE }
@@ -927,7 +976,8 @@ class DouyinNavigationController(
         }
         val existingContext = currentWindowContext()
         val existingDetection = existingContext?.let(pageDetector::detect)
-        if (existingContext != null && existingDetection != null && existingDetection.kind in setOf(
+        if (!forceInitialRestart &&
+            existingContext != null && existingDetection != null && existingDetection.kind in setOf(
                 PageKind.HOME,
                 PageKind.SEARCH_ENTRY,
                 PageKind.SEARCH_RESULTS,
@@ -954,6 +1004,11 @@ class DouyinNavigationController(
     }
 
     private suspend fun resume() {
+        val localQueue = localTaskQueueSession ?: AutomationStore.getLocalTaskQueueSession()
+        if (localQueue?.status == LocalTaskQueueStatus.PAUSED) {
+            resumeLocalTaskQueue(localQueue)
+            return
+        }
         // AccessibilityService instances can be destroyed and rebound independently from the
         // overlay (observed on physical devices when switching foreground apps).  The overlay
         // still correctly shows “恢复”, but a new controller otherwise starts at IDLE and rejects
@@ -1024,6 +1079,49 @@ class DouyinNavigationController(
             PageKind.DIRECT_MESSAGE -> completeAtMessagePage()
             else -> Unit
         }
+    }
+
+    /** Resumes a local queue from its frozen active item without dropping later queue items. */
+    private suspend fun resumeLocalTaskQueue(session: LocalTaskQueueSession) {
+        val checkpoint = AutomationStore.getSavedCheckpoint()
+        if (checkpoint?.snapshot?.taskId != session.activeTask.taskId) {
+            AutomationStore.publishManualHandoff("待办队列缺少当前任务检查点，已保留队列等待人工处理")
+            logger.error(
+                "task_queue_resume_rejected",
+                attributes = mapOf("reason" to "active_checkpoint_missing"),
+            )
+            return
+        }
+        // The reader can intentionally find a visible Douyin window behind an overlay. It must
+        // not be used to claim that Douyin is foreground after the operator has left the app.
+        val targetInForeground = windowContextReader.isTargetAppInActiveWindow()
+        val detection = currentWindowContext()
+            ?.takeIf { targetInForeground }
+            ?.let(pageDetector::detect)
+        val visiblePage = detection?.kind ?: PageKind.OUTSIDE_TARGET
+        val restartFromInitial = LocalTaskQueueResumePolicy.requiresInitialRestart(
+            queueType = session.queueType,
+            pausedPhase = session.pausedPhase,
+            visiblePage = visiblePage,
+        )
+        val resumedSession = session.resume(System.currentTimeMillis())
+        restoreLocalTaskQueue(resumedSession)
+        AutomationStore.saveLocalTaskQueueSession(resumedSession)
+        logger.info(
+            "task_queue_resume_requested",
+            attributes = mapOf(
+                "queue_type" to session.queueType.name,
+                "restart_from_initial" to restartFromInitial,
+                "visible_page" to visiblePage.name,
+            ),
+        )
+        resumeSavedTask(forceInitialRestart = restartFromInitial)
+    }
+
+    /** Rehydrates the in-memory FIFO from the persisted active index; it never starts work itself. */
+    private fun restoreLocalTaskQueue(session: LocalTaskQueueSession) {
+        localTaskQueueSession = session
+        queuedTaskSnapshots.replace(session.tasks.drop(session.activeTaskIndex + 1))
     }
 
     /** Restores only enough durable state for an explicit suspended-task Resume to be safe. */
@@ -4808,8 +4906,16 @@ class DouyinNavigationController(
         pausedPhase = phase.takeUnless {
             it == AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF || it == AutomationPhase.STOPPED
         }
+        persistTaskCheckpoint()
         taskActive = false
-        queuedTaskSnapshots.clear()
+        localTaskQueueSession?.let { session ->
+            val pausedSession = session.pause(
+                nowMillis = System.currentTimeMillis(),
+                phase = pausedPhase,
+            )
+            localTaskQueueSession = pausedSession
+            AutomationStore.saveLocalTaskQueueSession(pausedSession)
+        }
         phase = AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF
         if (currentUserIdentityFingerprint != null) {
             AutomationStore.recordUserTaskFinished(
@@ -4835,6 +4941,11 @@ class DouyinNavigationController(
         commentRuntime.stop()
         taskActive = false
         queuedTaskSnapshots.clear()
+        localTaskQueueSession?.let { session ->
+            val stoppedSession = session.stop(System.currentTimeMillis())
+            localTaskQueueSession = stoppedSession
+            AutomationStore.saveLocalTaskQueueSession(stoppedSession)
+        }
         if (currentUserIdentityFingerprint != null) {
             AutomationStore.recordUserTaskFinished(
                 identityFingerprint = currentUserIdentityFingerprint,

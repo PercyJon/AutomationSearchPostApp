@@ -322,12 +322,15 @@ class FloatingOverlayService : Service() {
                 UserTaskRecord.Outcome.STOPPED,
             )
         }
-        stageText?.text = "${taskName.take(20)} · ${phaseLabel(state.phase)}"
+        val queueLabel = AutomationStore.getLocalTaskQueueSession()
+            ?.takeIf { session -> session.status in setOf(LocalTaskQueueStatus.RUNNING, LocalTaskQueueStatus.PAUSED) }
+            ?.let { session -> "队列 ${session.activeTaskIndex + 1}/${session.tasks.size}" }
+        stageText?.text = listOfNotNull(taskName.take(20), queueLabel, phaseLabel(state.phase)).joinToString(" · ")
         progressText?.text = "处理 $handled / ${if (total > 0) total else "—"}"
         detailText?.text = "成功 $success · 失败 $failed · 总数 ${records.size}"
         actionButton?.text = when (state.phase) {
             AutomationPhase.SUSPENDED_BEFORE_START -> "恢复"
-            AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF -> "继续"
+            AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF -> "恢复"
             else -> "暂停"
         }
         actionButton?.isEnabled = state.phase !in setOf(

@@ -69,6 +69,8 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -108,6 +110,8 @@ import com.example.douyinautomation.automation.CommentPrivateMessageConfig
 import com.example.douyinautomation.automation.CommentPrivateMessageEntryMode
 import com.example.douyinautomation.automation.CommentKeywordMatchMode
 import com.example.douyinautomation.automation.LicenseStatus
+import com.example.douyinautomation.automation.LocalTaskQueuePolicy
+import com.example.douyinautomation.automation.LocalTaskQueueType
 import com.example.douyinautomation.automation.LocalSearchPresetRepository
 import com.example.douyinautomation.automation.QueryComposer
 import com.example.douyinautomation.automation.RemoteTask
@@ -422,6 +426,9 @@ private fun TaskDashboard(
     var remoteRefreshMessage by remember { mutableStateOf<String?>(null) }
     var savedTasks by remember { mutableStateOf<List<TaskDraft>>(emptyList()) }
     var selectedSavedTaskIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var selectedTodoQueueType by rememberSaveable {
+        mutableStateOf(LocalTaskQueueType.B_END_PRIVATE_MESSAGE)
+    }
     LaunchedEffect(context) {
         savedTasks = withContext(Dispatchers.IO) { AutomationStore.loadSavedTasks() }
         presetCatalog = runCatching {
@@ -529,6 +536,11 @@ private fun TaskDashboard(
     val canStart = state.serviceCommandReady && queries.isNotEmpty() && draftErrors.isEmpty()
     val canSave = queries.isNotEmpty() && draftErrors.isEmpty()
     val fixedTodoLayout = !showCreateTask && showTodoOnly && !showRemoteTasks
+    val visibleTodoTasks = savedTasks.filter { task ->
+        runCatching {
+            task.toSnapshot(presets = presetCatalog, nowMillis = 0L)
+        }.getOrNull()?.let(LocalTaskQueuePolicy::typeOf) == selectedTodoQueueType
+    }
 
     Column(
         modifier = if (fixedTodoLayout) {
@@ -554,7 +566,7 @@ private fun TaskDashboard(
                 }
             }
             val startSelected: () -> Unit = {
-                val snapshots = savedTasks
+                val snapshots = visibleTodoTasks
                     .filter { it.id in selectedSavedTaskIds }
                     .mapNotNull { saved ->
                         runCatching {
@@ -570,6 +582,27 @@ private fun TaskDashboard(
                 }
             }
             if (showTodoOnly) {
+                TabRow(
+                    selectedTabIndex = selectedTodoQueueType.ordinal,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Tab(
+                        selected = selectedTodoQueueType == LocalTaskQueueType.B_END_PRIVATE_MESSAGE,
+                        onClick = {
+                            selectedTodoQueueType = LocalTaskQueueType.B_END_PRIVATE_MESSAGE
+                            selectedSavedTaskIds = emptySet()
+                        },
+                        text = { Text("B端用户私信") },
+                    )
+                    Tab(
+                        selected = selectedTodoQueueType == LocalTaskQueueType.COMMENT_SEARCH_PROFILE,
+                        onClick = {
+                            selectedTodoQueueType = LocalTaskQueueType.COMMENT_SEARCH_PROFILE
+                            selectedSavedTaskIds = emptySet()
+                        },
+                        text = { Text("评论区私信") },
+                    )
+                }
                 if (fixedTodoLayout) {
                     Box(
                         modifier = Modifier
@@ -578,7 +611,7 @@ private fun TaskDashboard(
                             .verticalScroll(rememberScrollState()),
                     ) {
                         TodoTaskCard(
-                            tasks = savedTasks,
+                            tasks = visibleTodoTasks,
                             presetCatalog = presetCatalog,
                             selectedTaskIds = selectedSavedTaskIds,
                             activeState = state,
@@ -597,7 +630,7 @@ private fun TaskDashboard(
                     }
                 } else {
                     TodoTaskCard(
-                        tasks = savedTasks,
+                        tasks = visibleTodoTasks,
                         presetCatalog = presetCatalog,
                         selectedTaskIds = selectedSavedTaskIds,
                         activeState = state,

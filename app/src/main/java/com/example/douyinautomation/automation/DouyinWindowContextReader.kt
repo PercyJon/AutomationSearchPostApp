@@ -12,6 +12,19 @@ class DouyinWindowContextReader(
     private val service: AccessibilityService,
     private val inspector: NodeTreeInspector,
 ) {
+    /**
+     * Checks only the active root. Unlike [read], this never falls back to a background target
+     * window, so it is safe for deciding whether a paused queue may reuse the current page.
+     */
+    @Suppress("DEPRECATION")
+    fun isTargetAppInActiveWindow(): Boolean = service.rootInActiveWindow?.let { activeRoot ->
+        try {
+            activeRoot.packageName?.toString() == TargetAppLauncher.DOUYIN_PACKAGE
+        } finally {
+            activeRoot.recycle()
+        }
+    } ?: false
+
     @Suppress("DEPRECATION")
     fun read(): ScreenContext? {
         service.rootInActiveWindow?.let { activeRoot ->

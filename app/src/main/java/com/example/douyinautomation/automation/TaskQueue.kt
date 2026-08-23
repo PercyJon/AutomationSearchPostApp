@@ -33,3 +33,133 @@ class SequentialTaskQueue<T> {
 
     fun asList(): List<T> = pending.toList()
 }
+
+/** The two local automation families that can be executed as a single serial queue. */
+enum class LocalTaskQueueType {
+    B_END_PRIVATE_MESSAGE,
+    COMMENT_SEARCH_PROFILE,
+}
+
+/** Durable lifecycle states for a local serial queue. */
+enum class LocalTaskQueueStatus {
+    RUNNING,
+    PAUSED,
+    STOPPED,
+    COMPLETED,
+}
+
+/**
+ * Frozen local queue contract. Per-task user results and checkpoints stay in their existing
+ * stores; this model owns only selection type, ordering, and the currently active item.
+ */
+data class LocalTaskQueueSession(
+    val queueId: String,
+    val queueType: LocalTaskQueueType,
+    val tasks: List<TaskSnapshot>,
+    val activeTaskIndex: Int = 0,
+    val status: LocalTaskQueueStatus = LocalTaskQueueStatus.RUNNING,
+    /** The last verified controller phase when an operator paused the queue. */
+    val pausedPhase: AutomationPhase? = null,
+    val updatedAtMillis: Long,
+) {
+    init {
+        require(tasks.isNotEmpty()) { "A local task queue must contain at least one task" }
+        require(activeTaskIndex in tasks.indices) { "Active queue task index is outside the queue" }
+        require(tasks.all { LocalTaskQueuePolicy.typeOf(it) == queueType }) {
+            "Every local queue task must match its queue type"
+        }
+    }
+
+    val activeTask: TaskSnapshot get() = tasks[activeTaskIndex]
+    val hasNextTask: Boolean get() = activeTaskIndex + 1 < tasks.size
+
+    fun pause(
+        nowMillis: Long,
+        phase: AutomationPhase?,
+    ): LocalTaskQueueSession = copy(
+        status = LocalTaskQueueStatus.PAUSED,
+        pausedPhase = phase,
+        updatedAtMillis = nowMillis,
+    )
+
+    fun resume(nowMillis: Long): LocalTaskQueueSession = copy(
+        status = LocalTaskQueueStatus.RUNNING,
+        pausedPhase = null,
+        updatedAtMillis = nowMillis,
+    )
+
+    fun stop(nowMillis: Long): LocalTaskQueueSession = copy(
+        status = LocalTaskQueueStatus.STOPPED,
+        updatedAtMillis = nowMillis,
+    )
+
+    fun advance(nowMillis: Long): LocalTaskQueueSession = if (hasNextTask) {
+        copy(activeTaskIndex = activeTaskIndex + 1, updatedAtMillis = nowMillis)
+    } else {
+        copy(status = LocalTaskQueueStatus.COMPLETED, updatedAtMillis = nowMillis)
+    }
+}
+
+/**
+ * Keeps queue selection independent of the UI. A malformed or mixed command is rejected before
+ * the navigation controller can begin a target-app action.
+ */
+object LocalTaskQueuePolicy {
+    fun typeOf(snapshot: TaskSnapshot): LocalTaskQueueType? = when (snapshot.taskType) {
+        AutomationTaskType.PROFILE_PRIVATE_MESSAGE -> LocalTaskQueueType.B_END_PRIVATE_MESSAGE
+        AutomationTaskType.COMMENT_PRIVATE_MESSAGE -> snapshot.commentConfig
+            ?.takeIf { it.entryMode == CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE }
+            ?.let { LocalTaskQueueType.COMMENT_SEARCH_PROFILE }
+    }
+
+    fun validate(tasks: List<TaskSnapshot>): LocalTaskQueueType? {
+        val type = tasks.firstOrNull()?.let(::typeOf) ?: return null
+        return type.takeIf { candidate -> tasks.all { typeOf(it) == candidate } }
+    }
+}
+
+/**
+ * Decides whether a paused local queue may reuse the visible target-app page. It never allows
+ * comment search tasks to resume in place because a later comment-author profile is
+ * structurally indistinguishable from the searched source profile.
+ */
+object LocalTaskQueueResumePolicy {
+    fun requiresInitialRestart(
+        queueType: LocalTaskQueueType,
+        pausedPhase: AutomationPhase?,
+        visiblePage: PageKind?,
+    ): Boolean {
+        if (queueType == LocalTaskQueueType.COMMENT_SEARCH_PROFILE) return true
+        val expectedPages = expectedPagesFor(pausedPhase) ?: return true
+        return visiblePage !in expectedPages
+    }
+
+    private fun expectedPagesFor(phase: AutomationPhase?): Set<PageKind>? = when (phase) {
+        AutomationPhase.LAUNCHING_TARGET,
+        AutomationPhase.WAITING_FOR_HOME,
+        -> setOf(PageKind.HOME)
+
+        AutomationPhase.OPENING_SEARCH,
+        AutomationPhase.WAITING_FOR_SEARCH_ENTRY,
+        AutomationPhase.ENTERING_KEYWORD,
+        -> setOf(PageKind.SEARCH_ENTRY)
+
+        AutomationPhase.WAITING_FOR_SEARCH_RESULTS,
+        AutomationPhase.SELECTING_USER_TAB,
+        -> setOf(PageKind.SEARCH_RESULTS)
+
+        AutomationPhase.WAITING_FOR_USER_RESULTS,
+        AutomationPhase.SELECTING_USER_RESULT,
+        -> setOf(PageKind.USER_RESULTS)
+
+        AutomationPhase.WAITING_FOR_PROFILE,
+        AutomationPhase.OPENING_MESSAGE_ENTRY,
+        -> setOf(PageKind.USER_PROFILE)
+
+        AutomationPhase.WAITING_FOR_DIRECT_MESSAGE,
+        AutomationPhase.COMPLETED_AT_MESSAGE_PAGE,
+        -> setOf(PageKind.DIRECT_MESSAGE)
+
+        else -> null
+    }
+}
