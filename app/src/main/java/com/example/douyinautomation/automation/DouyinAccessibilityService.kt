@@ -18,8 +18,6 @@ import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers.IO
-import kotlin.math.max
-import kotlin.math.min
 
 /**
  * Android's opt-in accessibility entry point for M0. The service is explicitly scoped in its XML
@@ -245,7 +243,7 @@ class DouyinAccessibilityService : AccessibilityService() {
                     else -> OcrRegion.FULL
                 }
                 val result = engine.recognize(bitmap, region)
-                val blocks = result.toOcrTextBlocks()
+                val blocks = OcrTextBlockMapper.map(result)
                 cachedOcrContextSignature = contextSignature
                 cachedOcrBlocks = blocks
                 cachedOcrAtMillis = now
@@ -263,23 +261,6 @@ class DouyinAccessibilityService : AccessibilityService() {
         } finally {
             ocrProbeInFlight.set(false)
         }
-    }
-
-    private fun OcrResult.toOcrTextBlocks(): List<OcrTextBlock> = blocks.map { block ->
-        val bounds = block.bounds
-        OcrTextBlock(
-            text = block.text,
-            bounds = if (bounds == null) {
-                ScreenBounds.EMPTY
-            } else {
-                ScreenBounds(
-                    left = min(bounds.left, bounds.right),
-                    top = min(bounds.top, bounds.bottom),
-                    right = max(bounds.left, bounds.right),
-                    bottom = max(bounds.top, bounds.bottom),
-                )
-            },
-        )
     }
 
     override fun onInterrupt() {

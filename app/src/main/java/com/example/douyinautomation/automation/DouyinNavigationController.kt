@@ -3489,7 +3489,7 @@ class DouyinNavigationController(
             try {
                 val result = engine.recognize(bitmap, region)
                 base.copy(
-                    ocrBlocks = result.toOcrTextBlocks(),
+                    ocrBlocks = OcrTextBlockMapper.map(result),
                     capturedAtMillis = System.currentTimeMillis(),
                 ).also {
                     latestContext = it
@@ -3520,7 +3520,7 @@ class DouyinNavigationController(
             try {
                 val result = engine.recognize(bitmap, OcrRegion.MESSAGE_COMPOSER)
                 val enriched = base.copy(
-                    ocrBlocks = result.toOcrTextBlocks(),
+                    ocrBlocks = OcrTextBlockMapper.map(result),
                     capturedAtMillis = System.currentTimeMillis(),
                 )
                 latestContext = enriched
@@ -4253,7 +4253,7 @@ class DouyinNavigationController(
                 ?: return context
             try {
                 val result = ocrEngine.recognize(bitmap, OcrRegion.USER_RESULTS)
-                val blocks = result.toOcrTextBlocks()
+                val blocks = OcrTextBlockMapper.map(result)
                 cachedUserResultsViewportSignature = viewportSignature
                 cachedUserResultsOcrBlocks = blocks
                 logger.info(
@@ -4274,23 +4274,8 @@ class DouyinNavigationController(
         }
     }
 
-    private fun userResultViewportSignature(context: ScreenContext): String = buildString {
-        // Node counts fluctuate when a profile is reopened, while the action-anchor geometry stays
-        // stable for the same viewport. Do not include the count or identity OCR will run again
-        // before every visible row.
-        append("viewport|")
-        context.nodes.asSequence()
-            .filter { node -> node.bounds.width > 0 && node.bounds.height > 0 }
-            .filter { node -> node.bounds.right >= context.screenSize.width * 0.62f }
-            .filter { node -> node.bounds.top >= context.screenSize.height * USER_RESULTS_TOP_RATIO }
-            .sortedBy { it.bounds.top }
-            .forEach { node ->
-                append(node.bounds.left).append(',')
-                    .append(node.bounds.top).append(',')
-                    .append(node.bounds.right).append(',')
-                    .append(node.bounds.bottom).append(';')
-            }
-    }
+    private fun userResultViewportSignature(context: ScreenContext): String =
+        UserResultsViewportFingerprint.create(context, topRatio = USER_RESULTS_TOP_RATIO)
 
     private suspend fun clickSelector(context: ScreenContext, request: SelectorRequest): ActionOutcome {
         val liveContext = waitForTargetWindow("click_${request.name}") ?: context
@@ -4768,7 +4753,7 @@ class DouyinNavigationController(
                 AutomationStore.publishOcr(result.text)
                 val base = freshContext ?: latestContext ?: currentWindowContext()
                 if (base != null) {
-                    val contextWithOcr = base.copy(ocrBlocks = result.toOcrTextBlocks())
+                    val contextWithOcr = base.copy(ocrBlocks = OcrTextBlockMapper.map(result))
                     val detection = pageDetector.detect(contextWithOcr)
                     latestContext = contextWithOcr
                     AutomationStore.publishObservation(detection)
@@ -4786,23 +4771,6 @@ class DouyinNavigationController(
     }
 
     private fun currentWindowContext(): ScreenContext? = windowContextReader.read()
-
-    private fun OcrResult.toOcrTextBlocks(): List<OcrTextBlock> = blocks.map { block ->
-        val bounds = block.bounds
-        OcrTextBlock(
-            text = block.text,
-            bounds = if (bounds == null) {
-                ScreenBounds.EMPTY
-            } else {
-                ScreenBounds(
-                    left = min(bounds.left, bounds.right),
-                    top = min(bounds.top, bounds.bottom),
-                    right = max(bounds.left, bounds.right),
-                    bottom = max(bounds.top, bounds.bottom),
-                )
-            },
-        )
-    }
 
     /**
      * Marks a task-level navigation failure without presenting it as a manual-handoff state.
@@ -5084,21 +5052,17 @@ class DouyinNavigationController(
                 // no pair of bottom-nav labels. Treat that semantic search candidate as a home
                 // post-condition only after the ad/overlay has cleared; this avoids relying on a
                 // fixed coordinate while still allowing the flow to start on sparse home trees.
-                val searchCandidateReady = detected.kind == PageKind.UNKNOWN &&
-                    TransientOverlayDetector.find(augmentedContext) == null &&
-                    hasInitialSearchSelectorCandidate(augmentedContext)
-                val detection = if (searchCandidateReady) {
+                val detection = InitialHomeSurfacePolicy.normalize(
+                    detected = detected,
+                    hasTransientOverlay = TransientOverlayDetector.find(augmentedContext) != null,
+                    hasSearchEntryCandidate = hasInitialSearchSelectorCandidate(augmentedContext),
+                    reason = InitialHomeSurfacePolicy.OBSERVATION_REASON,
+                )
+                if (detection != detected) {
                     logger.info(
                         "initial_search_selector_candidate",
                         message = "The semantic search icon is visible after the startup settle window",
                     )
-                    PageDetection(
-                        kind = PageKind.HOME,
-                        confidence = 0.78f,
-                        reasons = listOf("Semantic home search-entry candidate found"),
-                    )
-                } else {
-                    detected
                 }
                 logger.info(
                     "initial_observation_snapshot",
@@ -5161,7 +5125,7 @@ class DouyinNavigationController(
                 ?: return@runCatching context
             try {
                 val result = engine.recognize(bitmap)
-                if (result.isEmpty) context else context.copy(ocrBlocks = result.toOcrTextBlocks())
+                if (result.isEmpty) context else context.copy(ocrBlocks = OcrTextBlockMapper.map(result))
             } finally {
                 bitmap.recycle()
             }
@@ -5192,14 +5156,11 @@ class DouyinNavigationController(
      * the otherwise-fine launch.
      */
     private fun normalizeInitialHomeDetection(context: ScreenContext): PageDetection {
-        val detected = pageDetector.detect(context)
-        if (detected.kind != PageKind.UNKNOWN) return detected
-        if (TransientOverlayDetector.find(context) != null) return detected
-        if (!hasInitialSearchSelectorCandidate(context)) return detected
-        return PageDetection(
-            kind = PageKind.HOME,
-            confidence = 0.78f,
-            reasons = listOf("Semantic home search-entry candidate found during recovery"),
+        return InitialHomeSurfacePolicy.normalize(
+            detected = pageDetector.detect(context),
+            hasTransientOverlay = TransientOverlayDetector.find(context) != null,
+            hasSearchEntryCandidate = hasInitialSearchSelectorCandidate(context),
+            reason = InitialHomeSurfacePolicy.RECOVERY_REASON,
         )
     }
 

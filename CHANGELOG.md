@@ -12,6 +12,8 @@
 - 评论运行记录新增不含原始评论文本的统计：已读取正文数、命中正文数、可安全处理候选数；任务详情页可直接查看这些聚合结果。
 - 修复“首个可见头像属于不匹配评论”时后续匹配评论被错误阻断的问题：只有明确验证首行同时具备昵称与正文、且正文不匹配时，才允许处理同一视口中的后续匹配候选；结构不完整或仅 OCR 证据仍保持终止，不会猜测点击。
 - P2 导航职责拆分：新增 [`UserResultIdentityMatcher.kt`](app/src/main/java/com/example/douyinautomation/automation/UserResultIdentityMatcher.kt)，收拢用户搜索结果身份确认；新增 [`DouyinWindowContextReader.kt`](app/src/main/java/com/example/douyinautomation/automation/DouyinWindowContextReader.kt)，收拢活动窗口优先、可见目标窗口兜底与节点回收。现有导航状态机和动作顺序未改动。
+- P2 继续拆分启动页 HOME 归一化策略：新增 [`InitialHomeSurfacePolicy.kt`](app/src/main/java/com/example/douyinautomation/automation/InitialHomeSurfacePolicy.kt)，使启动观察与有界恢复对“未知页 + 无临时遮罩 + 已验证搜索入口”使用同一纯判定；不包含节点点击、手势或消息动作。
+- P2 继续收拢 OCR 证据适配：新增 [`OcrTextBlockMapper.kt`](app/src/main/java/com/example/douyinautomation/automation/OcrTextBlockMapper.kt)，让无障碍服务和导航控制器复用相同的 OCR 边界空值与排序规则；新增 [`UserResultsViewportFingerprint.kt`](app/src/main/java/com/example/douyinautomation/automation/UserResultsViewportFingerprint.kt)，让用户结果 OCR 缓存键成为基于屏幕比例的可测试纯函数。
 
 ### 已验证项（真机 OnePlus NE2210 / b33aa309）
 
@@ -27,6 +29,9 @@
 - [`2026-08-23-comment-non-dry-run-10-user-validation.md`](docs/2026-08-23-comment-non-dry-run-10-user-validation.md)
 - [`2026-08-23-p2-navigation-identity-extraction.md`](docs/2026-08-23-p2-navigation-identity-extraction.md)
 - [`2026-08-23-p2-window-context-reader.md`](docs/2026-08-23-p2-window-context-reader.md)
+- [`2026-08-23-p2-initial-home-policy.md`](docs/2026-08-23-p2-initial-home-policy.md)
+- [`2026-08-23-p2-ocr-text-block-mapper.md`](docs/2026-08-23-p2-ocr-text-block-mapper.md)
+- [`2026-08-23-p2-user-results-viewport-fingerprint.md`](docs/2026-08-23-p2-user-results-viewport-fingerprint.md)
 
 ### 已知限制
 
