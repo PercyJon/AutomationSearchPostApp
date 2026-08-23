@@ -3,6 +3,7 @@ package com.example.douyinautomation.automation
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class CommentCandidateExtractorTest {
@@ -30,6 +31,71 @@ class CommentCandidateExtractorTest {
         assertEquals(listOf(3, 2, 0), candidate.interactionHierarchyPath)
         assertEquals(listOf("价格"), candidate.matchedKeywords)
         assertEquals(CommentTextSource.ACCESSIBILITY, candidate.source)
+    }
+
+    @Test
+    fun `complete nonmatching leading row permits the next matching row`() {
+        val firstAvatar = ScreenBounds(48, 970, 156, 1078)
+        val context = ScreenContext(
+            screenSize = screen,
+            nodes = listOf(
+                node("270条评论", 380, 850, 650, 900),
+                NodeSnapshot(
+                    className = "按钮",
+                    viewIdResourceName = "com.ss.android.ugc.aweme:id/avatar",
+                    bounds = firstAvatar,
+                    isClickable = true,
+                ),
+                NodeSnapshot(
+                    text = "首位用户",
+                    viewIdResourceName = "com.ss.android.ugc.aweme:id/title",
+                    bounds = ScreenBounds(180, 970, 420, 1028),
+                ),
+                NodeSnapshot(
+                    text = "普通留言",
+                    viewIdResourceName = "com.ss.android.ugc.aweme:id/content",
+                    bounds = ScreenBounds(180, 1040, 860, 1110),
+                ),
+                NodeSnapshot(
+                    className = "按钮",
+                    viewIdResourceName = "com.ss.android.ugc.aweme:id/avatar",
+                    bounds = ScreenBounds(48, 1230, 156, 1338),
+                    isClickable = true,
+                ),
+                NodeSnapshot(
+                    text = "后续用户",
+                    viewIdResourceName = "com.ss.android.ugc.aweme:id/title",
+                    bounds = ScreenBounds(180, 1240, 420, 1298),
+                ),
+                NodeSnapshot(
+                    text = "这个设计很不错",
+                    viewIdResourceName = "com.ss.android.ugc.aweme:id/content",
+                    bounds = ScreenBounds(180, 1300, 860, 1370),
+                ),
+            ),
+        )
+        val extraction = CommentCandidateExtractor.extract(context, listOf("不错"))
+
+        assertEquals(listOf("后续用户"), extraction.candidates.map { it.authorText })
+        assertFalse(CommentCandidateExtractor.belongsToAvatarRow(extraction.candidates.single(), firstAvatar))
+        assertTrue(
+            CommentCandidateExtractor.hasVerifiedNonMatchingLeadingRow(
+                context = context,
+                anchor = firstAvatar,
+                matchKeywords = listOf("不错"),
+                matchMode = CommentKeywordMatchMode.ANY,
+            ),
+        )
+        assertFalse(
+            CommentCandidateExtractor.hasVerifiedNonMatchingLeadingRow(
+                context = context.copy(
+                    nodes = context.nodes.filterNot { it.viewIdResourceName?.endsWith(":id/title") == true },
+                ),
+                anchor = firstAvatar,
+                matchKeywords = listOf("不错"),
+                matchMode = CommentKeywordMatchMode.ANY,
+            ),
+        )
     }
 
     @Test
@@ -611,6 +677,81 @@ class CommentCandidateExtractorTest {
     }
 
     @Test
+    fun `location pin and 评论 count tab cannot combine into a synthetic commenter after scroll`() {
+        // This mirrors the real post-scroll sheet: the location header remains pinned above the
+        // comment list and Douyin exposes the tab as “评论 10” rather than “10条评论”.  Its
+        // generic pin (`ery`) must not pair with the neighboring “AI 解析” tab to form a fake
+        // commenter.  The first real comment row starts below the tab divider.
+        val extraction = CommentCandidateExtractor.extract(
+            context = ScreenContext(
+                screenSize = screen,
+                nodes = listOf(
+                    NodeSnapshot(
+                        className = "android.widget.ImageView",
+                        viewIdResourceName = "com.ss.android.ugc.aweme:id/ery",
+                        bounds = ScreenBounds(48, 880, 108, 940),
+                    ),
+                    node("清远市 | 善美阳山", 156, 880, 610, 944),
+                    node("6000+打卡", 620, 884, 880, 940),
+                    node("评论 10", 48, 1020, 188, 1088),
+                    node("AI 解析", 258, 1020, 410, 1088),
+                    NodeSnapshot(
+                        className = "android.widget.ImageView",
+                        viewIdResourceName = "com.ss.android.ugc.aweme:id/avatar",
+                        contentDescription = "汉世界的头像",
+                        bounds = ScreenBounds(48, 1131, 156, 1239),
+                    ),
+                    node("汉世界", 180, 1140, 360, 1194),
+                    node("五直接落筷子，点吃，你介意，就自己一格", 180, 1210, 900, 1344),
+                    NodeSnapshot(
+                        className = "android.widget.ImageView",
+                        viewIdResourceName = "com.ss.android.ugc.aweme:id/avatar",
+                        contentDescription = "莓烦恼的头像",
+                        bounds = ScreenBounds(48, 1438, 156, 1546),
+                    ),
+                    node("🍓莓烦恼", 180, 1448, 410, 1502),
+                    node("火锅高温可以消毒，但是还是建议用公筷😂", 180, 1518, 920, 1648),
+                ),
+            ),
+            matchKeywords = emptyList(),
+        )
+
+        assertEquals(listOf("汉世界", "🍓莓烦恼"), extraction.candidates.mapNotNull(CommentUserCandidate::authorText))
+        assertEquals(listOf(1131, 1438), extraction.candidates.map { it.avatarBounds?.top })
+        assertFalse(extraction.candidates.any { it.authorText?.contains("AI") == true })
+    }
+
+    @Test
+    fun `fresh avatar relocation refuses a leading icon above the 评论 count tab`() {
+        val pin = ScreenBounds(48, 880, 108, 940)
+        val candidate = CommentUserCandidate(
+            authorText = "AI 解析",
+            commentText = "AI 解析",
+            authorBounds = ScreenBounds(156, 880, 610, 944),
+            commentBounds = ScreenBounds(258, 1020, 410, 1088),
+            interactionBounds = pin,
+            matchedKeywords = emptyList(),
+            identityKey = "comment-user:ai解析",
+            source = CommentTextSource.ACCESSIBILITY,
+            avatarBounds = pin,
+        )
+        val context = ScreenContext(
+            screenSize = screen,
+            nodes = listOf(
+                NodeSnapshot(
+                    className = "android.widget.ImageView",
+                    viewIdResourceName = "com.ss.android.ugc.aweme:id/ery",
+                    bounds = pin,
+                ),
+                node("评论 10", 48, 1020, 188, 1088),
+                node("AI 解析", 258, 1020, 410, 1088),
+            ),
+        )
+
+        assertNull(CommentCandidateExtractor.resolveAvatarTarget(context, candidate))
+    }
+
+    @Test
     fun `ordinary comment containing like wording is not mistaken for the like control`() {
         val extraction = CommentCandidateExtractor.extract(
             context = ScreenContext(
@@ -786,6 +927,47 @@ class CommentCandidateExtractorTest {
         val first = extraction.candidates.first()
         assertEquals("第一位评论者", first.authorText)
         assertTrue(CommentCandidateExtractor.belongsToAvatarRow(first, extraction.firstVisibleCommentAvatar!!))
+    }
+
+    @Test
+    fun `five uneven comment rows stay in visual top to bottom order despite reverse tree order`() {
+        val names = listOf("-没错77", "Hi,Stranger", "无聊(=_=)", "独二唯一", "摄影的玉昊")
+        // Comment heights are deliberately irregular: an emoji/multi-line comment and an
+        // expanded-reply affordance shift the following avatar by a different amount each time.
+        // The order contract is based only on each row's actual avatar/row anchor, never a fixed
+        // item height or index spacing.
+        val rowTops = listOf(940, 1206, 1582, 1844, 2116)
+        val rows = names.flatMapIndexed { index, name ->
+            val top = rowTops[index]
+            buildList {
+                add(
+                NodeSnapshot(
+                    className = "android.widget.ImageView",
+                    contentDescription = "$name 的头像",
+                    bounds = ScreenBounds(48, top, 156, top + 108),
+                    hierarchyPath = listOf(7, index, 0),
+                ),
+                )
+                add(node(name, 180, top + 8, 620, top + 58, hierarchyPath = listOf(7, index, 1)))
+                add(node("第${index + 1}条评论内容😀，这里可能换行", 180, top + 70, 930, top + 138, hierarchyPath = listOf(7, index, 2)))
+                if (index == 1 || index == 3) {
+                    add(node("展开${index + 1}条回复", 180, top + 154, 510, top + 204, hierarchyPath = listOf(7, index, 3)))
+                }
+            }
+        }
+        val extraction = CommentCandidateExtractor.extract(
+            context = ScreenContext(
+                screenSize = screen,
+                // Accessibility traversal order follows hierarchy construction rather than the
+                // on-screen order on some RecyclerView builds.  Feed the rows backwards to keep
+                // the first-to-fifth contract independent of that implementation detail.
+                nodes = listOf(node("45条评论", 400, 820, 680, 880)) + rows.reversed(),
+            ),
+            matchKeywords = emptyList(),
+        )
+
+        assertEquals(names, extraction.candidates.map { it.authorText })
+        assertEquals(rowTops, extraction.candidates.map { it.avatarBounds?.top })
     }
 
     @Test

@@ -56,6 +56,33 @@ class CommentSurfaceSignalsTest {
     }
 
     @Test
+    fun `wide semantic comment parent falls through to the compact action rail bubble`() {
+        val wideParent = node(
+            text = "评论 435",
+            className = "android.widget.FrameLayout",
+            left = 740,
+            top = 1180,
+            right = 1080,
+            bottom = 1580,
+        )
+        val rail = (0..3).map { index ->
+            node(
+                text = null,
+                className = "android.widget.ImageView",
+                left = 900,
+                top = 1000 + index * 180,
+                right = 1000,
+                bottom = 1100 + index * 180,
+            )
+        }
+
+        assertEquals(
+            CommentButtonTarget.AccessibilityNode(rail[1]),
+            VideoCommentButtonDetector.find(ScreenContext(screen, nodes = listOf(wideParent) + rail)),
+        )
+    }
+
+    @Test
     fun `structural action rail selects second button as comment`() {
         val buttons = (0..3).map { index ->
             node(
@@ -251,6 +278,60 @@ class CommentSurfaceSignalsTest {
             nodes = listOf(NodeSnapshot(text = "期待你的评论", bounds = ScreenBounds(300, 1450, 700, 1520))),
         )
         assertFalse(CommentPanelEndDetector.detect(context).reached)
+    }
+
+    @Test
+    fun `OCR sheet heading with two reply rows confirms a sparse restored comment sheet`() {
+        val detection = CommentSurfaceDetector.detect(
+            ScreenContext(
+                screenSize = screen,
+                ocrBlocks = listOf(
+                    OcrTextBlock("评论", ScreenBounds(48, 1040, 210, 1110)),
+                    OcrTextBlock("回复", ScreenBounds(470, 1320, 570, 1380)),
+                    OcrTextBlock("回复", ScreenBounds(470, 1710, 570, 1770)),
+                ),
+            ),
+        )
+
+        assertTrue(detection.isCommentSurface)
+        assertTrue(detection.reasons.any { it.contains("OCR sheet header with reply rows") })
+    }
+
+    @Test
+    fun `right rail OCR comment label with reply-like caption is not a comment sheet`() {
+        val detection = CommentSurfaceDetector.detect(
+            ScreenContext(
+                screenSize = screen,
+                ocrBlocks = listOf(
+                    OcrTextBlock("评论", ScreenBounds(920, 1260, 1040, 1320)),
+                    OcrTextBlock("回复", ScreenBounds(120, 1540, 240, 1600)),
+                    OcrTextBlock("回复", ScreenBounds(120, 1640, 240, 1700)),
+                ),
+            ),
+        )
+
+        assertFalse(detection.isCommentSurface)
+    }
+
+    @Test
+    fun `AI analysis tab plus comment composer is recognized as an already open comment sheet`() {
+        val detection = CommentSurfaceDetector.detect(
+            ScreenContext(
+                screenSize = screen,
+                nodes = listOf(
+                    NodeSnapshot(text = "AI解析", bounds = ScreenBounds(700, 900, 900, 970)),
+                    NodeSnapshot(
+                        text = "有什么想法，展开说说",
+                        className = "android.widget.EditText",
+                        bounds = ScreenBounds(42, 2268, 678, 2388),
+                        isEditable = true,
+                    ),
+                ),
+            ),
+        )
+
+        assertTrue(detection.isCommentSurface)
+        assertTrue(detection.reasons.any { it.contains("AI analysis tab") })
     }
 
     @Test

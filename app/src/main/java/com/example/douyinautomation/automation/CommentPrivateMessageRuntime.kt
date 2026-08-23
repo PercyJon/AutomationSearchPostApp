@@ -61,6 +61,10 @@ class CommentPrivateMessageRuntime(
     private var staleScrollCount = 0
     /** Consecutive scrolls that added zero new candidates; catches RecyclerView recycling at the bottom. */
     private var emptyScrollCount = 0
+    /** Bounded settling reads for the first comment viewport; never scroll before it resolves. */
+    private var initialCandidateReadRetryCount = 0
+    /** Viewports already included in the task's aggregate match statistics. */
+    private val reportedMatchStatisticsFingerprints = LinkedHashSet<Int>()
     private var videoIndex = 0
     private var liveRoomExitCount = 0
     private var liveRoomSwipeCount = 0
@@ -78,6 +82,14 @@ class CommentPrivateMessageRuntime(
     @Volatile private var latestObservedContext: ScreenContext? = null
     /** Monotonically increases for every target-app observation. */
     private val observedContextGeneration = AtomicLong(0L)
+    /** True only while a commenter flow has started returning from profile/DM to its comment sheet. */
+    @Volatile private var awaitingCommentSurfaceReturn = false
+    /** A comment sheet confirmed by an event during [awaitingCommentSurfaceReturn]. */
+    @Volatile private var confirmedReturnCommentSurface: ScreenContext? = null
+    /** Number of successful BACK actions dispatched during the current comment-sheet return. */
+    @Volatile private var returnCommentSurfaceBackActions = 0
+    /** The return BACK count at which [confirmedReturnCommentSurface] was observed. */
+    @Volatile private var confirmedReturnCommentSurfaceBackActions = -1
     /**
      * Accessibility events can arrive while a commenter profile is still being processed. A
      * second viewport pass must not run concurrently with the first one, otherwise both passes
@@ -122,6 +134,8 @@ class CommentPrivateMessageRuntime(
         scrollCount = 0
         staleScrollCount = 0
         emptyScrollCount = 0
+        initialCandidateReadRetryCount = 0
+        reportedMatchStatisticsFingerprints.clear()
         videoIndex = 0
         liveRoomExitCount = 0
         liveRoomSwipeCount = 0
@@ -130,6 +144,8 @@ class CommentPrivateMessageRuntime(
         activeCandidate = null
         latestObservedContext = null
         observedContextGeneration.incrementAndGet()
+        awaitingCommentSurfaceReturn = false
+        clearReturnCommentSurfaceConfirmation()
         pendingViewportContext = null
         viewportMergeJob?.cancel()
         viewportMergeJob = null
@@ -183,6 +199,8 @@ class CommentPrivateMessageRuntime(
         activeCandidate = null
         latestObservedContext = null
         observedContextGeneration.incrementAndGet()
+        awaitingCommentSurfaceReturn = false
+        clearReturnCommentSurfaceConfirmation()
     }
 
     /** Restarts profile observation after a search result was skipped without losing the task. */
@@ -195,9 +213,12 @@ class CommentPrivateMessageRuntime(
         scrollCount = 0
         staleScrollCount = 0
         emptyScrollCount = 0
+        initialCandidateReadRetryCount = 0
         activeCandidate = null
         latestObservedContext = null
         observedContextGeneration.incrementAndGet()
+        awaitingCommentSurfaceReturn = false
+        clearReturnCommentSurfaceConfirmation()
         pendingViewportContext = null
         viewportMergeJob?.cancel()
         viewportMergeJob = null
@@ -237,6 +258,18 @@ class CommentPrivateMessageRuntime(
             context,
             skipPinnedVideos = config?.skipPinnedVideos == true,
         )
+        if (awaitingCommentSurfaceReturn && observation.isCommentSurfaceReady) {
+            confirmedReturnCommentSurface = context
+            confirmedReturnCommentSurfaceBackActions = returnCommentSurfaceBackActions
+            logger.info(
+                "comment_return_surface_event_confirmed",
+                attributes = mapOf(
+                    "nodes" to context.nodes.size,
+                    "ocr_blocks" to context.ocrBlocks.size,
+                    "back_actions" to returnCommentSurfaceBackActions,
+                ),
+            )
+        }
         val decision = stateMachine.observe(observation)
         val waitingForProfileContent =
             stateMachine.stage == CommentEntryStage.WAITING_FOR_PROFILE &&
@@ -729,6 +762,7 @@ class CommentPrivateMessageRuntime(
     private fun scheduleCommentPanelProbe() {
         commentPanelProbeJob?.cancel()
         commentPanelProbeJob = scope.launch {
+            var coordinateRetryDecided = false
             repeat(COMMENT_PANEL_PROBE_ATTEMPTS) { attempt ->
                 delay(
                     if (attempt == 0) COMMENT_PANEL_PROBE_INITIAL_DELAY_MS
@@ -750,6 +784,37 @@ class CommentPrivateMessageRuntime(
                 if (surface.isCommentSurface) {
                     onObserved(context, pageDetector.detect(context))
                     return@launch
+                }
+                // Some current Douyin player renderers acknowledge ACTION_CLICK on the compact
+                // speech-bubble node without dispatching it to the visual player.  After two
+                // ordinary post-condition reads, retry exactly once through the bounds of a
+                // freshly resolved, safety-checked right-rail node.  Reusing the recovery policy
+                // keeps this out of the comment sheet's “评论 / AI解析” tabs, location rows,
+                // reaction controls, and comment content.
+                if (!coordinateRetryDecided && attempt + 1 == COMMENT_PANEL_NODE_BOUNDS_RETRY_ATTEMPT) {
+                    coordinateRetryDecided = true
+                    val currentTarget = CommentEntrySignalDetector.observe(
+                        context,
+                        skipPinnedVideos = config?.skipPinnedVideos == true,
+                    ).commentButton
+                    val retryTarget = CommentPanelRecoveryPolicy.reopenTarget(
+                        surface = surface,
+                        target = currentTarget,
+                        screenSize = context.screenSize,
+                    )
+                    if (retryTarget != null) {
+                        val outcome = gestures.tapBounds(retryTarget.node.bounds)
+                        logger.info(
+                            "comment_panel_bounds_retry",
+                            attributes = mapOf(
+                                "success" to outcome.succeeded,
+                                "route" to outcome.route,
+                                "bounds" to retryTarget.node.bounds.toString(),
+                            ),
+                        )
+                    } else {
+                        logger.info("comment_panel_bounds_retry_suppressed")
+                    }
                 }
             }
         }
@@ -774,9 +839,19 @@ class CommentPrivateMessageRuntime(
         }
 
         val terms = config?.matchKeywords.orEmpty()
-        val extraction = CommentCandidateExtractor.extract(context, terms)
+        val matchMode = config?.matchMode ?: CommentKeywordMatchMode.ANY
+        val extraction = CommentCandidateExtractor.extract(context, terms, matchMode)
+        reportMatchStatistics(context, extraction)
         val firstAvatar = extraction.firstVisibleCommentAvatar
         val firstCandidate = extraction.candidates.firstOrNull()
+        val leadingRowVerifiedNonMatching = firstAvatar?.let { anchor ->
+            CommentCandidateExtractor.hasVerifiedNonMatchingLeadingRow(
+                context = context,
+                anchor = anchor,
+                matchKeywords = terms,
+                matchMode = matchMode,
+            )
+        } == true
         // The first visible row is a hard safety boundary.  A partial/virtualized first row can
         // leave its avatar in the tree while hiding the paired name or comment text; in that
         // case a simple visual sort would incorrectly choose the next complete row.  Stop
@@ -792,6 +867,18 @@ class CommentPrivateMessageRuntime(
                 logger.warn(
                     "comment_leading_author_row_skipped",
                     message = "首条为带“作者”标记的作者本人评论，跳过并处理下一条有效评论",
+                    attributes = mapOf(
+                        "first_avatar_top" to firstAvatar.top,
+                        "first_candidate_top" to candidateTop(firstCandidate),
+                        "candidate_count" to extraction.candidates.size,
+                    ),
+                )
+            } else if (leadingRowVerifiedNonMatching) {
+                // The leading row is not a candidate because its explicit body does not match
+                // the frozen task rule. Its avatar, title and body were nevertheless proven in
+                // one Accessibility row, so the next matching row may be handled normally.
+                logger.info(
+                    "comment_leading_nonmatching_row_verified",
                     attributes = mapOf(
                         "first_avatar_top" to firstAvatar.top,
                         "first_candidate_top" to candidateTop(firstCandidate),
@@ -839,6 +926,38 @@ class CommentPrivateMessageRuntime(
             ),
         )
 
+        // Never use a down-scroll as a way to discover the first commenter.  A just-opened
+        // RecyclerView can briefly expose the sheet chrome before it exposes any avatar/body
+        // rows; scrolling in that gap was the source of apparently random later-row selections.
+        // Re-read the same top viewport a few times, then skip this video rather than silently
+        // moving past its first commenter.
+        if (scrollCount == 0 && processedCandidateKeys.isEmpty() && newCandidates.isEmpty()) {
+            if (initialCandidateReadRetryCount < INITIAL_COMMENT_CANDIDATE_READ_RETRIES) {
+                initialCandidateReadRetryCount += 1
+                logger.info(
+                    "comment_initial_viewport_waiting",
+                    attributes = mapOf(
+                        "attempt" to initialCandidateReadRetryCount,
+                        "max_attempts" to INITIAL_COMMENT_CANDIDATE_READ_RETRIES,
+                    ),
+                )
+                delay(INITIAL_COMMENT_CANDIDATE_READ_RETRY_DELAY_MS)
+                val fresh = currentContext()
+                if (fresh != null && CommentSurfaceDetector.detect(fresh).isCommentSurface) {
+                    processCommentViewport(fresh)
+                } else {
+                    armTimeout("等待评论区首屏候选")
+                }
+                // Whether the tree was still empty or temporarily unavailable, do not fall
+                // through to pagination: the next bounded observation owns the same top panel.
+                return
+            }
+            advanceAfterVideo("评论区首屏没有可验证评论用户，未向下滚动")
+            return
+        } else if (newCandidates.isNotEmpty()) {
+            initialCandidateReadRetryCount = 0
+        }
+
         // Debug-device regression verification may inspect the candidate chosen by the same
         // production extractor without making any external UI action. In particular, this lets
         // us prove that a top location card was ignored before approving a real blank probe.
@@ -859,7 +978,36 @@ class CommentPrivateMessageRuntime(
 
         val maxUsers = config?.maxUsersPerVideo ?: CommentPrivateMessageConfig.DEFAULT_MAX_USERS_PER_VIDEO
         val remaining = (maxUsers - processedCandidateKeys.size).coerceAtLeast(0)
-        for (candidate in newCandidates.take(remaining)) {
+        // Freeze the current viewport into a visual top-to-bottom work queue before entering any
+        // profile.  Returning from a profile can emit RecyclerView updates, but those events are
+        // merged until this queue drains; consequently the first available commenter is always
+        // handled first and no later row can jump the queue.
+        val orderedCandidates = newCandidates
+            .sortedWith(
+                compareBy<CommentUserCandidate> { candidateTop(it) }
+                    .thenBy { it.avatarBounds?.left ?: it.authorBounds?.left ?: it.commentBounds.left }
+                    .thenBy { it.identityKey },
+            )
+            .take(remaining)
+        if (orderedCandidates.isNotEmpty()) {
+            logger.info(
+                "comment_candidate_queue_frozen",
+                attributes = mapOf(
+                    "count" to orderedCandidates.size,
+                    "scroll_count" to scrollCount,
+                    "row_tops" to orderedCandidates.map(::candidateTop).joinToString(","),
+                ),
+            )
+        }
+        for ((queuePosition, candidate) in orderedCandidates.withIndex()) {
+            logger.info(
+                "comment_candidate_queue_position",
+                attributes = mapOf(
+                    "position" to queuePosition + 1,
+                    "row_top" to candidateTop(candidate),
+                    "scroll_count" to scrollCount,
+                ),
+            )
             processedCandidateKeys += candidate.identityKey
             processedTaskCandidateKeys += candidate.identityKey
             activeCandidate = candidate
@@ -916,7 +1064,9 @@ class CommentPrivateMessageRuntime(
                 advanceAfterVideo("评论区已读取到底部：${end.marker.orEmpty()}")
                 return
             }
-            val added = CommentCandidateExtractor.extract(fresh, terms).candidates.count { candidate ->
+            val postScrollExtraction = CommentCandidateExtractor.extract(fresh, terms, matchMode)
+            reportMatchStatistics(fresh, postScrollExtraction)
+            val added = postScrollExtraction.candidates.count { candidate ->
                 !processedCandidateKeys.contains(candidate.identityKey) &&
                     !processedTaskCandidateKeys.contains(candidate.identityKey)
             }
@@ -990,6 +1140,8 @@ class CommentPrivateMessageRuntime(
         scrollCount = 0
         staleScrollCount = 0
         emptyScrollCount = 0
+        initialCandidateReadRetryCount = 0
+        reportedMatchStatisticsFingerprints.clear()
         activeCandidate = null
 
         val swipe = gestures.swipeNormalized(
@@ -1144,39 +1296,12 @@ class CommentPrivateMessageRuntime(
             )
             return returnToCommentSurface()
         }
-        val privateMessageEntry = selectSafePrivateMessageEntry(profileContext)
-        if (privateMessageEntry == null) {
-            finishCandidate(
-                identityHash,
-                displayName,
-                UserTaskRecord.Outcome.PRIVATE_MESSAGE_UNAVAILABLE,
-                "主页没有可确认的纸飞机私信入口",
-                PageKind.USER_PROFILE,
-            )
-            return returnToCommentSurface()
-        }
-        val directMessageObservationGeneration = observedContextGeneration.get()
-        val entryClick = clickSnapshot(privateMessageEntry, "comment_private_message_entry")
-        if (!entryClick.succeeded) {
-            finishCandidate(
-                identityHash,
-                displayName,
-                UserTaskRecord.Outcome.PRIVATE_MESSAGE_UNAVAILABLE,
-                "纸飞机私信入口点击失败：${entryClick.reason.orEmpty()}",
-                PageKind.USER_PROFILE,
-            )
-            return returnToCommentSurface()
-        }
-        val directMessage = awaitPage(
-            setOf(
-                PageKind.DIRECT_MESSAGE,
-                PageKind.MESSAGE_EMPTY_REJECTED,
-                PageKind.MESSAGE_SEND_FAILED,
-                PageKind.PRIVATE_MESSAGE_RESTRICTED,
-            ),
-            "等待评论用户私信页",
-            afterObservedGeneration = directMessageObservationGeneration,
-        )
+        // A commenter profile first appears as a lightweight shell on some Douyin builds.  The
+        // compact paper-plane action is mounted a little later, so a single profile snapshot can
+        // falsely look like a recipient has disabled private messages.  Re-read the live profile
+        // and retry the same semantic action in a bounded window before reporting it unavailable.
+        val opening = openCommentPrivateMessage(profileContext)
+        val directMessage = opening.page
         when (directMessage.kind) {
             PageKind.DIRECT_MESSAGE -> Unit
             PageKind.HUMAN_INTERVENTION,
@@ -1206,8 +1331,16 @@ class CommentPrivateMessageRuntime(
                 finishCandidate(
                     identityHash,
                     displayName,
-                    UserTaskRecord.Outcome.MESSAGE_SEND_FAILED,
-                    "私信页未在限定时间内确认",
+                    if (opening.entryActionSubmitted) {
+                        UserTaskRecord.Outcome.MESSAGE_SEND_FAILED
+                    } else {
+                        UserTaskRecord.Outcome.PRIVATE_MESSAGE_UNAVAILABLE
+                    },
+                    opening.reason ?: if (opening.entryActionSubmitted) {
+                        "私信入口已尝试，但私信页未在限定时间内确认"
+                    } else {
+                        "主页在稳定等待后仍没有可确认的纸飞机私信入口"
+                    },
                     directMessage.kind,
                 )
                 return returnToCommentSurface()
@@ -1241,6 +1374,13 @@ class CommentPrivateMessageRuntime(
         val reason: String? = null,
     )
 
+    /** Result of the bounded profile-action route used only by the comment-private-message flow. */
+    private data class PrivateMessageOpening(
+        val page: ObservedPage,
+        val entryActionSubmitted: Boolean,
+        val reason: String? = null,
+    )
+
     private suspend fun clickCommentCandidate(
         context: ScreenContext,
         candidate: CommentUserCandidate,
@@ -1271,14 +1411,163 @@ class CommentPrivateMessageRuntime(
         }
     }
 
-    private fun selectSafePrivateMessageEntry(context: ScreenContext): NodeSnapshot? {
+    /**
+     * Opens a commenter private-message page through the profile's semantic paper-plane action.
+     *
+     * The profile transition and its action row are separate asynchronous renders.  In the old
+     * path, a valid USER_PROFILE shell without its action row immediately became
+     * PRIVATE_MESSAGE_UNAVAILABLE, even though the action appeared moments later.  This method
+     * only taps a node with an explicit private-message semantic and always refreshes the active
+     * window between attempts; it never falls back to a raw coordinate or to a follow/like action.
+     */
+    private suspend fun openCommentPrivateMessage(
+        initialProfileContext: ScreenContext,
+    ): PrivateMessageOpening {
+        var lastContext = initialProfileContext
+        var lastReason = "主页私信入口尚未稳定"
+        var entryActionSubmitted = false
+
+        repeat(COMMENT_PRIVATE_MESSAGE_ENTRY_ATTEMPTS) { zeroBasedAttempt ->
+            val attempt = zeroBasedAttempt + 1
+            if (zeroBasedAttempt > 0) {
+                delay(COMMENT_PRIVATE_MESSAGE_ENTRY_RETRY_DELAY_MS)
+            }
+
+            val liveContext = currentContext() ?: lastContext
+            lastContext = liveContext
+            val detection = pageDetector.detect(liveContext)
+            when (detection.kind) {
+                PageKind.DIRECT_MESSAGE,
+                PageKind.MESSAGE_EMPTY_REJECTED,
+                PageKind.MESSAGE_SEND_FAILED,
+                PageKind.PRIVATE_MESSAGE_RESTRICTED,
+                PageKind.HUMAN_INTERVENTION,
+                PageKind.LOGIN,
+                -> {
+                    return PrivateMessageOpening(
+                        page = ObservedPage(detection.kind, liveContext),
+                        entryActionSubmitted = entryActionSubmitted,
+                    )
+                }
+                else -> Unit
+            }
+
+            // A transient UNKNOWN classification is common while the profile grid animates.  Do
+            // not require that classification to be USER_PROFILE before inspecting the strictly
+            // semantic action; the action itself is the safety boundary.  A returned comment
+            // surface, however, is never allowed to receive a private-message click.
+            if (CommentSurfaceDetector.detect(liveContext).isCommentSurface) {
+                lastReason = "等待私信入口时已返回评论区"
+                logger.warn(
+                    "comment_private_message_entry_waiting",
+                    message = "Comment surface appeared while waiting for the profile action; no private-message action was attempted",
+                    attributes = mapOf("attempt" to attempt, "page" to detection.kind.name),
+                )
+                return@repeat
+            }
+
+            val selection = selectSafePrivateMessageEntry(liveContext)
+            val entry = selection.node ?: ProfileMessageEntryFallback.iconNode(liveContext)
+            if (entry == null) {
+                lastReason = selection.reasons.joinToString("; ")
+                    .ifBlank { "主页还没有暴露语义私信入口" }
+                logger.info(
+                    "comment_private_message_entry_waiting",
+                    attributes = mapOf(
+                        "attempt" to attempt,
+                        "page" to detection.kind.name,
+                        "nodes" to liveContext.nodes.size,
+                        "selector_score" to selection.score,
+                        "selector_reason_count" to selection.reasons.size,
+                    ),
+                )
+                if (attempt == COMMENT_PRIVATE_MESSAGE_ENTRY_ATTEMPTS) {
+                    saveNodeDiagnostic(liveContext, "comment_private_message_entry_unavailable")
+                }
+                return@repeat
+            }
+
+            val directMessageObservationGeneration = observedContextGeneration.get()
+            val entryClick = clickSnapshot(entry, "comment_private_message_entry")
+            if (!entryClick.succeeded) {
+                lastReason = "纸飞机私信入口点击失败：${entryClick.reason.orEmpty()}"
+                logger.warn(
+                    "comment_private_message_entry_retry",
+                    message = "The verified private-message action could not be activated; refreshing the same profile action",
+                    attributes = mapOf("attempt" to attempt, "route" to entryClick.route),
+                )
+                return@repeat
+            }
+
+            entryActionSubmitted = true
+            logger.info(
+                "comment_private_message_entry_submitted",
+                attributes = mapOf(
+                    "attempt" to attempt,
+                    "source" to if (selection.node != null) "selector" else "profile_icon_fallback",
+                ),
+            )
+            val observed = awaitPage(
+                expected = setOf(
+                    PageKind.DIRECT_MESSAGE,
+                    PageKind.MESSAGE_EMPTY_REJECTED,
+                    PageKind.MESSAGE_SEND_FAILED,
+                    PageKind.PRIVATE_MESSAGE_RESTRICTED,
+                ),
+                description = "等待评论用户私信页",
+                timeoutMs = COMMENT_PRIVATE_MESSAGE_ENTRY_POSTCONDITION_TIMEOUT_MS,
+                afterObservedGeneration = directMessageObservationGeneration,
+            )
+            lastContext = observed.context ?: lastContext
+            when (observed.kind) {
+                PageKind.DIRECT_MESSAGE,
+                PageKind.MESSAGE_EMPTY_REJECTED,
+                PageKind.MESSAGE_SEND_FAILED,
+                PageKind.PRIVATE_MESSAGE_RESTRICTED,
+                PageKind.HUMAN_INTERVENTION,
+                PageKind.LOGIN,
+                -> {
+                    return PrivateMessageOpening(
+                        page = observed,
+                        entryActionSubmitted = true,
+                        reason = observed.reason,
+                    )
+                }
+                else -> {
+                    lastReason = observed.reason ?: "私信入口后页面仍未稳定"
+                    logger.warn(
+                        "comment_private_message_entry_postcondition_retry",
+                        message = "The profile remained visible after the private-message action; retrying the same semantic action",
+                        attributes = mapOf("attempt" to attempt, "page" to observed.kind.name),
+                    )
+                }
+            }
+        }
+
+        val finalDetection = pageDetector.detect(lastContext)
+        return PrivateMessageOpening(
+            page = ObservedPage(finalDetection.kind, lastContext, lastReason),
+            entryActionSubmitted = entryActionSubmitted,
+            reason = lastReason,
+        )
+    }
+
+    private fun selectSafePrivateMessageEntry(context: ScreenContext): SelectionResult {
         val selection = selector.select(context, DouyinSelectors.privateMessageEntry)
-        val node = selection.node ?: return null
+        val node = selection.node ?: return selection
         val searchable = (node.searchableText() + selection.reasons).joinToString(" ").lowercase()
         val unsafe = listOf("客服", "咨询", "购物车", "商品").any(searchable::contains)
         val semanticMessage = listOf("发私信", "私信", "message", "direct message", "paper", "plane")
             .any(searchable::contains)
-        return node.takeUnless { unsafe || !semanticMessage }
+        return if (unsafe || !semanticMessage) {
+            selection.copy(
+                node = null,
+                score = 0f,
+                reasons = listOf("Rejected unsafe or non-paper-plane private-message candidate"),
+            )
+        } else {
+            selection
+        }
     }
 
     private suspend fun awaitPage(
@@ -1502,97 +1791,170 @@ class CommentPrivateMessageRuntime(
     }
 
     private suspend fun returnToCommentSurface(): Boolean {
-        var ocrRecoveryAttempted = false
-        for (attempt in 0..MAX_RETURN_TO_COMMENT_BACKS) {
-            var context = currentContext()
-            if (context != null) {
-                var detection = pageDetector.detect(context)
-                if (detection.kind == PageKind.HUMAN_INTERVENTION || detection.kind == PageKind.LOGIN) {
-                    terminal(CommentRuntimeTerminal.Outcome.PAUSED, "返回评论区时出现需要人工处理的页面")
-                    return false
-                }
-                // A direct-message composer can contain reply-like labels and a bottom input,
-                // while a profile can contain “回复” in its visible content. Do not treat either
-                // surface as the comment sheet before performing the required back navigation.
-                var stillInsideNestedSurface = detection.kind in setOf(
-                    PageKind.USER_PROFILE,
-                    PageKind.DIRECT_MESSAGE,
-                    PageKind.MESSAGE_EMPTY_REJECTED,
-                    PageKind.MESSAGE_SEND_FAILED,
-                    PageKind.PRIVATE_MESSAGE_RESTRICTED,
-                )
-                // A commenter profile can return directly to a video whose entire right rail is
-                // visually present but inaccessible with negative bounds. Before issuing another
-                // BACK from that non-nested surface, take one bounded OCR sample and reuse the
-                // same strict action-count detector that opens the next video. This prevents an
-                // unnecessary BACK from closing the video to its profile when the real recovery
-                // action is simply reopening its comment sheet.
-                if (!stillInsideNestedSurface && !ocrRecoveryAttempted) {
-                    ocrRecoveryAttempted = true
-                    context = enrichWithOcr(context)
-                    detection = pageDetector.detect(context)
+        awaitingCommentSurfaceReturn = true
+        clearReturnCommentSurfaceConfirmation()
+        try {
+            var ocrRecoveryAttempted = false
+            var requiredBackActions: Int? = null
+            for (attempt in 0..MAX_RETURN_TO_COMMENT_BACKS) {
+                var context = currentContext()
+                if (context != null) {
+                    var detection = pageDetector.detect(context)
                     if (detection.kind == PageKind.HUMAN_INTERVENTION || detection.kind == PageKind.LOGIN) {
                         terminal(CommentRuntimeTerminal.Outcome.PAUSED, "返回评论区时出现需要人工处理的页面")
                         return false
                     }
-                    stillInsideNestedSurface = detection.kind in setOf(
+                    // A direct-message composer can contain reply-like labels and a bottom input,
+                    // while a profile can contain “回复” in its visible content. Do not treat either
+                    // surface as the comment sheet before performing the required back navigation.
+                    var stillInsideNestedSurface = detection.kind in setOf(
                         PageKind.USER_PROFILE,
                         PageKind.DIRECT_MESSAGE,
                         PageKind.MESSAGE_EMPTY_REJECTED,
                         PageKind.MESSAGE_SEND_FAILED,
                         PageKind.PRIVATE_MESSAGE_RESTRICTED,
                     )
-                }
-                val surfaceDetection = CommentSurfaceDetector.detect(context)
-                val commentButton = VideoCommentButtonDetector.find(context)
-                logger.info(
-                    "comment_return_to_surface_attempt",
-                    attributes = mapOf(
-                        "attempt" to attempt,
-                        "page" to detection.kind.name,
-                        "nested" to stillInsideNestedSurface,
-                        "surface" to surfaceDetection.isCommentSurface,
-                        "surface_reasons" to surfaceDetection.reasons.joinToString("|"),
-                        "comment_button" to (commentButton != null),
-                        "ocr_blocks" to context.ocrBlocks.size,
-                    ),
-                )
-                if (!stillInsideNestedSurface && surfaceDetection.isCommentSurface) {
+
+                    if (requiredBackActions == null && stillInsideNestedSurface) {
+                        requiredBackActions = requiredBackActionsFor(detection.kind)
+                    }
+                    val minimumBackActions = requiredBackActions ?: 0
+
+                    // A commenter profile can return directly to a video whose full right rail
+                    // is visually present but sparse in accessibility. Take one bounded OCR
+                    // sample before deciding whether the final comment sheet is present.
+                    if (!stillInsideNestedSurface && !ocrRecoveryAttempted) {
+                        ocrRecoveryAttempted = true
+                        context = enrichWithOcr(context)
+                        detection = pageDetector.detect(context)
+                        if (detection.kind == PageKind.HUMAN_INTERVENTION || detection.kind == PageKind.LOGIN) {
+                            terminal(CommentRuntimeTerminal.Outcome.PAUSED, "返回评论区时出现需要人工处理的页面")
+                            return false
+                        }
+                        stillInsideNestedSurface = detection.kind in setOf(
+                            PageKind.USER_PROFILE,
+                            PageKind.DIRECT_MESSAGE,
+                            PageKind.MESSAGE_EMPTY_REJECTED,
+                            PageKind.MESSAGE_SEND_FAILED,
+                            PageKind.PRIVATE_MESSAGE_RESTRICTED,
+                        )
+                    }
+
+                    val surfaceDetection = CommentSurfaceDetector.detect(context)
+                    val commentButton = VideoCommentButtonDetector.find(context)
                     logger.info(
-                        "comment_surface_restored",
-                        attributes = mapOf("back_attempts" to attempt),
+                        "comment_return_to_surface_attempt",
+                        attributes = mapOf(
+                            "attempt" to attempt,
+                            "page" to detection.kind.name,
+                            "nested" to stillInsideNestedSurface,
+                            "surface" to surfaceDetection.isCommentSurface,
+                            "surface_reasons" to surfaceDetection.reasons.joinToString("|"),
+                            "comment_button" to (commentButton != null),
+                            "ocr_blocks" to context.ocrBlocks.size,
+                            "back_actions" to returnCommentSurfaceBackActions,
+                            "required_back_actions" to minimumBackActions,
+                        ),
                     )
-                    return true
-                }
-                // If the sheet closed but the video remains visible, reopen it via the verified
-                // speech-bubble node. A final OCR coordinate fallback is allowed only when the
-                // detector has already rejected malformed accessibility bounds. Douyin's immersive player keeps the home bottom-navigation labels, so the reopened video
-                // surface is often classified HOME rather than UNKNOWN. The verified right-rail
-                // comment button is authoritative on any non-nested surface, so accept it on
-                // HOME too instead of idling into the “无法返回评论区” terminal.
-                if (!stillInsideNestedSurface && commentButton != null) {
-                    val click = clickCommentButton(commentButton, "comment_reopen_panel")
-                    if (click.succeeded) {
-                        val reopened = awaitCommentSurface()
-                        if (reopened) return true
+                    if (!stillInsideNestedSurface && surfaceDetection.isCommentSurface) {
+                        logger.info(
+                            "comment_surface_restored",
+                            attributes = mapOf("back_attempts" to attempt, "source" to "current_context"),
+                        )
+                        return true
+                    }
+
+                    // Never consume a surface event until the current context is outside the
+                    // nested DM/profile route and this return has completed the expected number
+                    // of BACK actions. An old comment event can otherwise arrive after the first
+                    // DM -> profile BACK and incorrectly advance the next candidate.
+                    if (!stillInsideNestedSurface && hasConfirmedReturnCommentSurface(minimumBackActions)) {
+                        logger.info(
+                            "comment_surface_restored",
+                            attributes = mapOf(
+                                "back_attempts" to attempt,
+                                "source" to "accessibility_event_after_final_back",
+                                "back_actions" to returnCommentSurfaceBackActions,
+                            ),
+                        )
+                        return true
+                    }
+
+                    if (!stillInsideNestedSurface) {
+                        // A comment sheet is a toggle surface. If this final video view is still
+                        // ambiguous, do not reopen it automatically: the detector can temporarily
+                        // see comment-row controls as a right rail and GestureEngine may otherwise
+                        // downgrade a failed node action to a coordinate gesture. Waiting for a
+                        // direct confirmation is safe; failing it is preferable to touching a
+                        // heart, address, tab, or other non-requirement control.
+                        if (awaitCommentSurface(minimumBackActions)) {
+                            logger.info(
+                                "comment_surface_restored",
+                                attributes = mapOf("back_attempts" to attempt, "source" to "bounded_wait"),
+                            )
+                            return true
+                        }
+                        logger.warn(
+                            "comment_reopen_suppressed",
+                            message = "Final video surface is unconfirmed; automatic reopen is disabled for return safety",
+                            attributes = mapOf("attempt" to attempt, "back_actions" to returnCommentSurfaceBackActions),
+                        )
+                        break
                     }
                 }
+                if (attempt == MAX_RETURN_TO_COMMENT_BACKS) break
+                val nextBackActionCount = returnCommentSurfaceBackActions + 1
+                confirmedReturnCommentSurface = null
+                confirmedReturnCommentSurfaceBackActions = -1
+                returnCommentSurfaceBackActions = nextBackActionCount
+                if (!service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)) {
+                    returnCommentSurfaceBackActions -= 1
+                    break
+                }
+                logger.info(
+                    "comment_return_back_dispatched",
+                    attributes = mapOf("attempt" to attempt, "back_actions" to nextBackActionCount),
+                )
+                delay(RETURN_TO_COMMENT_DELAY_MS)
             }
-            if (attempt == MAX_RETURN_TO_COMMENT_BACKS) break
-            if (!service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)) break
-            delay(RETURN_TO_COMMENT_DELAY_MS)
+            terminal(CommentRuntimeTerminal.Outcome.FAILED, "无法在限定次数内返回评论区")
+            return false
+        } finally {
+            awaitingCommentSurfaceReturn = false
+            clearReturnCommentSurfaceConfirmation()
         }
-        terminal(CommentRuntimeTerminal.Outcome.FAILED, "无法在限定次数内返回评论区")
-        return false
     }
 
-    private suspend fun awaitCommentSurface(): Boolean {
+    private suspend fun awaitCommentSurface(minimumBackActions: Int): Boolean {
         repeat(COMMENT_SURFACE_POLL_ATTEMPTS) { attempt ->
             if (attempt > 0) delay(PAGE_POLL_INTERVAL_MS)
+            if (hasConfirmedReturnCommentSurface(minimumBackActions)) return true
             val context = currentContext() ?: return@repeat
             if (CommentSurfaceDetector.detect(context).isCommentSurface) return true
         }
         return false
+    }
+
+    private fun hasConfirmedReturnCommentSurface(minimumBackActions: Int): Boolean =
+        minimumBackActions > 0 &&
+            returnCommentSurfaceBackActions >= minimumBackActions &&
+            confirmedReturnCommentSurfaceBackActions >= minimumBackActions &&
+            confirmedReturnCommentSurface != null
+
+    private fun requiredBackActionsFor(kind: PageKind): Int = when (kind) {
+        PageKind.USER_PROFILE -> 1
+        PageKind.DIRECT_MESSAGE,
+        PageKind.MESSAGE_EMPTY_REJECTED,
+        PageKind.MESSAGE_SEND_FAILED,
+        PageKind.PRIVATE_MESSAGE_RESTRICTED,
+        -> 2
+        else -> 0
+    }
+
+    private fun clearReturnCommentSurfaceConfirmation() {
+        confirmedReturnCommentSurface = null
+        confirmedReturnCommentSurfaceBackActions = -1
+        returnCommentSurfaceBackActions = 0
     }
 
     private fun finishCandidate(
@@ -1633,10 +1995,12 @@ class CommentPrivateMessageRuntime(
     )
 
     private suspend fun scrollCommentPanel(context: ScreenContext): ActionOutcome {
-        val scrollable = context.nodes.asSequence()
-            .filter { it.isVisibleToUser && it.isEnabled && it.isScrollable }
-            .filter { it.normalizedBounds(context.screenSize).top >= 0.20f }
-            .maxByOrNull { it.bounds.height }
+        // A comment sheet is layered over Douyin's full-screen feed ViewPager.  Picking the
+        // tallest scrollable node selects that underlying feed on current builds, which means a
+        // request for the fifth commenter can silently scroll the video instead of the comment
+        // list.  Prefer a lower-sheet RecyclerView/ListView and only then fall back to another
+        // lower-region scroll container.
+        val scrollable = CommentPanelScrollTargetSelector.select(context)
         if (scrollable != null) {
             val outcome = withLiveNode(scrollable) { node ->
                 gestures.scrollForward(node)
@@ -1852,6 +2216,20 @@ class CommentPrivateMessageRuntime(
         context.ocrBlocks.forEach { block -> append(block.text).append('|').append(block.bounds).append(';') }
     }.hashCode()
 
+    /** Writes only aggregate counts; comment text and OCR content never leave this runtime. */
+    private fun reportMatchStatistics(
+        context: ScreenContext,
+        extraction: CommentCandidateExtraction,
+    ) {
+        val fingerprint = viewportFingerprint(context)
+        if (!reportedMatchStatisticsFingerprints.add(fingerprint)) return
+        AutomationStore.recordCommentMatchStatistics(
+            commentBodiesRead = extraction.commentBodiesRead,
+            matchedCommentBodies = extraction.matchedCommentBodies,
+            actionableCandidates = extraction.actionableCandidateCount,
+        )
+    }
+
     /**
      * Captures only the visible semantic/video-action shell after the old comment panel has
      * closed. It is not an identity key and is never used to choose a person; it only stops a
@@ -1936,6 +2314,15 @@ class CommentPrivateMessageRuntime(
         const val BLANK_PROBE_TIMEOUT_MS = 8_000L
         const val PAGE_POLL_INTERVAL_MS = 350L
         const val BLANK_PROBE_SETTLE_MS = 250L
+        /**
+         * Profile shells and their compact paper-plane action are rendered independently.  Four
+         * fresh tree reads cover that short mounting window without turning the route into an
+         * unbounded wait.  Once a semantic action is clicked, keep the normal direct-message
+         * postcondition long enough for Douyin's chat transition animation to finish.
+         */
+        const val COMMENT_PRIVATE_MESSAGE_ENTRY_ATTEMPTS = 4
+        const val COMMENT_PRIVATE_MESSAGE_ENTRY_RETRY_DELAY_MS = 500L
+        const val COMMENT_PRIVATE_MESSAGE_ENTRY_POSTCONDITION_TIMEOUT_MS = 3_200L
         const val RETURN_TO_COMMENT_DELAY_MS = 450L
         const val WORKS_SORT_SETTLE_MS = 140L
         const val FIRST_VIDEO_TRANSITION_PROBE_ATTEMPTS = 3
@@ -1957,6 +2344,11 @@ class CommentPrivateMessageRuntime(
         const val COMMENT_PANEL_PROBE_ATTEMPTS = 6
         const val COMMENT_PANEL_PROBE_INITIAL_DELAY_MS = 350L
         const val COMMENT_PANEL_PROBE_INTERVAL_MS = 500L
+        /** One-based probe count before the single safety-checked coordinate retry. */
+        const val COMMENT_PANEL_NODE_BOUNDS_RETRY_ATTEMPT = 3
+        /** Let the just-opened top comment viewport populate before considering any pagination. */
+        const val INITIAL_COMMENT_CANDIDATE_READ_RETRIES = 3
+        const val INITIAL_COMMENT_CANDIDATE_READ_RETRY_DELAY_MS = 450L
         const val MAX_RETURN_TO_COMMENT_BACKS = 3
         const val COMMENT_SURFACE_POLL_ATTEMPTS = 8
         /** Bounded regression scope; never scroll an unbounded long comment list. */

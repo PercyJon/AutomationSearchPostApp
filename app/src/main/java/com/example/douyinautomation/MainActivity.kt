@@ -11,6 +11,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import com.example.douyinautomation.automation.AutomationStore
 import com.example.douyinautomation.automation.AuthStore
+import com.example.douyinautomation.automation.CommentKeywordMatchMode
 import com.example.douyinautomation.automation.TaskDraft
 import com.example.douyinautomation.automation.TaskExecutionMode
 import com.example.douyinautomation.ui.AppHomeScreen
@@ -24,6 +25,7 @@ import com.example.douyinautomation.ui.theme.AutomationTheme
 data class CommentRegressionPreset(
     val targetUser: String = "designer",
     val matchKeywords: String = "",
+    val matchMode: CommentKeywordMatchMode = CommentKeywordMatchMode.ANY,
     val maxVideos: Int = 1,
     val maxUsersPerVideo: Int = 1,
     val skipPinnedVideos: Boolean = false,
@@ -143,6 +145,14 @@ class MainActivity : ComponentActivity() {
         CommentRegressionPreset(
             targetUser = source.getStringExtra(EXTRA_COMMENT_TARGET_USER)?.takeIf { it.isNotBlank() } ?: "designer",
             matchKeywords = source.getStringExtra(EXTRA_COMMENT_MATCH_KEYWORDS).orEmpty(),
+            matchMode = runCatching {
+                CommentKeywordMatchMode.valueOf(
+                    source.getStringExtra(EXTRA_COMMENT_MATCH_MODE)
+                        ?.trim()
+                        ?.uppercase()
+                        ?: CommentKeywordMatchMode.ANY.name,
+                )
+            }.getOrDefault(CommentKeywordMatchMode.ANY),
             maxVideos = source.getIntExtra(EXTRA_COMMENT_MAX_VIDEOS, 1).coerceAtLeast(1),
             maxUsersPerVideo = source.getIntExtra(EXTRA_COMMENT_MAX_USERS, 1).coerceAtLeast(1),
             skipPinnedVideos = source.getBooleanExtra(EXTRA_COMMENT_SKIP_PINNED, false),
@@ -164,6 +174,7 @@ class MainActivity : ComponentActivity() {
         /** M3 parameterized regression extras; only read when OPEN_COMMENT_P0 is set. */
         const val EXTRA_COMMENT_TARGET_USER = "com.example.douyinautomation.COMMENT_TARGET_USER"
         const val EXTRA_COMMENT_MATCH_KEYWORDS = "com.example.douyinautomation.COMMENT_MATCH_KEYWORDS"
+        const val EXTRA_COMMENT_MATCH_MODE = "com.example.douyinautomation.COMMENT_MATCH_MODE"
         const val EXTRA_COMMENT_MAX_VIDEOS = "com.example.douyinautomation.COMMENT_MAX_VIDEOS"
         const val EXTRA_COMMENT_MAX_USERS = "com.example.douyinautomation.COMMENT_MAX_USERS"
         const val EXTRA_COMMENT_SKIP_PINNED = "com.example.douyinautomation.COMMENT_SKIP_PINNED"

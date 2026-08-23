@@ -37,8 +37,19 @@ object VideoCommentButtonDetector {
                 val text = node.searchableText().joinToString(" ")
                 TextNormalizer.matchingTerms(text, labels).isNotEmpty()
             }
-            .filter { it.normalizedBounds(context.screenSize).left >= 0.68f }
-            .filter { it.normalizedBounds(context.screenSize).top in 0.20f..0.92f }
+            // The rendered rail can expose a wide clickable parent containing both the comment
+            // bubble and its count.  That parent may acknowledge ACTION_CLICK without opening
+            // the panel, so semantic text alone is not enough: require the same compact
+            // right-rail geometry used by the safe panel-reopen policy.  A wide parent then
+            // falls through to the ordered image-rail selector below, which chooses the actual
+            // second (comment) control.
+            .filter { node ->
+                val bounds = node.normalizedBounds(context.screenSize)
+                bounds.left >= SEMANTIC_RAIL_LEFT &&
+                    bounds.top in SEMANTIC_RAIL_TOP..SEMANTIC_RAIL_BOTTOM &&
+                    bounds.width <= SEMANTIC_RAIL_MAX_WIDTH &&
+                    bounds.height <= SEMANTIC_RAIL_MAX_HEIGHT
+            }
             .maxByOrNull { node ->
                 val text = node.searchableText().joinToString(" ")
                 TextNormalizer.matchingTerms(text, labels).size * 10 +
@@ -189,6 +200,11 @@ object VideoCommentButtonDetector {
     private const val OCR_RAIL_LEFT = 0.76f
     private const val OCR_RAIL_TOP = 0.28f
     private const val OCR_RAIL_BOTTOM = 0.90f
+    private const val SEMANTIC_RAIL_LEFT = 0.76f
+    private const val SEMANTIC_RAIL_TOP = 0.28f
+    private const val SEMANTIC_RAIL_BOTTOM = 0.90f
+    private const val SEMANTIC_RAIL_MAX_WIDTH = 0.24f
+    private const val SEMANTIC_RAIL_MAX_HEIGHT = 0.18f
     private const val OCR_COUNT_RAIL_LEFT = 0.82f
     private const val OCR_COUNT_RAIL_TOP = 0.42f
     private const val OCR_COUNT_RAIL_BOTTOM = 0.93f

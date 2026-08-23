@@ -106,6 +106,7 @@ import com.example.douyinautomation.automation.AuthStore
 import com.example.douyinautomation.automation.AutomationTaskType
 import com.example.douyinautomation.automation.CommentPrivateMessageConfig
 import com.example.douyinautomation.automation.CommentPrivateMessageEntryMode
+import com.example.douyinautomation.automation.CommentKeywordMatchMode
 import com.example.douyinautomation.automation.LicenseStatus
 import com.example.douyinautomation.automation.LocalSearchPresetRepository
 import com.example.douyinautomation.automation.QueryComposer
@@ -895,6 +896,7 @@ private fun CommentTaskScreen(
     var targetUser by rememberSaveable { mutableStateOf(if (useP0RegressionDefaults) "designer" else "") }
     var taskName by rememberSaveable { mutableStateOf("") }
     var matchKeywords by rememberSaveable { mutableStateOf("") }
+    var matchMode by rememberSaveable { mutableStateOf(CommentKeywordMatchMode.ANY) }
     var maxVideos by rememberSaveable { mutableStateOf("1") }
     var maxUsers by rememberSaveable { mutableStateOf(if (useP0RegressionDefaults) "1" else "5") }
     var skipPinnedVideos by rememberSaveable { mutableStateOf(false) }
@@ -916,6 +918,7 @@ private fun CommentTaskScreen(
             targetUser = preset.targetUser
             taskName = ""
             matchKeywords = preset.matchKeywords
+            matchMode = preset.matchMode
             maxVideos = preset.maxVideos.toString()
             maxUsers = preset.maxUsersPerVideo.toString()
             skipPinnedVideos = preset.skipPinnedVideos
@@ -951,6 +954,7 @@ private fun CommentTaskScreen(
         entryMode = entryMode,
         targetUser = targetUser.trim().takeIf { it.isNotEmpty() },
         matchKeywords = matchKeywords.split('|'),
+        matchMode = matchMode,
         maxVideos = maxVideos.toIntOrNull() ?: 0,
         maxUsersPerVideo = maxUsers.toIntOrNull() ?: 0,
         skipPinnedVideos = skipPinnedVideos,
@@ -1014,6 +1018,7 @@ private fun CommentTaskScreen(
             entryMode = entryMode,
             targetUser = targetUser.trim().takeIf { it.isNotEmpty() },
             matchKeywords = matchKeywords.split('|'),
+            matchMode = matchMode,
             maxVideos = maxVideos.toIntOrNull() ?: 0,
             maxUsersPerVideo = maxUsers.toIntOrNull() ?: 0,
             skipPinnedVideos = skipPinnedVideos,
@@ -1139,6 +1144,28 @@ private fun CommentTaskScreen(
             label = "评论匹配词（可选）",
             placeholder = "多个词用 | 分隔；留空表示全部评论",
             singleLine = true,
+        )
+        Text("匹配方式", style = MaterialTheme.typography.bodyLarge)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = matchMode == CommentKeywordMatchMode.ANY,
+                onClick = { matchMode = CommentKeywordMatchMode.ANY },
+                label = { Text("任一匹配") },
+            )
+            FilterChip(
+                selected = matchMode == CommentKeywordMatchMode.ALL,
+                onClick = { matchMode = CommentKeywordMatchMode.ALL },
+                label = { Text("全部匹配") },
+            )
+        }
+        Text(
+            if (matchMode == CommentKeywordMatchMode.ANY) {
+                "评论正文包含任一匹配词即可；留空仍处理全部评论。"
+            } else {
+                "评论正文必须同时包含全部匹配词；留空仍处理全部评论。"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             CompactOutlinedTextField(
@@ -2204,6 +2231,12 @@ private fun TaskRecordDetailScreen(
                         Text("屏蔽词：${history.blockedKeywords.joinToString("、")}")
                     }
                     Text("执行模式：${executionModeLabel(history.executionMode)}")
+                    if (history.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE) {
+                        Text(
+                            "评论匹配：已读取正文 ${history.commentBodiesRead} · 命中正文 ${history.matchedCommentBodies} · 可安全处理 ${history.actionableCommentCandidates}",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                         MetricItem("已处理", history.handledCount.toString(), AutomationBlue)
                         MetricItem("已跳过", history.skippedCount.toString(), AutomationWarning)
@@ -2267,6 +2300,7 @@ private fun TaskHistoryEntry.toReusableDraft(): TaskDraft = TaskDraft(
             entryMode = config.entryMode,
             targetUser = config.targetUser,
             matchKeywords = config.matchKeywords,
+            matchMode = config.matchMode,
             maxVideos = config.maxVideos,
             maxUsersPerVideo = config.maxUsersPerVideo,
             skipPinnedVideos = config.skipPinnedVideos,

@@ -202,6 +202,13 @@ class DouyinAccessibilityService : AccessibilityService() {
             !privateMessageEntryMayBeIncomplete
         ) return context
 
+        // For a current-profile comment task, the controller accepts an ordinary video only
+        // after the exact same strict action-rail check used by the handoff. Running a full OCR
+        // sample before delivering that already-safe event delays the first comment action by
+        // several seconds on physical devices, making an active task appear inert. Keep OCR for
+        // every uncertain screen; skip it only when that accepted handoff is immediately usable.
+        if (controller.shouldBypassOcrForCurrentProfileCommentEntry(context)) return context
+
         val engine = ocr ?: return context
         val now = SystemClock.uptimeMillis()
         val contextSignature = buildString {

@@ -4,6 +4,34 @@
 
 ---
 
+## [未发布] 2026-08-23 —— M5 评论匹配优化、安全空白探测回归与 P2 导航拆分
+
+### 修改内容
+
+- 评论匹配条件新增“任一/全部”模式；默认“任一”使任意一个匹配词命中即可进入候选集。任务快照、ADB 预置、持久化记录与界面均使用同一配置，旧记录兼容默认值。
+- 评论运行记录新增不含原始评论文本的统计：已读取正文数、命中正文数、可安全处理候选数；任务详情页可直接查看这些聚合结果。
+- 修复“首个可见头像属于不匹配评论”时后续匹配评论被错误阻断的问题：只有明确验证首行同时具备昵称与正文、且正文不匹配时，才允许处理同一视口中的后续匹配候选；结构不完整或仅 OCR 证据仍保持终止，不会猜测点击。
+- P2 导航职责拆分：新增 [`UserResultIdentityMatcher.kt`](app/src/main/java/com/example/douyinautomation/automation/UserResultIdentityMatcher.kt)，收拢用户搜索结果身份确认；新增 [`DouyinWindowContextReader.kt`](app/src/main/java/com/example/douyinautomation/automation/DouyinWindowContextReader.kt)，收拢活动窗口优先、可见目标窗口兜底与节点回收。现有导航状态机和动作顺序未改动。
+
+### 已验证项（真机 OnePlus NE2210 / b33aa309）
+
+- **非干跑空白安全闭环，10 位评论用户**：搜索 `designer`，匹配词“不错”“漂亮”，任一匹配，1 个视频、每视频上限 10。10 位候选均从已验证的评论左侧头像进入；私信页仅提交单个空格，均收到平台空白消息拒绝，记录为 `BLANK_PROBE_VERIFIED`；任务完成 `10 / 0 / 0`。未发送真实内容，未执行点赞操作。
+- P2-B 真机干跑回归：从 `designer` 搜索、用户主页、第一条视频到评论面板，安全选中匹配候选后以 `comment_dry_run_candidate_selected` 完成；未进入评论用户主页、私信或空白探测。
+- 自动化验证：`./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` 与 `git diff --check` 均通过。
+
+### 交接记录
+
+- [`2026-08-23-p1-keyword-match-mode.md`](docs/2026-08-23-p1-keyword-match-mode.md)
+- [`2026-08-23-p1-match-statistics.md`](docs/2026-08-23-p1-match-statistics.md)
+- [`2026-08-23-comment-non-dry-run-regression.md`](docs/2026-08-23-comment-non-dry-run-regression.md)
+- [`2026-08-23-comment-non-dry-run-10-user-validation.md`](docs/2026-08-23-comment-non-dry-run-10-user-validation.md)
+- [`2026-08-23-p2-navigation-identity-extraction.md`](docs/2026-08-23-p2-navigation-identity-extraction.md)
+- [`2026-08-23-p2-window-context-reader.md`](docs/2026-08-23-p2-window-context-reader.md)
+
+### 已知限制
+
+- 空白探测的成功标准是平台明确拒绝空白消息；任何页面、节点或提示证据不足时均不会发送真实内容，并按既有安全策略停止或恢复。
+
 ## [未发布] 2026-08-22 —— M4.5 多视频评论轨道、OCR 回退与安全恢复
 
 ### 修改内容
@@ -100,7 +128,7 @@
   - cap=20 → `评论区连续滚动后无新增评论用户` → COMPLETED（列表在第 8 条耗尽，`comment_post_scroll_empty [poll=1/2/3]` → `comment_video_batch_completed`）。
   - 三者均 **COMPLETED 无超时**（此前 cap=20 因列表耗尽会 12 秒超时 FAILED，本版本已修复）。
 - **M3.3 匹配词过滤**：
-  - 负向（`COMMENT_MATCH_KEYWORDS=qwzx99`）：首个视口 `candidate_count=0`，3 次空轮询 → COMPLETED，证明过滤生效（同目标不过滤可得 3-4 候选）。
+  - 负向（无匹配测试词）：首个视口 `candidate_count=0`，3 次空轮询 → COMPLETED，证明过滤生效（同目标不过滤可得 3-4 候选）。
   - 正向（`COMMENT_MATCH_KEYWORDS=的`）：首个视口 0 候选 → 滚动后 `candidate_count=3` → `comment_blank_probe_rejection_transient [signals=1]` → `已完成当前视频的评论用户上限探测` → COMPLETED。
 - **M3.4 分支回归**（直播/私密/无作品/置顶/0 评论）：决策逻辑由 [`CommentEntryStateMachineTest.kt`](app/src/test/java/com/example/douyinautomation/automation/CommentEntryStateMachineTest.kt) 与 [`CommentSurfaceSignalsTest.kt`](app/src/test/java/com/example/douyinautomation/automation/CommentSurfaceSignalsTest.kt) 覆盖（直播间退出/下滑跳过、私密与空主页 SKIP_PROFILE、作品 Tab 切换、置顶磁贴跳过、0 评论面板终态）；0 候选真机路径经 cap=20 列表耗尽验证。全量 `./gradlew testDebugUnitTest lintDebug assembleDebug` → **BUILD SUCCESSFUL**。
 

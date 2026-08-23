@@ -39,6 +39,10 @@ data class CommentUserCandidate(
 data class CommentCandidateExtraction(
     val candidates: List<CommentUserCandidate>,
     val fragments: List<CommentTextFragment>,
+    /** Number of visible comment-body fragments that passed basic body/chrome validation. */
+    val commentBodiesRead: Int = 0,
+    /** Number of [commentBodiesRead] fragments that matched the frozen keyword rule. */
+    val matchedCommentBodies: Int = 0,
     /**
      * The first left-side avatar below the comments-count header.  This is deliberately exposed
      * to the runtime so it can refuse a later candidate when the first visible comment row was
@@ -47,6 +51,8 @@ data class CommentCandidateExtraction(
     val firstVisibleCommentAvatar: ScreenBounds? = null,
 ) {
     val matchedCount: Int get() = candidates.size
+    /** Matching comment rows that also formed a safe author/avatar candidate. */
+    val actionableCandidateCount: Int get() = candidates.size
 }
 
 /**
@@ -66,6 +72,7 @@ object CommentCandidateExtractor {
     fun extract(
         context: ScreenContext,
         matchKeywords: Iterable<String>,
+        matchMode: CommentKeywordMatchMode = CommentKeywordMatchMode.ANY,
     ): CommentCandidateExtraction {
         val fragments = collectFragments(context)
         val terms = CommentKeywordMatcher.normalizeKeywords(matchKeywords)
@@ -76,6 +83,16 @@ object CommentCandidateExtractor {
         val commentContentTop = commentCountBottom(context)
         val locationCardBottom = locationCardBottom(context, commentContentTop)
         val headerAnchoredFirstAvatar = firstCommentAvatar(context, commentContentTop)
+        // Keep the entire author/body pairing inside the content region.  Filtering only the
+        // prospective body is insufficient: an upper-sheet location label can otherwise be
+        // reused as the “author” of a nearby chrome tab (for example “AI 解析”), then paired
+        // with the location pin as if it were an avatar.
+        val contentFragments = fragments.filter { fragment ->
+            fragment.bounds != ScreenBounds.EMPTY &&
+                fragment.bounds.top >= (context.screenSize.height * HEADER_EXCLUSION_RATIO).toInt() &&
+                (commentContentTop == null || fragment.bounds.top >= commentContentTop) &&
+                (locationCardBottom == null || fragment.bounds.top >= locationCardBottom)
+        }
         // Current Douyin comment rows expose their body through a stable `:id/content` node.
         // Prefer those bodies whenever they are available.  The generic text fallback below is
         // still needed for older/custom-rendered builds, but it cannot reliably distinguish a
@@ -95,11 +112,7 @@ object CommentCandidateExtractor {
                     isExplicitCommentBodyNode(node)
             }
             .toList()
-        val commentFragments = fragments.filter { fragment ->
-            fragment.bounds != ScreenBounds.EMPTY &&
-                fragment.bounds.top >= (context.screenSize.height * HEADER_EXCLUSION_RATIO).toInt() &&
-                (commentContentTop == null || fragment.bounds.top >= commentContentTop) &&
-                (locationCardBottom == null || fragment.bounds.top >= locationCardBottom) &&
+        val commentBodies = contentFragments.filter { fragment ->
                 (structuredCommentBodies.isEmpty() ||
                     structuredCommentBodies.any { body ->
                         fragment.source == CommentTextSource.ACCESSIBILITY &&
@@ -111,25 +124,29 @@ object CommentCandidateExtractor {
                 // must not participate in author pairing: otherwise a punctuation-free comment
                 // immediately to its left can be mistaken for that number's author and be
                 // removed from the candidate list (including a valid first commenter named “1”).
-                !isRightActionCount(fragment, context.screenSize) &&
-                CommentKeywordMatcher.matches(fragment.text, terms)
+                !isRightActionCount(fragment, context.screenSize)
+        }
+        val commentFragments = commentBodies.filter { fragment ->
+            CommentKeywordMatcher.matches(fragment.text, terms, matchMode)
         }
         // With no match keywords every visible text row is eligible initially. Remove fragments
         // that are themselves the author line for a nearby comment; otherwise an author name is
         // treated as a second comment and P4-C may visit the same person twice.
         val authorFragments = commentFragments.asSequence()
-            .mapNotNull { comment -> findAuthor(comment, fragments, context.screenSize.width) }
+            .mapNotNull { comment -> findAuthor(comment, contentFragments, context.screenSize.width) }
             .toSet()
-        val avatarSignalsAvailable = context.nodes.any(::isAvatarLikeNode)
+        val avatarSignalsAvailable = context.nodes.any { node ->
+            isCommentCandidateAvatar(node, context, commentContentTop)
+        }
         val candidates = commentFragments.mapNotNull { comment ->
             if (comment in authorFragments) return@mapNotNull null
-            val author = findAuthor(comment, fragments, context.screenSize.width)
+            val author = findAuthor(comment, contentFragments, context.screenSize.width)
             val authorText = author?.text?.trim()?.takeIf(::isLikelyAuthorText)
             // When the accessibility tree exposes avatar images, require the avatar to be to the
             // left of the author/comment pair. This rejects the top location row even if OCR or a
             // custom text node made it look like a comment. If no image nodes are exposed (pure
             // OCR fixture), retain the author/comment geometry fallback.
-            val avatar = findNearbyAvatar(author, comment, context)
+            val avatar = findNearbyAvatar(author, comment, context, commentContentTop)
             if (avatarSignalsAvailable && avatar == null) {
                 return@mapNotNull null
             }
@@ -182,6 +199,8 @@ object CommentCandidateExtractor {
         return CommentCandidateExtraction(
             candidates = candidates,
             fragments = fragments,
+            commentBodiesRead = commentBodies.size,
+            matchedCommentBodies = commentFragments.size,
             // The count header is sometimes virtualized. Once a candidate has passed the strict
             // avatar-row checks, its top-most avatar is the only safe fallback anchor; never
             // scan arbitrary images in the sheet because POI/location cards can contain their
@@ -198,6 +217,11 @@ object CommentCandidateExtractor {
     private fun isExplicitCommentBodyNode(node: NodeSnapshot): Boolean {
         val id = TextNormalizer.normalize(node.viewIdResourceName)
         return id.endsWith(":id/content") || id.endsWith("/content")
+    }
+
+    private fun isExplicitCommentTitleNode(node: NodeSnapshot): Boolean {
+        val id = TextNormalizer.normalize(node.viewIdResourceName)
+        return id.endsWith(":id/title") || id.endsWith("/title")
     }
 
     private fun collectFragments(context: ScreenContext): List<CommentTextFragment> {
@@ -301,7 +325,9 @@ object CommentCandidateExtractor {
     private fun isUiNoise(value: String): Boolean {
         val normalized = TextNormalizer.normalize(value)
         if (normalized.isBlank()) return true
+        val compact = normalized.replace(" ", "")
         return normalized in UI_NOISE ||
+            compact in COMMENT_SHEET_TAB_NOISE ||
             normalized.contains("写评论") ||
             normalized.contains("展开") ||
             normalized.contains("收起") ||
@@ -344,35 +370,35 @@ object CommentCandidateExtractor {
     }
 
     private fun commentCountBottom(context: ScreenContext): Int? {
-        val nodeBottoms = context.nodes.asSequence()
-            .filter { it.isVisibleToUser && it.bounds != ScreenBounds.EMPTY }
-            // The count is a centered header marker near the top of the sheet. Restricting its
-            // search region prevents a later comment/caption that happens to contain “条评论”
-            // from moving the content boundary below real rows.
-            .filter { node ->
-                node.bounds.top <= (context.screenSize.height * 0.55f).toInt() &&
-                    node.bounds.centerX >= context.screenSize.width * 0.18f &&
-                    node.bounds.centerX <= context.screenSize.width * 0.82f
-            }
-            .filter { node ->
-                node.searchableText().any { text ->
-                    TextNormalizer.normalize(text).replace(" ", "")
-                        .matches(Regex("\\d+条评论"))
+        fun markerBottom(text: String, bounds: ScreenBounds): Int? {
+            if (bounds == ScreenBounds.EMPTY ||
+                bounds.top > (context.screenSize.height * COMMENT_HEADER_MAX_TOP_RATIO).toInt()
+            ) return null
+            val compact = TextNormalizer.normalize(text).replace(" ", "")
+            // Older sheets center “270条评论”; newer panels show the left tab as “评论 10”.
+            // Both are stable chrome boundaries, but their geometry differs. Treating only the
+            // former as a header left the location pin above the latter eligible for a false
+            // avatar/text pairing after a list scroll.
+            return when {
+                COMMENT_COUNT_HEADER_PATTERN.matches(compact) &&
+                    bounds.centerX in (context.screenSize.width * 0.18f)..(context.screenSize.width * 0.82f) -> {
+                    bounds.bottom
                 }
+                COMMENT_TAB_COUNT_PATTERN.matches(compact) &&
+                    bounds.left <= (context.screenSize.width * COMMENT_TAB_MAX_RIGHT_RATIO).toInt() -> {
+                    bounds.bottom
+                }
+                else -> null
             }
-            .map { it.bounds.bottom }
+        }
+
+        val nodeBottoms = context.nodes.asSequence()
+            .filter { it.isVisibleToUser }
+            .flatMap { node ->
+                node.searchableText().asSequence().mapNotNull { text -> markerBottom(text, node.bounds) }
+            }
         val ocrBottoms = context.ocrBlocks.asSequence()
-            .filter { it.bounds != ScreenBounds.EMPTY }
-            .filter { block ->
-                block.bounds.top <= (context.screenSize.height * 0.55f).toInt() &&
-                    block.bounds.centerX >= context.screenSize.width * 0.18f &&
-                    block.bounds.centerX <= context.screenSize.width * 0.82f
-            }
-            .filter { block ->
-                TextNormalizer.normalize(block.text).replace(" ", "")
-                    .matches(Regex("\\d+条评论"))
-            }
-            .map { it.bounds.bottom }
+            .mapNotNull { block -> markerBottom(block.text, block.bounds) }
         return (nodeBottoms + ocrBottoms).maxOrNull()
     }
 
@@ -503,6 +529,7 @@ object CommentCandidateExtractor {
         author: CommentTextFragment?,
         comment: CommentTextFragment,
         context: ScreenContext,
+        commentContentTop: Int?,
     ): NodeSnapshot? {
         val textLeft = minOf(author?.bounds?.left ?: comment.bounds.left, comment.bounds.left)
         val rowTop = minOf(author?.bounds?.top ?: comment.bounds.top, comment.bounds.top)
@@ -514,7 +541,7 @@ object CommentCandidateExtractor {
         val horizontalAllowance = (context.screenSize.width * 0.025f).toInt().coerceIn(12, 28)
         return context.nodes
             .asSequence()
-            .filter(::isAvatarLikeNode)
+            .filter { node -> isCommentCandidateAvatar(node, context, commentContentTop) }
             .filter { avatar ->
                 isRowAvatar(
                     avatar,
@@ -556,6 +583,46 @@ object CommentCandidateExtractor {
         val horizontalTolerance = maxOf(anchor.width, avatar.width) * 0.50f
         return kotlin.math.abs(avatar.centerY - anchor.centerY) <= verticalTolerance &&
             kotlin.math.abs(avatar.centerX - anchor.centerX) <= horizontalTolerance
+    }
+
+    /**
+     * Proves that the leading visible row is structurally complete but its body does not match.
+     *
+     * Both title and body must be live Accessibility nodes on the avatar's row. This permits a
+     * later matching commenter only when the leading row is safely known to be non-matching;
+     * OCR-only text and incomplete/virtualized rows remain a hard stop.
+     */
+    fun hasVerifiedNonMatchingLeadingRow(
+        context: ScreenContext,
+        anchor: ScreenBounds,
+        matchKeywords: Iterable<String>,
+        matchMode: CommentKeywordMatchMode,
+    ): Boolean {
+        val terms = CommentKeywordMatcher.normalizeKeywords(matchKeywords)
+        if (terms.isEmpty()) return false
+        val rowHeight = anchor.height.coerceAtLeast(1)
+        val rowLeft = anchor.right - rowHeight / 8
+        val rowTop = anchor.top - rowHeight / 4
+        val rowBottom = anchor.bottom + rowHeight
+        fun belongsToLeadingRow(node: NodeSnapshot): Boolean =
+            node.isVisibleToUser &&
+                node.bounds != ScreenBounds.EMPTY &&
+                node.bounds.left >= rowLeft &&
+                node.bounds.top >= rowTop &&
+                node.bounds.bottom <= rowBottom
+
+        val hasTitle = context.nodes.any { node ->
+            belongsToLeadingRow(node) &&
+                isExplicitCommentTitleNode(node) &&
+                !node.text.isNullOrBlank()
+        }
+        if (!hasTitle) return false
+        val body = context.nodes.firstOrNull { node ->
+            belongsToLeadingRow(node) &&
+                isExplicitCommentBodyNode(node) &&
+                !node.text.isNullOrBlank()
+        } ?: return false
+        return !CommentKeywordMatcher.matches(body.text.orEmpty(), terms, matchMode)
     }
 
     /** True when [anchor]'s visual row still carries visible text. Diagnostic-only. */
@@ -603,6 +670,7 @@ object CommentCandidateExtractor {
     fun resolveAvatarTarget(context: ScreenContext, candidate: CommentUserCandidate): NodeSnapshot? {
         val path = candidate.avatarHierarchyPath
         val expected = candidate.avatarBounds ?: return null
+        val commentContentTop = commentCountBottom(context)
         val textLeft = minOf(
             candidate.authorBounds?.left ?: Int.MAX_VALUE,
             candidate.commentBounds.left,
@@ -618,6 +686,7 @@ object CommentCandidateExtractor {
         if (path.isNotEmpty()) {
             context.nodes.firstOrNull { node ->
                 node.hierarchyPath == path &&
+                    isCommentCandidateAvatar(node, context, commentContentTop) &&
                     isRowAvatar(
                         node,
                         textLeft,
@@ -629,7 +698,7 @@ object CommentCandidateExtractor {
             }?.let { return it }
         }
         return context.nodes.asSequence()
-            .filter(::isAvatarLikeNode)
+            .filter { node -> isCommentCandidateAvatar(node, context, commentContentTop) }
             .filter { node ->
                 isRowAvatar(
                     node,
@@ -661,7 +730,10 @@ object CommentCandidateExtractor {
         } else {
             emptyList()
         }
-        val avatarLikeCount = context.nodes.count(::isAvatarLikeNode)
+        val commentContentTop = commentCountBottom(context)
+        val avatarLikeCount = context.nodes.count { node ->
+            isCommentCandidateAvatar(node, context, commentContentTop)
+        }
         val avatarLikeInRow = if (expected != null) {
             val textLeft = minOf(
                 candidate.authorBounds?.left ?: Int.MAX_VALUE,
@@ -676,7 +748,7 @@ object CommentCandidateExtractor {
                 candidate.commentBounds.bottom,
             )
             context.nodes.asSequence()
-                .filter(::isAvatarLikeNode)
+                .filter { node -> isCommentCandidateAvatar(node, context, commentContentTop) }
                 .count { node ->
                     isRowAvatar(
                         node,
@@ -713,9 +785,10 @@ object CommentCandidateExtractor {
      */
     fun commentAvatarRowCount(context: ScreenContext): Int {
         val leftLimit = (context.screenSize.width * 0.34f).toInt()
-        val contentTop = (context.screenSize.height * 0.14f).toInt()
+        val commentContentTop = commentCountBottom(context)
+        val contentTop = commentContentTop ?: (context.screenSize.height * 0.14f).toInt()
         val centers = context.nodes.asSequence()
-            .filter(::isAvatarLikeNode)
+            .filter { node -> isCommentCandidateAvatar(node, context, commentContentTop) }
             .filter { node ->
                 node.bounds.centerX <= leftLimit && node.bounds.top >= contentTop
             }
@@ -799,6 +872,23 @@ object CommentCandidateExtractor {
         return ratio in 0.65f..1.35f
     }
 
+    /**
+     * A location/search-card icon can look exactly like a compact avatar to accessibility. Once
+     * the sheet header boundary is known, any such left-rail image that ends above it is chrome,
+     * never a commenter. This is intentionally structural: no city, street, or venue wording is
+     * used to make the decision.
+     */
+    private fun isCommentCandidateAvatar(
+        node: NodeSnapshot,
+        context: ScreenContext,
+        commentContentTop: Int?,
+    ): Boolean {
+        if (!isAvatarLikeNode(node)) return false
+        val contentTop = commentContentTop ?: return true
+        return node.bounds.bottom > contentTop ||
+            node.bounds.centerX > (context.screenSize.width * HEADER_ICON_LEFT_LIMIT_RATIO).toInt()
+    }
+
     private val UI_NOISE = setOf(
         "评论",
         "回复",
@@ -812,6 +902,12 @@ object CommentCandidateExtractor {
 
     private const val MAX_AUTHOR_COLUMN_OFFSET_RATIO = 0.22f
     private const val AVATAR_ROW_BAND = 60
+    private const val COMMENT_HEADER_MAX_TOP_RATIO = 0.65f
+    private const val COMMENT_TAB_MAX_RIGHT_RATIO = 0.56f
+    private const val HEADER_ICON_LEFT_LIMIT_RATIO = 0.20f
+    private val COMMENT_COUNT_HEADER_PATTERN = Regex("\\d+条评论")
+    private val COMMENT_TAB_COUNT_PATTERN = Regex("评论\\d+")
+    private val COMMENT_SHEET_TAB_NOISE = setOf("ai解析", "ai分析", "智能解析")
 
 }
 
@@ -844,6 +940,48 @@ object CommentSurfaceDetector {
         val explicitCountHeader = allTexts.any(countHeaderPattern::matches)
         val commentsTabHeader = allTexts.any(commentTabPattern::matches)
         val fullCommentsHeader = allTexts.any { it == "全部评论" }
+        // Some current panels render a second “AI解析” tab beside the comments tab. It is not an
+        // action target for this runtime, but its presence together with composer/row evidence is
+        // useful proof that the comment sheet is already open. Without this signal a recovery
+        // pass can mistake the panel for a video and attempt to reopen it.
+        val aiAnalysisTab = allTexts.any { text ->
+            text.contains("ai解析") || text.contains("ai分析") || text.contains("智能解析")
+        }
+        // On this device, returning from a commenter profile can restore a fully visible sheet
+        // whose accessibility tree temporarily omits the header, composer and avatar rows. OCR
+        // still retains the sheet's left-side “评论” heading and several per-row “回复” labels.
+        // Treat that geometry as sheet proof only when the heading is in the left sheet chrome
+        // and at least two distinct reply rows lie beneath it; a video rail's right-side comment
+        // label or caption text cannot satisfy this layout.
+        val ocrSheetHeader = context.ocrBlocks.firstOrNull { block ->
+            val text = TextNormalizer.normalize(block.text)
+            val bounds = block.bounds.normalized(context.screenSize)
+            text.startsWith("评论") &&
+                bounds.left <= OCR_SHEET_HEADER_MAX_LEFT &&
+                bounds.right <= OCR_SHEET_HEADER_MAX_RIGHT &&
+                bounds.top in OCR_SHEET_HEADER_MIN_TOP..OCR_SHEET_HEADER_MAX_TOP
+        }?.bounds?.normalized(context.screenSize)
+        val ocrReplyRowCenters = ocrSheetHeader?.let { header ->
+            context.ocrBlocks.asSequence()
+                .filter { block -> TextNormalizer.normalize(block.text).contains("回复") }
+                .map { block -> block.bounds.normalized(context.screenSize) }
+                .filter { bounds ->
+                    bounds.left in OCR_SHEET_REPLY_MIN_LEFT..OCR_SHEET_REPLY_MAX_LEFT &&
+                        bounds.top >= header.bottom + OCR_SHEET_REPLY_MIN_HEADER_GAP &&
+                        bounds.bottom <= OCR_SHEET_REPLY_MAX_BOTTOM
+                }
+                .map { bounds -> bounds.centerY }
+                .sorted()
+                .fold(mutableListOf<Float>()) { centers, centerY ->
+                    val previous = centers.lastOrNull()
+                    if (previous == null || centerY - previous >= OCR_SHEET_REPLY_ROW_MIN_GAP) {
+                        centers += centerY
+                    }
+                    centers
+                }
+        }.orEmpty()
+        val ocrSheetHeaderWithReplyRows = ocrSheetHeader != null &&
+            ocrReplyRowCenters.size >= OCR_SHEET_MIN_REPLY_ROWS
         val structuredCommentRows = CommentCandidateExtractor.extract(context, emptyList()).candidates.size
         // A profile exposes a single header avatar and a video page at most the author avatar,
         // so three or more left-side avatar rows paired with real author/comment text are strong
@@ -857,13 +995,17 @@ object CommentSurfaceDetector {
             if (explicitCountHeader) add("comment count header")
             if (commentsTabHeader) add("comment tab header")
             if (fullCommentsHeader) add("full comments header")
+            if (aiAnalysisTab) add("AI analysis tab")
             if (bottomComposer) add("bottom comment composer")
             if (repeatedReply) add("repeated reply markers")
+            if (ocrSheetHeaderWithReplyRows) add("OCR sheet header with reply rows: ${ocrReplyRowCenters.size}")
             if (avatarRowEvidence) add("structured comment avatar rows: $avatarRowCount/$structuredCommentRows")
         }
         val isSurface = (explicitCountHeader || fullCommentsHeader) &&
             (bottomComposer || repeatedReply || avatarRowEvidence) ||
             commentsTabHeader && bottomComposer ||
+            aiAnalysisTab && (bottomComposer || repeatedReply || avatarRowEvidence) ||
+            ocrSheetHeaderWithReplyRows ||
             avatarRowEvidence && repeatedReply
         return CommentSurfaceDetection(
             isCommentSurface = isSurface,
@@ -872,9 +1014,21 @@ object CommentSurfaceDetector {
                 (explicitCountHeader || fullCommentsHeader) && bottomComposer -> 0.95f
                 commentsTabHeader && bottomComposer -> 0.94f
                 explicitCountHeader || fullCommentsHeader -> 0.88f
+                ocrSheetHeaderWithReplyRows -> 0.84f
                 else -> 0.84f
             },
             reasons = reasons.ifEmpty { listOf("No comment-surface signature matched") },
         )
     }
+
+    private const val OCR_SHEET_HEADER_MAX_LEFT = 0.48f
+    private const val OCR_SHEET_HEADER_MAX_RIGHT = 0.62f
+    private const val OCR_SHEET_HEADER_MIN_TOP = 0.32f
+    private const val OCR_SHEET_HEADER_MAX_TOP = 0.70f
+    private const val OCR_SHEET_REPLY_MIN_LEFT = 0.14f
+    private const val OCR_SHEET_REPLY_MAX_LEFT = 0.68f
+    private const val OCR_SHEET_REPLY_MIN_HEADER_GAP = 0.04f
+    private const val OCR_SHEET_REPLY_MAX_BOTTOM = 0.94f
+    private const val OCR_SHEET_REPLY_ROW_MIN_GAP = 0.06f
+    private const val OCR_SHEET_MIN_REPLY_ROWS = 2
 }

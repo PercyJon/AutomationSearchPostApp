@@ -18,6 +18,15 @@ enum class CommentPrivateMessageEntryMode {
     CURRENT_PROFILE,
 }
 
+/** How a non-empty comment keyword list is evaluated against one comment body. */
+enum class CommentKeywordMatchMode {
+    /** Match when the body contains at least one configured keyword. */
+    ANY,
+
+    /** Match only when the body contains every configured keyword. */
+    ALL,
+}
+
 /** Stages shared by the future comment runner and the floating progress overlay. */
 enum class CommentPrivateMessageStage {
     RESOLVING_ENTRY,
@@ -39,12 +48,14 @@ enum class CommentPrivateMessageStage {
  * Persisted configuration for a comment-private-message task.  It contains only operator
  * intent; screen observations, OCR, and raw comments stay in memory/diagnostic storage.
  *
- * [matchKeywords] uses OR semantics. An empty list deliberately means "match every comment".
+ * [matchKeywords] are evaluated against the comment body according to [matchMode]. An empty list
+ * deliberately means "match every comment" for either mode.
  */
 data class CommentPrivateMessageConfig(
     val entryMode: CommentPrivateMessageEntryMode = CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE,
     val targetUser: String? = null,
     val matchKeywords: List<String> = emptyList(),
+    val matchMode: CommentKeywordMatchMode = CommentKeywordMatchMode.ANY,
     val maxVideos: Int = DEFAULT_MAX_VIDEOS,
     val maxUsersPerVideo: Int = DEFAULT_MAX_USERS_PER_VIDEO,
     /** When enabled, tiles carrying the semantic “置顶” marker are skipped. */
@@ -84,13 +95,14 @@ data class CommentPrivateMessageSnapshot(
     val entryMode: CommentPrivateMessageEntryMode,
     val targetUser: String?,
     val matchKeywords: List<String>,
+    val matchMode: CommentKeywordMatchMode = CommentKeywordMatchMode.ANY,
     val maxVideos: Int,
     val maxUsersPerVideo: Int,
     val skipPinnedVideos: Boolean = false,
     val dryRun: Boolean = false,
 ) {
     fun matchesComment(comment: String): Boolean =
-        CommentKeywordMatcher.matches(comment, matchKeywords)
+        CommentKeywordMatcher.matches(comment, matchKeywords, matchMode)
 }
 
 /** Converts pipe-separated UI input into the canonical list stored in the task snapshot. */
@@ -104,11 +116,19 @@ object CommentKeywordMatcher {
         .filter(String::isNotEmpty)
         .distinct()
 
-    /** Empty keywords intentionally match all comments. Non-empty keywords use OR/contains. */
-    fun matches(comment: String, keywords: Iterable<String>): Boolean {
+    /** Empty keywords intentionally match all comments; non-empty values use [matchMode]. */
+    fun matches(
+        comment: String,
+        keywords: Iterable<String>,
+        matchMode: CommentKeywordMatchMode = CommentKeywordMatchMode.ANY,
+    ): Boolean {
         val normalizedComment = normalize(comment)
         val normalizedKeywords = normalizeKeywords(keywords)
-        return normalizedKeywords.isEmpty() || normalizedKeywords.any(normalizedComment::contains)
+        if (normalizedKeywords.isEmpty()) return true
+        return when (matchMode) {
+            CommentKeywordMatchMode.ANY -> normalizedKeywords.any(normalizedComment::contains)
+            CommentKeywordMatchMode.ALL -> normalizedKeywords.all(normalizedComment::contains)
+        }
     }
 
     private fun normalize(value: String): String = IdentityTextCanonicalizer.normalize(value)

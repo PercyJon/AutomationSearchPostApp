@@ -22,6 +22,45 @@ class CommentPrivateMessageModelsTest {
     }
 
     @Test
+    fun `all keyword mode requires every normalized term in the comment body`() {
+        assertTrue(
+            CommentKeywordMatcher.matches(
+                comment = "想了解价格和优惠活动",
+                keywords = listOf("价格", "优惠"),
+                matchMode = CommentKeywordMatchMode.ALL,
+            ),
+        )
+        assertFalse(
+            CommentKeywordMatcher.matches(
+                comment = "想了解价格",
+                keywords = listOf("价格", "优惠"),
+                matchMode = CommentKeywordMatchMode.ALL,
+            ),
+        )
+        assertTrue(
+            CommentKeywordMatcher.matches(
+                comment = "任意评论",
+                keywords = emptyList(),
+                matchMode = CommentKeywordMatchMode.ALL,
+            ),
+        )
+    }
+
+    @Test
+    fun `extraction statistics retain counts without retaining comment text`() {
+        val extraction = CommentCandidateExtraction(
+            candidates = emptyList(),
+            fragments = emptyList(),
+            commentBodiesRead = 4,
+            matchedCommentBodies = 2,
+        )
+
+        assertEquals(4, extraction.commentBodiesRead)
+        assertEquals(2, extraction.matchedCommentBodies)
+        assertEquals(0, extraction.actionableCandidateCount)
+    }
+
+    @Test
     fun `comment config requires target only for search entry`() {
         val searchErrors = CommentPrivateMessageConfig().validationErrors()
         assertTrue(searchErrors.any { it.contains("目标用户") })
@@ -42,6 +81,7 @@ class CommentPrivateMessageModelsTest {
             commentConfig = CommentPrivateMessageConfig(
                 entryMode = CommentPrivateMessageEntryMode.CURRENT_PROFILE,
                 matchKeywords = listOf("价格|优惠"),
+                matchMode = CommentKeywordMatchMode.ALL,
                 maxVideos = 3,
                 maxUsersPerVideo = 8,
                 skipPinnedVideos = true,
@@ -54,9 +94,10 @@ class CommentPrivateMessageModelsTest {
         assertEquals(AutomationTaskType.COMMENT_PRIVATE_MESSAGE, snapshot.taskType)
         assertEquals(CommentPrivateMessageEntryMode.CURRENT_PROFILE, snapshot.commentConfig?.entryMode)
         assertEquals(listOf("价格", "优惠"), snapshot.commentConfig?.matchKeywords)
+        assertEquals(CommentKeywordMatchMode.ALL, snapshot.commentConfig?.matchMode)
         assertEquals(3, snapshot.commentConfig?.maxVideos)
         assertTrue(snapshot.commentConfig?.skipPinnedVideos == true)
-        assertTrue(snapshot.commentConfig?.matchesComment("请问有优惠吗") == true)
+        assertFalse(snapshot.commentConfig?.matchesComment("请问有优惠吗") ?: true)
     }
 
     @Test

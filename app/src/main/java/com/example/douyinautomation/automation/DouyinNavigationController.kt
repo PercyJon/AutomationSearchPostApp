@@ -35,6 +35,7 @@ class DouyinNavigationController(
     @Volatile private var ocr: MlKitOcrEngine?,
 ) {
     private val mutex = Mutex()
+    private val windowContextReader = DouyinWindowContextReader(service, inspector)
     /** Isolated P4-B comment-surface runner; the existing profile runner remains unchanged. */
     private val commentRuntime = CommentPrivateMessageRuntime(
         service = service,
@@ -141,6 +142,28 @@ class DouyinNavigationController(
 
     /** True only while an explicitly started POC run is waiting for or performing a step. */
     fun shouldUseOcrFallback(): Boolean = taskActive && ocr != null
+
+    /**
+     * A CURRENT_PROFILE task can enter an already-open ordinary video through a verified
+     * comment action rail.  That structural proof is sufficient for the existing handoff and
+     * is deliberately stronger than a generic UNKNOWN-page OCR fallback.  Avoid holding the
+     * first accessibility event behind a full-screen OCR pass when the same strict acceptance
+     * check would immediately open the comment sheet anyway.
+     */
+    fun shouldBypassOcrForCurrentProfileCommentEntry(context: ScreenContext): Boolean {
+        val commentConfig = activeTaskSnapshot?.commentConfig ?: return false
+        if (!taskActive ||
+            phase != AutomationPhase.WAITING_FOR_PROFILE ||
+            commentConfig.entryMode != CommentPrivateMessageEntryMode.CURRENT_PROFILE
+        ) {
+            return false
+        }
+        return isCurrentCommentEntrySurface(
+            context = context,
+            detection = pageDetector.detect(context),
+            commentConfig = commentConfig,
+        )
+    }
 
     /** True while the M2 blank-message result is still being awaited, regardless of OCR state. */
     fun shouldProbeEmptyMessageResult(): Boolean =
@@ -439,7 +462,7 @@ class DouyinNavigationController(
         } == true
         remoteResumeAnchor = remoteResume?.progress?.lastUserKey
             ?.takeIf(String::isNotBlank)
-            ?.let { key -> remoteAnchorIdentity(key, remoteResume.progress.lastUserName) }
+            ?.let { key -> UserResultIdentityMatcher.remoteAnchorIdentity(key, remoteResume.progress.lastUserName) }
         remoteResumeTargetPageNumber = remoteResume?.progress?.lastPageNumber?.coerceAtLeast(1)
         remoteResumeMaxSwipes = (remoteResumeTargetPageNumber ?: 1)
             .plus(REMOTE_RESUME_EXTRA_SWIPES)
@@ -469,7 +492,7 @@ class DouyinNavigationController(
             val knownKeys = (progress.processedUserKeys + listOfNotNull(progress.lastUserKey)).distinct()
             knownKeys.forEach { key ->
                 val savedName = key.takeIf { it == progress.lastUserKey }?.let { progress.lastUserName }
-                val identity = remoteAnchorIdentity(key, savedName)
+                val identity = UserResultIdentityMatcher.remoteAnchorIdentity(key, savedName)
                 if (processedUserIdentities.add(identity.key)) {
                     processedUserIdentityRecords += identity
                 }
@@ -692,13 +715,18 @@ class DouyinNavigationController(
             // diagnostic loop and does not scroll or click anything by itself.
             repeat(CURRENT_PROFILE_OBSERVATION_ATTEMPTS) { attempt ->
                 delay(CURRENT_PROFILE_OBSERVATION_INTERVAL_MS)
-                if (!taskActive || !commentRuntime.isRunning) return@launch
+                // After a verified profile/video has been handed to the isolated runtime, that
+                // runtime owns its own event and post-condition loops. Continuing this entry
+                // poll would take needless full-screen OCR samples while it is opening comments
+                // or processing a commenter, competing with the active step for no new signal.
+                if (!taskActive || !commentRuntime.isRunning || commentProfileHandoffObserved) return@launch
                 // A custom-rendered profile/video can expose a fresh node tree as UNKNOWN while
                 // the preceding accessibility callback has already produced an OCR-enriched
                 // target-app snapshot. Prefer that recent snapshot for this bounded poll; using
                 // a node-only tree here would discard the profile/video evidence and leave the
                 // comment state machine waiting until its watchdog expires.
                 val context = currentProfileObservationContext()
+                if (!taskActive || !commentRuntime.isRunning || commentProfileHandoffObserved) return@launch
                 if (context == null) {
                     logger.info(
                         "comment_current_profile_probe_waiting",
@@ -776,6 +804,9 @@ class DouyinNavigationController(
         // full-screen sample from the already-open profile/video. This is still a read-only
         // probe; it never clicks or swipes and gives the comment state machine the same OCR-backed
         // page evidence that a normal accessibility callback would provide.
+        if (selected != null && shouldBypassOcrForCurrentProfileCommentEntry(selected)) {
+            return selected
+        }
         if (selected != null &&
             pageDetector.detect(selected).kind == PageKind.UNKNOWN &&
             selected.packageName == TargetAppLauncher.DOUYIN_PACKAGE
@@ -1937,165 +1968,11 @@ class DouyinNavigationController(
      * display name.
      */
     private fun processedUserIdentityMatchReason(identity: UserResultIdentity): String? =
-        "checkpoint_hash".takeIf { identity.key.hashCode() in processedIdentityHashes } ?: processedUserIdentityRecords.firstNotNullOfOrNull { previous ->
-            identityMatchReason(previous, identity)
-        }
-
-    /**
-     * Rebuild a comparable identity from the backend checkpoint. Older mobile records may have
-     * been written with a fallback key such as "|佛山市南海正明堂家具店" when the OCR row name
-     * was clipped. Treat each key segment as searchable metadata instead of treating the leading
-     * pipe value as the literal display name. This lets the current row match through its company
-     * line even when its visible display name is "佛山正明堂中高档二手...".
-     */
-    private fun remoteAnchorIdentity(key: String, savedName: String?): UserResultIdentity {
-        val segments = key.split('|')
-            .map { it.trim() }
-            .filter(String::isNotBlank)
-            .map(::normalizeIdentityText)
-            .filter(String::isNotBlank)
-            .distinct()
-        val normalizedSavedName = savedName
-            ?.trim()
-            ?.takeIf { it.isNotBlank() && !it.trimStart().startsWith('|') }
-            ?.let(::normalizeIdentityText)
-        val handle = segments.firstOrNull { it.startsWith("handle:") }
-            ?.removePrefix("handle:")
-            ?.takeIf(String::isNotBlank)
-        val metadata = segments
-            .filterNot { normalizedSavedName != null && it == normalizedSavedName }
-            .filterNot { it.startsWith("handle:") }
-            .toSet()
-        val visibleTokens = (segments + listOfNotNull(normalizedSavedName)).toSet()
-        return UserResultIdentity(
-            key = key,
-            source = UserResultIdentity.Source.ACCESSIBILITY,
-            displayName = normalizedSavedName,
-            accountHandle = handle,
-            stableMetadata = metadata,
-            visibleTokens = visibleTokens,
+        UserResultIdentityMatcher.processedMatchReason(
+            identity = identity,
+            processedIdentityHashes = processedIdentityHashes,
+            processedIdentities = processedUserIdentityRecords,
         )
-    }
-
-    private fun identityMatchReason(
-        previous: UserResultIdentity,
-        identity: UserResultIdentity,
-    ): String? = when {
-        previous.key == identity.key -> "exact_key"
-        !previous.accountHandle.isNullOrBlank() &&
-            previous.accountHandle == identity.accountHandle -> "account_handle"
-        // The remote progress endpoint supplies stable user keys but older records do not always
-        // carry a separate display name. In that case compare the non-volatile company/metadata
-        // segments directly; requiring one shared stable segment still avoids name-only matches.
-        previous.displayName.isNullOrBlank() &&
-            metadataOverlap(previous.stableMetadata, identity.stableMetadata) -> "remote_metadata"
-        sameDisplayName(previous.displayName, identity.displayName) &&
-            metadataOverlap(previous.stableMetadata, identity.stableMetadata) -> "name_metadata"
-        sameDisplayName(previous.displayName, identity.displayName) &&
-            visibleMetadataOverlap(previous, identity) -> "name_visible_tokens"
-        else -> null
-    }
-
-    /**
-     * Anchor matching is intentionally a little more tolerant than ordinary duplicate skipping.
-     * A partial swipe can lose the handle/metadata OCR block while leaving the display name
-     * readable. This relaxed rule is used only to locate the continuation anchor and is rejected
-     * when multiple same-name candidates are visible.
-     */
-    private fun viewportAnchorMatchReason(
-        previous: UserResultIdentity,
-        current: UserResultIdentity,
-    ): String? = identityMatchReason(previous, current) ?:
-        if (sameDisplayName(previous.displayName, current.displayName)) {
-            "anchor_display_name"
-        } else {
-            null
-        }
-
-    private fun sameDisplayName(first: String?, second: String?): Boolean {
-        if (first.isNullOrBlank() || second.isNullOrBlank()) return false
-        val left = normalizeIdentityText(first)
-        val right = normalizeIdentityText(second)
-        if (left == right) return true
-        // OCR often clips the end of a long name at the viewport edge and replaces it with an
-        // ellipsis. Treat a sufficiently long common prefix as the same display name. Ordinary
-        // duplicate skipping still requires metadata/tokens; only the isolated viewport-anchor
-        // rule may use this tolerant name comparison when it has a single visible candidate.
-        val shorter = minOf(left.length, right.length)
-        if (shorter >= 4 && (left.startsWith(right) || right.startsWith(left))) return true
-        return normalizedNameDistance(left, right) <= 1
-    }
-
-    private fun normalizedNameDistance(first: String, second: String): Int {
-        val left = normalizeIdentityText(first)
-        val right = normalizeIdentityText(second)
-        if (kotlin.math.abs(left.length - right.length) > 3) return 4
-        if (left == right) return 0
-        // A real edit distance handles OCR dropping one character in the middle of a company
-        // name (e.g. "家具有公司" vs "家具有限公司"); positional mismatch counting would report
-        // several errors and miss the duplicate.
-        var previous = IntArray(right.length + 1) { it }
-        for (i in left.indices) {
-            val current = IntArray(right.length + 1)
-            current[0] = i + 1
-            for (j in right.indices) {
-                current[j + 1] = minOf(
-                    current[j] + 1,
-                    previous[j + 1] + 1,
-                    previous[j] + if (left[i] == right[j]) 0 else 1,
-                )
-            }
-            previous = current
-        }
-        return previous[right.length]
-    }
-
-    private fun metadataOverlap(first: Set<String>, second: Set<String>): Boolean =
-        first.any { left ->
-            second.any { right ->
-                left == right || normalizedNameDistance(left, right) <= 1
-            }
-        }
-
-    /**
-     * Stable metadata can disappear when a row is clipped at the top/bottom of a new viewport.
-     * Compare the remaining row-local OCR tokens as a second signal, excluding generic labels
-     * and the display name itself so two distinct accounts with the same name are not collapsed.
-     */
-    private fun visibleMetadataOverlap(
-        previous: UserResultIdentity,
-        current: UserResultIdentity,
-    ): Boolean {
-        val previousTokens = identityMetadataTokens(previous)
-        val currentTokens = identityMetadataTokens(current)
-        if (previousTokens.isEmpty() || currentTokens.isEmpty()) return false
-        return previousTokens.any { left ->
-            currentTokens.any { right ->
-                left == right ||
-                    left.startsWith(right) ||
-                    right.startsWith(left) ||
-                    normalizedNameDistance(left, right) <= 1
-            }
-        }
-    }
-
-    private fun identityMetadataTokens(identity: UserResultIdentity): Set<String> {
-        val name = identity.displayName?.let(::normalizeIdentityText)
-        return identity.visibleTokens
-            .map(::normalizeIdentityText)
-            .filter { token ->
-                token.length >= 2 &&
-                    token != name &&
-                    token !in IDENTITY_GENERIC_TOKENS &&
-                    !token.all(Char::isDigit) &&
-                    !token.contains("粉丝") &&
-                    !token.contains("获赞")
-            }
-            .toSet()
-    }
-
-    private fun normalizeIdentityText(value: String): String =
-        IdentityTextCanonicalizer.normalize(value)
 
     private fun persistTaskCheckpoint() {
         val snapshot = activeTaskSnapshot ?: return
@@ -2555,7 +2432,10 @@ class DouyinNavigationController(
                     UserResultIdentityExtractor.extract(identityContext, row)
                 }
                 val candidates = identities.mapIndexedNotNull { index, identity ->
-                    identity?.let { viewportAnchorMatchReason(anchor, it)?.let { reason -> index to reason } }
+                    identity?.let {
+                        UserResultIdentityMatcher.viewportAnchorMatchReason(anchor, it)
+                            ?.let { reason -> index to reason }
+                    }
                 }
                 val strong = candidates.filterNot { it.second == "anchor_display_name" }
                 val anchorIndex = when {
@@ -2734,7 +2614,7 @@ class DouyinNavigationController(
             }
             val anchorCandidates = identities.mapIndexedNotNull { index, identity ->
                 identity?.let { candidate ->
-                    viewportAnchorMatchReason(previousIdentity, candidate)?.let { reason ->
+                    UserResultIdentityMatcher.viewportAnchorMatchReason(previousIdentity, candidate)?.let { reason ->
                         index to reason
                     }
                 }
@@ -4905,37 +4785,7 @@ class DouyinNavigationController(
         }
     }
 
-    @Suppress("DEPRECATION")
-    private fun currentWindowContext(): ScreenContext? {
-        // On some OEM builds an app-owned, non-focusable TYPE_APPLICATION_OVERLAY can briefly
-        // become the accessibility "active" window.  In that moment rootInActiveWindow is our
-        // overlay (or null), even though Douyin remains visible immediately below.  The service
-        // is explicitly configured to retrieve interactive windows, so use the visible Douyin
-        // window as a node-first fallback rather than treating the overlay as a screen failure.
-        service.rootInActiveWindow?.let { activeRoot ->
-            try {
-                if (activeRoot.packageName?.toString() == TargetAppLauncher.DOUYIN_PACKAGE) {
-                    return inspector.inspect(activeRoot)
-                }
-            } finally {
-                activeRoot.recycle()
-            }
-        }
-
-        return service.windows.orEmpty().firstNotNullOfOrNull { window ->
-            val root = window.root
-            try {
-                if (root?.packageName?.toString() == TargetAppLauncher.DOUYIN_PACKAGE) {
-                    inspector.inspect(root)
-                } else {
-                    null
-                }
-            } finally {
-                root?.recycle()
-                window.recycle()
-            }
-        }
-    }
+    private fun currentWindowContext(): ScreenContext? = windowContextReader.read()
 
     private fun OcrResult.toOcrTextBlocks(): List<OcrTextBlock> = blocks.map { block ->
         val bounds = block.bounds
@@ -5045,33 +4895,6 @@ class DouyinNavigationController(
     }
 
     private companion object {
-        val IDENTITY_GENERIC_TOKENS = setOf(
-            "关注",
-            "回关",
-            "已关注",
-            "互相关注",
-            "发私信",
-            "背景图片",
-            "背景图",
-            "用户头像",
-            "头像",
-            "头像图片",
-            "图片",
-            "图片背景",
-            "背景",
-            "默认头像",
-            "用户图片",
-            "封面",
-            "封面图片",
-            "视频封面",
-            "视频",
-            "照片",
-            "筛选",
-            "按钮",
-            "店铺账号",
-            "商家认证账号",
-            "朋友",
-        )
         const val STEP_TIMEOUT_MS = 12_000L
         const val STARTUP_STEP_TIMEOUT_MS = 30_000L
         const val NODE_DUMP_DIRECTORY = "diagnostics/nodes"

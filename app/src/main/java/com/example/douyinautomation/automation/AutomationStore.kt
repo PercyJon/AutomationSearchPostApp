@@ -496,6 +496,9 @@ object AutomationStore {
                 errorMessage = null,
                 taskType = snapshot?.taskType ?: AutomationTaskType.PROFILE_PRIVATE_MESSAGE,
                 commentConfig = snapshot?.commentConfig,
+                commentBodiesRead = previous?.commentBodiesRead ?: 0,
+                matchedCommentBodies = previous?.matchedCommentBodies ?: 0,
+                actionableCommentCandidates = previous?.actionableCommentCandidates ?: 0,
             )
             taskHistory = (taskHistory.filterNot { it.taskId == taskId } + historyEntry).takeLast(MAX_TASK_HISTORY)
             persistTaskHistoryLocked()
@@ -901,6 +904,31 @@ object AutomationStore {
         synchronized(recordLock) { appendTaskRecordLocked(record) }
     }
 
+    /** Persists aggregate comment-match counters without retaining any comment or OCR text. */
+    fun recordCommentMatchStatistics(
+        commentBodiesRead: Int,
+        matchedCommentBodies: Int,
+        actionableCandidates: Int,
+    ) {
+        if (commentBodiesRead <= 0 && matchedCommentBodies <= 0 && actionableCandidates <= 0) return
+        synchronized(recordLock) {
+            val taskId = currentTaskId ?: return
+            val history = taskHistory.firstOrNull { it.taskId == taskId }
+                ?.takeIf { it.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE }
+                ?: return
+            taskHistory = taskHistory.map { entry ->
+                if (entry.taskId != taskId) entry else history.copy(
+                    updatedAtMillis = System.currentTimeMillis(),
+                    commentBodiesRead = history.commentBodiesRead + commentBodiesRead.coerceAtLeast(0),
+                    matchedCommentBodies = history.matchedCommentBodies + matchedCommentBodies.coerceAtLeast(0),
+                    actionableCommentCandidates = history.actionableCommentCandidates + actionableCandidates.coerceAtLeast(0),
+                )
+            }
+            persistTaskHistoryLocked()
+            _uiState.update { it.copy(taskHistory = taskHistory) }
+        }
+    }
+
     private fun appendTaskRecordLocked(record: UserTaskRecord) {
         allTaskRecords = (allTaskRecords + record).takeLast(MAX_TASK_RECORDS)
         persistRecordsLocked()
@@ -986,6 +1014,7 @@ object AutomationStore {
         put("entry_mode", entryMode.name)
         put("target_user", targetUser ?: JSONObject.NULL)
         put("match_keywords", JSONArray(matchKeywords))
+        put("match_mode", matchMode.name)
         put("max_videos", maxVideos)
         put("max_users_per_video", maxUsersPerVideo)
         put("skip_pinned_videos", skipPinnedVideos)
@@ -998,10 +1027,16 @@ object AutomationStore {
                 optString("entry_mode", CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE.name),
             )
         }.getOrDefault(CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE)
+        val matchMode = runCatching {
+            CommentKeywordMatchMode.valueOf(
+                optString("match_mode", CommentKeywordMatchMode.ANY.name),
+            )
+        }.getOrDefault(CommentKeywordMatchMode.ANY)
         CommentPrivateMessageConfig(
             entryMode = mode,
             targetUser = optStringOrNull("target_user"),
             matchKeywords = optJSONArray("match_keywords")?.toStringList().orEmpty(),
+            matchMode = matchMode,
             maxVideos = optInt("max_videos", CommentPrivateMessageConfig.DEFAULT_MAX_VIDEOS),
             maxUsersPerVideo = optInt(
                 "max_users_per_video",
@@ -1016,6 +1051,7 @@ object AutomationStore {
         put("entry_mode", entryMode.name)
         put("target_user", targetUser ?: JSONObject.NULL)
         put("match_keywords", JSONArray(matchKeywords))
+        put("match_mode", matchMode.name)
         put("max_videos", maxVideos)
         put("max_users_per_video", maxUsersPerVideo)
         put("skip_pinned_videos", skipPinnedVideos)
@@ -1028,10 +1064,16 @@ object AutomationStore {
                 optString("entry_mode", CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE.name),
             )
         }.getOrDefault(CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE)
+        val matchMode = runCatching {
+            CommentKeywordMatchMode.valueOf(
+                optString("match_mode", CommentKeywordMatchMode.ANY.name),
+            )
+        }.getOrDefault(CommentKeywordMatchMode.ANY)
         CommentPrivateMessageSnapshot(
             entryMode = mode,
             targetUser = optStringOrNull("target_user"),
             matchKeywords = optJSONArray("match_keywords")?.toStringList().orEmpty(),
+            matchMode = matchMode,
             maxVideos = optInt("max_videos", CommentPrivateMessageConfig.DEFAULT_MAX_VIDEOS),
             maxUsersPerVideo = optInt(
                 "max_users_per_video",
@@ -1163,6 +1205,9 @@ object AutomationStore {
         put("error_message", errorMessage ?: JSONObject.NULL)
         put("task_type", taskType.name)
         put("comment_config", commentConfig?.toJson() ?: JSONObject.NULL)
+        put("comment_bodies_read", commentBodiesRead)
+        put("matched_comment_bodies", matchedCommentBodies)
+        put("actionable_comment_candidates", actionableCommentCandidates)
     }
 
     private fun decodeTaskHistory(raw: String?): List<TaskHistoryEntry> {
@@ -1203,6 +1248,9 @@ object AutomationStore {
                                 AutomationTaskType.valueOf(item.optString("task_type"))
                             }.getOrDefault(AutomationTaskType.PROFILE_PRIVATE_MESSAGE),
                             commentConfig = item.optJSONObject("comment_config")?.toCommentPrivateMessageSnapshot(),
+                            commentBodiesRead = item.optInt("comment_bodies_read", 0),
+                            matchedCommentBodies = item.optInt("matched_comment_bodies", 0),
+                            actionableCommentCandidates = item.optInt("actionable_comment_candidates", 0),
                         ),
                     )
                 }

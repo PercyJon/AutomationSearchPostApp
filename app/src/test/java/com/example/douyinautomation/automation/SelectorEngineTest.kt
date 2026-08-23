@@ -36,6 +36,37 @@ class SelectorEngineTest {
     }
 
     @Test
+    fun `compact profile private-message icon label resolves to its clickable parent`() {
+        // Mirrors the live commenter-profile layout: the semantic "私信" icon is a non-clickable
+        // child, while the compact action container owns the click at the far right of the follow
+        // button row.
+        val result = engine.select(
+            ScreenContext(
+                screenSize = ScreenSize(1080, 2412),
+                nodes = listOf(
+                    NodeSnapshot(
+                        hierarchyPath = listOf(8),
+                        className = "android.widget.FrameLayout",
+                        isClickable = true,
+                        bounds = ScreenBounds(900, 948, 1014, 1092),
+                    ),
+                    NodeSnapshot(
+                        hierarchyPath = listOf(8, 0),
+                        className = "android.widget.ImageView",
+                        text = "私信",
+                        bounds = ScreenBounds(933, 996, 981, 1044),
+                    ),
+                ),
+            ),
+            DouyinSelectors.privateMessageEntry,
+        )
+
+        assertTrue(result.found)
+        assertEquals(listOf(8), result.node?.hierarchyPath)
+        assertTrue(result.reasons.any { it.contains("clickable ancestor") })
+    }
+
+    @Test
     fun `English user tab supports cross-language selector matching`() {
         val context = ScreenContext(
             nodes = listOf(

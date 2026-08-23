@@ -109,6 +109,7 @@ data class TaskDraft(
                     entryMode = config.entryMode,
                     targetUser = config.targetUser,
                     matchKeywords = config.matchKeywords,
+                    matchMode = config.matchMode,
                     maxVideos = config.maxVideos,
                     maxUsersPerVideo = config.maxUsersPerVideo,
                     skipPinnedVideos = config.skipPinnedVideos,
@@ -200,6 +201,10 @@ data class TaskHistoryEntry(
     val errorMessage: String? = null,
     val taskType: AutomationTaskType = AutomationTaskType.PROFILE_PRIVATE_MESSAGE,
     val commentConfig: CommentPrivateMessageSnapshot? = null,
+    /** Aggregate counts only; comment text, OCR text, and account data are never retained. */
+    val commentBodiesRead: Int = 0,
+    val matchedCommentBodies: Int = 0,
+    val actionableCommentCandidates: Int = 0,
 )
 
 /**

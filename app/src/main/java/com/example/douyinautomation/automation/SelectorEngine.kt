@@ -336,7 +336,11 @@ object DouyinSelectors {
 
     val privateMessageEntry = SelectorRequest(
         name = "private-message-entry",
-        labels = listOf("发私信", "private message", "message"),
+        // Some current profile layouts expose the compact paper-plane action as a text label
+        // "私信" rather than "发私信".  Keep it in the semantic label set as well as the
+        // content-description set so the selector can still promote that label to its verified
+        // clickable parent.
+        labels = listOf("发私信", "私信", "private message", "message"),
         contentDescriptionLabels = DouyinLabels.privateMessage,
         requireClickable = true,
         preferredRegion = NormalizedRect(0f, 0.10f, 1f, 0.82f),
