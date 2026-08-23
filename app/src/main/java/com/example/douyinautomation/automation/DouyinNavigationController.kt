@@ -2849,17 +2849,15 @@ class DouyinNavigationController(
             return
         }
 
-        val clippedListName = listName.orEmpty().let { value ->
-            value.isBlank() || value.contains("…") || value.contains("..") || value.trimEnd().endsWith('.')
-        }
         // OCR is intentionally limited to uncertain rows. Accessibility-backed names are not
         // rescanned unless the profile node was unstable; OCR-backed rows always receive one
         // profile-header pass so a list-level glyph error cannot be persisted unchanged.
-        val shouldUseProfileOcr = ocr != null && (
-            currentUserDisplayNameSource == UserResultIdentity.Source.OCR ||
-                clippedListName ||
-                nodeCandidate != null
-            )
+        val shouldUseProfileOcr = DisplayNameResolutionPolicy.shouldUseProfileOcr(
+            hasOcrEngine = ocr != null,
+            currentSource = currentUserDisplayNameSource,
+            listName = listName,
+            hasAccessibilityCandidate = nodeCandidate != null,
+        )
         if (!shouldUseProfileOcr) return
 
         val enriched = captureContextWithOcr(
@@ -2902,7 +2900,11 @@ class DouyinNavigationController(
             return
         }
 
-        if (ocr == null) return
+        if (!DisplayNameResolutionPolicy.shouldUseDirectMessageOcr(
+                hasOcrEngine = ocr != null,
+                hasAccessibilityCandidate = false,
+            )
+        ) return
         directContext = captureContextWithOcr(
             base = directContext,
             tag = "direct_message_identity",

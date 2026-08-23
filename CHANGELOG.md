@@ -14,6 +14,7 @@
 - P2 导航职责拆分：新增 [`UserResultIdentityMatcher.kt`](app/src/main/java/com/example/douyinautomation/automation/UserResultIdentityMatcher.kt)，收拢用户搜索结果身份确认；新增 [`DouyinWindowContextReader.kt`](app/src/main/java/com/example/douyinautomation/automation/DouyinWindowContextReader.kt)，收拢活动窗口优先、可见目标窗口兜底与节点回收。现有导航状态机和动作顺序未改动。
 - P2 继续拆分启动页 HOME 归一化策略：新增 [`InitialHomeSurfacePolicy.kt`](app/src/main/java/com/example/douyinautomation/automation/InitialHomeSurfacePolicy.kt)，使启动观察与有界恢复对“未知页 + 无临时遮罩 + 已验证搜索入口”使用同一纯判定；不包含节点点击、手势或消息动作。
 - P2 继续收拢 OCR 证据适配：新增 [`OcrTextBlockMapper.kt`](app/src/main/java/com/example/douyinautomation/automation/OcrTextBlockMapper.kt)，让无障碍服务和导航控制器复用相同的 OCR 边界空值与排序规则；新增 [`UserResultsViewportFingerprint.kt`](app/src/main/java/com/example/douyinautomation/automation/UserResultsViewportFingerprint.kt)，让用户结果 OCR 缓存键成为基于屏幕比例的可测试纯函数。
+- P2-F 收拢用户名称解析的来源优先级与 OCR 门控：新增 [`DisplayNameResolutionPolicy.kt`](app/src/main/java/com/example/douyinautomation/automation/DisplayNameResolutionPolicy.kt)，保持主页和私信页的“无障碍优先、有限 OCR 回退”语义一致，不改变各页面候选解析器或私信动作。
 
 ### 已验证项（真机 OnePlus NE2210 / b33aa309）
 
@@ -32,6 +33,7 @@
 - [`2026-08-23-p2-initial-home-policy.md`](docs/2026-08-23-p2-initial-home-policy.md)
 - [`2026-08-23-p2-ocr-text-block-mapper.md`](docs/2026-08-23-p2-ocr-text-block-mapper.md)
 - [`2026-08-23-p2-user-results-viewport-fingerprint.md`](docs/2026-08-23-p2-user-results-viewport-fingerprint.md)
+- [`2026-08-23-p2-display-name-resolution-policy.md`](docs/2026-08-23-p2-display-name-resolution-policy.md)
 
 ### 已知限制
 
