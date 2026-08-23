@@ -10,9 +10,14 @@ package com.example.douyinautomation.automation
 object UserResultIdentityMatcher {
     fun processedMatchReason(
         identity: UserResultIdentity,
-        processedIdentityHashes: Set<Int>,
+        processedIdentityFingerprints: Set<String>,
+        legacyProcessedIdentityHashes: Set<Int>,
         processedIdentities: Iterable<UserResultIdentity>,
-    ): String? = "checkpoint_hash".takeIf { identity.key.hashCode() in processedIdentityHashes }
+    ): String? = "checkpoint_fingerprint".takeIf { identity.fingerprint in processedIdentityFingerprints }
+        // Old checkpoints cannot be converted without retaining the raw identity key. Preserve
+        // their no-repeat behavior only while they are resumed; all newly written checkpoints
+        // contain fingerprints and never use this collision-prone compatibility path.
+        ?: "legacy_checkpoint_hash".takeIf { identity.key.hashCode() in legacyProcessedIdentityHashes }
         ?: processedIdentities.firstNotNullOfOrNull { previous -> matchReason(previous, identity) }
 
     /** Rebuilds a comparable identity from a backend checkpoint without retaining new data. */

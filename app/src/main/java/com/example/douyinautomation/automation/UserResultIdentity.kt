@@ -13,6 +13,9 @@ data class UserResultIdentity(
     /** All row-local tokens retained in memory for overlap comparison when OCR clips a line. */
     val visibleTokens: Set<String> = emptySet(),
 ) {
+    /** Opaque durable reference for checkpoints and record correlation. */
+    val fingerprint: String get() = UserIdentityFingerprint.fromStableKey(key)
+
     enum class Source {
         ACCESSIBILITY,
         OCR,

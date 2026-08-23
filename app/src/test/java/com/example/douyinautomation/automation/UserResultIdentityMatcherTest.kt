@@ -6,6 +6,46 @@ import kotlin.test.assertNull
 
 class UserResultIdentityMatcherTest {
     @Test
+    fun `checkpoint fingerprint does not merge two keys with the same legacy hash`() {
+        val first = identity(key = "Aa")
+        val second = identity(key = "BB")
+
+        assertEquals(first.key.hashCode(), second.key.hashCode())
+        assertEquals(
+            "checkpoint_fingerprint",
+            UserResultIdentityMatcher.processedMatchReason(
+                identity = first,
+                processedIdentityFingerprints = setOf(first.fingerprint),
+                legacyProcessedIdentityHashes = emptySet(),
+                processedIdentities = emptyList(),
+            ),
+        )
+        assertNull(
+            UserResultIdentityMatcher.processedMatchReason(
+                identity = second,
+                processedIdentityFingerprints = setOf(first.fingerprint),
+                legacyProcessedIdentityHashes = emptySet(),
+                processedIdentities = emptyList(),
+            ),
+        )
+    }
+
+    @Test
+    fun `legacy checkpoint hash remains a read-only compatibility match`() {
+        val identity = identity(key = "legacy-account")
+
+        assertEquals(
+            "legacy_checkpoint_hash",
+            UserResultIdentityMatcher.processedMatchReason(
+                identity = identity,
+                processedIdentityFingerprints = emptySet(),
+                legacyProcessedIdentityHashes = setOf(identity.key.hashCode()),
+                processedIdentities = emptyList(),
+            ),
+        )
+    }
+
+    @Test
     fun `same account handle remains an ordinary duplicate match`() {
         val previous = identity(key = "old", handle = "designer_01")
         val current = identity(key = "new", handle = "designer_01")

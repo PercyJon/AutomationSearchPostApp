@@ -36,6 +36,8 @@ class DouyinNavigationController(
 ) {
     private val mutex = Mutex()
     private val windowContextReader = DouyinWindowContextReader(service, inspector)
+    /** Opaque comment-author references persisted with the active task checkpoint. */
+    private val processedCommentCandidateFingerprints = LinkedHashSet<String>()
     /** Isolated P4-B comment-surface runner; the existing profile runner remains unchanged. */
     private val commentRuntime = CommentPrivateMessageRuntime(
         service = service,
@@ -51,6 +53,12 @@ class DouyinNavigationController(
                 tag = "comment_next_video_rail",
                 region = OcrRegion.FULL,
             ) ?: base
+        },
+        restoredCommentCandidateFingerprints = { processedCommentCandidateFingerprints.toSet() },
+        onCommentCandidateProcessed = { fingerprint ->
+            if (processedCommentCandidateFingerprints.add(fingerprint)) {
+                persistTaskCheckpoint()
+            }
         },
         onTerminal = { terminal ->
             // Runtime timeouts happen on its watchdog coroutine. Queue terminal handling so the
@@ -99,12 +107,14 @@ class DouyinNavigationController(
     private var lastProcessedUserAnchorBottom: Float? = null
     /** Row identities already handled in this run; this survives small overlapping page swipes. */
     private val processedUserIdentities = LinkedHashSet<String>()
-    /** Opaque hashes restored from a durable checkpoint after the process is recreated. */
-    private val processedIdentityHashes = LinkedHashSet<Int>()
+    /** Opaque SHA-256 references restored from durable checkpoints after process recreation. */
+    private val processedIdentityFingerprints = LinkedHashSet<String>()
+    /** Compatibility-only references from checkpoints written before SHA-256 migration. */
+    private val legacyProcessedIdentityHashes = LinkedHashSet<Int>()
     /** Rich identity aliases are retained so OCR punctuation/spacing drift cannot reopen a row. */
     private val processedUserIdentityRecords = ArrayList<UserResultIdentity>()
-    /** Hash of the currently selected row's identity, used to finish its task audit record. */
-    private var currentUserIdentityHash: Int? = null
+    /** Fingerprint of the currently selected row, used to finish its task audit record. */
+    private var currentUserIdentityFingerprint: String? = null
     /** List-row name retained as a hint when the profile header must replace a clipped label. */
     private var currentUserDisplayName: String? = null
     /** Source of the list-row identity; OCR-backed rows receive an additional profile check. */
@@ -483,7 +493,9 @@ class DouyinNavigationController(
         lastProcessedUserAnchorBottom = null
         processedUserIdentities.clear()
         processedUserIdentityRecords.clear()
-        processedIdentityHashes.clear()
+        processedIdentityFingerprints.clear()
+        legacyProcessedIdentityHashes.clear()
+        processedCommentCandidateFingerprints.clear()
         // Rehydrate the complete terminal identity ledger when the backend provides it. The last
         // user anchor alone is not enough when the feed reorders or clips that row; known earlier
         // identities let the controller choose the first genuinely new visible row instead of
@@ -496,10 +508,10 @@ class DouyinNavigationController(
                 if (processedUserIdentities.add(identity.key)) {
                     processedUserIdentityRecords += identity
                 }
-                processedIdentityHashes += identity.key.hashCode()
+                processedIdentityFingerprints += identity.fingerprint
             }
         }
-        currentUserIdentityHash = null
+        currentUserIdentityFingerprint = null
         currentUserDisplayName = null
         currentUserDisplayNameSource = null
         cachedUserResultsViewportSignature = null
@@ -864,9 +876,13 @@ class DouyinNavigationController(
         lastProcessedUserAnchorBottom = null
         processedUserIdentities.clear()
         processedUserIdentityRecords.clear()
-        processedIdentityHashes.clear()
-        processedIdentityHashes.addAll(checkpoint.processedIdentityHashes)
-        currentUserIdentityHash = null
+        processedIdentityFingerprints.clear()
+        legacyProcessedIdentityHashes.clear()
+        processedIdentityFingerprints.addAll(checkpoint.processedIdentityFingerprints)
+        legacyProcessedIdentityHashes.addAll(checkpoint.legacyProcessedIdentityHashes)
+        processedCommentCandidateFingerprints.clear()
+        processedCommentCandidateFingerprints.addAll(checkpoint.processedCommentIdentityFingerprints)
+        currentUserIdentityFingerprint = null
         currentUserDisplayName = null
         currentUserDisplayNameSource = null
         cachedUserResultsViewportSignature = null
@@ -1034,13 +1050,17 @@ class DouyinNavigationController(
         pausedPhase = null
         latestContext = null
         latestOcrContext = null
-        currentUserIdentityHash = null
+        currentUserIdentityFingerprint = null
         currentUserDisplayName = null
         currentUserDisplayNameSource = null
         processedUserIdentities.clear()
         processedUserIdentityRecords.clear()
-        processedIdentityHashes.clear()
-        processedIdentityHashes.addAll(checkpoint.processedIdentityHashes)
+        processedIdentityFingerprints.clear()
+        legacyProcessedIdentityHashes.clear()
+        processedIdentityFingerprints.addAll(checkpoint.processedIdentityFingerprints)
+        legacyProcessedIdentityHashes.addAll(checkpoint.legacyProcessedIdentityHashes)
+        processedCommentCandidateFingerprints.clear()
+        processedCommentCandidateFingerprints.addAll(checkpoint.processedCommentIdentityFingerprints)
         commentProfileHandoffObserved = false
         commentProfileHandoffNotBeforeMillis = 0L
         commentRuntime.stop()
@@ -1742,12 +1762,12 @@ class DouyinNavigationController(
             if (identity != null) {
                 val duplicateReason = processedUserIdentityMatchReason(identity)
                 val duplicate = duplicateReason != null
-                val identityHash = identity.key.hashCode()
+                val identityFingerprint = identity.fingerprint
                 logger.info(
                     "user_result_identity",
                     attributes = mapOf(
                         "source" to identity.source.name,
-                        "key_hash" to identityHash,
+                        "identity_fingerprint_prefix" to UserIdentityFingerprint.logPrefix(identityFingerprint),
                         "duplicate" to duplicate,
                         "duplicate_reason" to (duplicateReason ?: "none"),
                         "visible_token_count" to identity.visibleTokens.size,
@@ -1755,7 +1775,7 @@ class DouyinNavigationController(
                 )
                 if (duplicate) {
                     AutomationStore.recordUserTaskEvent(
-                        identityHash = identityHash,
+                        identityFingerprint = identityFingerprint,
                         outcome = UserTaskRecord.Outcome.DUPLICATE_SKIPPED,
                         reason = "The overlapping viewport exposed an already processed user",
                         remoteUserKey = identity.key,
@@ -1781,12 +1801,12 @@ class DouyinNavigationController(
                         "user_result_blocked_keyword",
                         message = "The visible user matched a task block rule; skipping before opening the profile",
                         attributes = mapOf(
-                            "identity_hash" to identityHash,
+                            "identity_fingerprint_prefix" to UserIdentityFingerprint.logPrefix(identityFingerprint),
                             "matched_count" to blockedEvaluation.matches.size,
                         ),
                     )
                     AutomationStore.recordUserTaskEvent(
-                        identityHash = identityHash,
+                        identityFingerprint = identityFingerprint,
                         outcome = UserTaskRecord.Outcome.FILTERED_BY_KEYWORD,
                         reason = "Blocked keywords matched: ${blockedEvaluation.matchedKeywords.joinToString()}",
                         remoteUserKey = identity.key,
@@ -1796,7 +1816,7 @@ class DouyinNavigationController(
                     // viewport anchor continue after it instead of exposing it again.
                     processedUserIdentities.add(identity.key)
                     processedUserIdentityRecords += identity
-                    processedIdentityHashes.add(identityHash)
+                    processedIdentityFingerprints.add(identityFingerprint)
                     persistTaskCheckpoint()
                     lastProcessedUserAnchorBottom = rowMatch!!.anchor.bounds.bottom.toFloat()
                     skipFilteredUser(rowContext, rowMatch!!)
@@ -1804,14 +1824,14 @@ class DouyinNavigationController(
                 }
                 processedUserIdentities.add(identity.key)
                 processedUserIdentityRecords += identity
-                processedIdentityHashes.add(identityHash)
+                processedIdentityFingerprints.add(identityFingerprint)
                 persistTaskCheckpoint()
-                currentUserIdentityHash = identityHash
+                currentUserIdentityFingerprint = identityFingerprint
                 currentUserDisplayName = identity.displayName
                 currentUserDisplayNameSource = identity.source
                 if (activeTaskSnapshot?.taskType != AutomationTaskType.COMMENT_PRIVATE_MESSAGE) {
                     AutomationStore.recordUserTaskStarted(
-                        identityHash = identityHash,
+                        identityFingerprint = identityFingerprint,
                         remoteUserKey = identity.key,
                         displayName = identity.displayName,
                         messageContent = currentTaskMessageContent(),
@@ -1820,12 +1840,12 @@ class DouyinNavigationController(
                     // P4-B reads the target profile's comment surface; it does not yet create a
                     // per-comment private-message record. Keep the profile runner's audit slot
                     // empty so an unfinished comment read cannot appear as a sent DM.
-                    currentUserIdentityHash = null
+                    currentUserIdentityFingerprint = null
                     currentUserDisplayName = null
                     currentUserDisplayNameSource = null
                 }
             } else {
-                currentUserIdentityHash = null
+                currentUserIdentityFingerprint = null
                 currentUserDisplayName = null
                 currentUserDisplayNameSource = null
                 logger.warn(
@@ -1834,7 +1854,7 @@ class DouyinNavigationController(
                     attributes = mapOf("anchor_top" to rowMatch!!.anchor.bounds.top),
                 )
                 AutomationStore.recordUserTaskEvent(
-                    identityHash = null,
+                    identityFingerprint = null,
                     outcome = UserTaskRecord.Outcome.IDENTITY_UNAVAILABLE,
                     reason = "The row had no stable account identity",
                 )
@@ -1851,11 +1871,11 @@ class DouyinNavigationController(
             )
             if (followState == UserFollowActionState.FOLLOW_BACK) {
                 AutomationStore.recordUserTaskFinished(
-                    identityHash = currentUserIdentityHash,
+                    identityFingerprint = currentUserIdentityFingerprint,
                     outcome = UserTaskRecord.Outcome.FOLLOW_BACK_SKIPPED,
                     reason = "The result exposed a follow-back action",
                 )
-                currentUserIdentityHash = null
+                currentUserIdentityFingerprint = null
                 currentUserDisplayName = null
                 currentUserDisplayNameSource = null
                 skipFollowBackUser(rowContext, rowMatch!!)
@@ -1928,18 +1948,22 @@ class DouyinNavigationController(
     private fun processedUserIdentityMatchReason(identity: UserResultIdentity): String? =
         UserResultIdentityMatcher.processedMatchReason(
             identity = identity,
-            processedIdentityHashes = processedIdentityHashes,
+            processedIdentityFingerprints = processedIdentityFingerprints,
+            legacyProcessedIdentityHashes = legacyProcessedIdentityHashes,
             processedIdentities = processedUserIdentityRecords,
         )
 
     private fun persistTaskCheckpoint() {
         val snapshot = activeTaskSnapshot ?: return
+        val queryIndex = TaskCheckpointQueryIndexPolicy.normalize(snapshot, taskQueryIndex) ?: return
         AutomationStore.saveTaskCheckpoint(
             TaskCheckpoint(
                 taskId = AutomationStore.getCurrentTaskId() ?: snapshot.taskId,
                 snapshot = snapshot,
-                queryIndex = taskQueryIndex.coerceIn(0, snapshot.composedQueries.lastIndex),
-                processedIdentityHashes = processedIdentityHashes.toList(),
+                queryIndex = queryIndex,
+                processedIdentityFingerprints = processedIdentityFingerprints.toList(),
+                processedCommentIdentityFingerprints = processedCommentCandidateFingerprints.toList(),
+                legacyProcessedIdentityHashes = legacyProcessedIdentityHashes.toList(),
                 updatedAtMillis = System.currentTimeMillis(),
             ),
         )
@@ -2786,7 +2810,7 @@ class DouyinNavigationController(
      * the list identity is missing or visibly clipped.
      */
     private suspend fun enrichCurrentUserDisplayName(context: ScreenContext) {
-        val identityHash = currentUserIdentityHash ?: return
+        val identityFingerprint = currentUserIdentityFingerprint ?: return
         val listName = currentUserDisplayName
         val nodeCandidate = ProfileDisplayNameResolver.fromAccessibility(context, listName)
         val confirmedNodeName = nodeCandidate?.let {
@@ -2795,12 +2819,12 @@ class DouyinNavigationController(
         if (confirmedNodeName != null) {
             currentUserDisplayName = confirmedNodeName
             currentUserDisplayNameSource = UserResultIdentity.Source.ACCESSIBILITY
-            AutomationStore.updateCurrentUserDisplayName(identityHash, confirmedNodeName)
+            AutomationStore.updateCurrentUserDisplayName(identityFingerprint, confirmedNodeName)
             logger.info(
                 "profile_display_name_resolved",
                 attributes = mapOf(
                     "source" to "accessibility",
-                    "identity_hash" to identityHash,
+                    "identity_fingerprint_prefix" to UserIdentityFingerprint.logPrefix(identityFingerprint),
                     "confirmed" to true,
                 ),
             )
@@ -2826,10 +2850,13 @@ class DouyinNavigationController(
         val ocrName = ProfileDisplayNameResolver.fromOcr(enriched, currentUserDisplayName) ?: return
         currentUserDisplayName = ocrName
         currentUserDisplayNameSource = UserResultIdentity.Source.OCR
-        AutomationStore.updateCurrentUserDisplayName(identityHash, ocrName)
+        AutomationStore.updateCurrentUserDisplayName(identityFingerprint, ocrName)
         logger.info(
             "profile_display_name_resolved",
-            attributes = mapOf("source" to "ocr_profile_header", "identity_hash" to identityHash),
+            attributes = mapOf(
+                "source" to "ocr_profile_header",
+                "identity_fingerprint_prefix" to UserIdentityFingerprint.logPrefix(identityFingerprint),
+            ),
         )
     }
 
@@ -2841,7 +2868,7 @@ class DouyinNavigationController(
      * the custom chat surface does not expose a usable name node.
      */
     private suspend fun enrichCurrentUserDisplayNameFromDirectMessage(context: ScreenContext?) {
-        val identityHash = currentUserIdentityHash ?: return
+        val identityFingerprint = currentUserIdentityFingerprint ?: return
         var directContext = context ?: currentWindowContext() ?: return
         val nodeName = DirectMessageDisplayNameResolver.fromAccessibility(
             directContext,
@@ -2850,10 +2877,13 @@ class DouyinNavigationController(
         if (nodeName != null) {
             currentUserDisplayName = nodeName
             currentUserDisplayNameSource = UserResultIdentity.Source.ACCESSIBILITY
-            AutomationStore.updateCurrentUserDisplayName(identityHash, nodeName, PageKind.DIRECT_MESSAGE)
+            AutomationStore.updateCurrentUserDisplayName(identityFingerprint, nodeName, PageKind.DIRECT_MESSAGE)
             logger.info(
                 "direct_message_display_name_resolved",
-                attributes = mapOf("source" to "accessibility", "identity_hash" to identityHash),
+                attributes = mapOf(
+                    "source" to "accessibility",
+                    "identity_fingerprint_prefix" to UserIdentityFingerprint.logPrefix(identityFingerprint),
+                ),
             )
             return
         }
@@ -2874,10 +2904,13 @@ class DouyinNavigationController(
         ) ?: return
         currentUserDisplayName = ocrName
         currentUserDisplayNameSource = UserResultIdentity.Source.OCR
-        AutomationStore.updateCurrentUserDisplayName(identityHash, ocrName, PageKind.DIRECT_MESSAGE)
+        AutomationStore.updateCurrentUserDisplayName(identityFingerprint, ocrName, PageKind.DIRECT_MESSAGE)
         logger.info(
             "direct_message_display_name_resolved",
-            attributes = mapOf("source" to "ocr_header", "identity_hash" to identityHash),
+            attributes = mapOf(
+                "source" to "ocr_header",
+                "identity_fingerprint_prefix" to UserIdentityFingerprint.logPrefix(identityFingerprint),
+            ),
         )
     }
 
@@ -2907,7 +2940,7 @@ class DouyinNavigationController(
             message = "The profile title changed between accessibility snapshots; OCR fallback will be considered",
             attributes = mapOf(
                 "had_previous_name" to !previousName.isNullOrBlank(),
-                "identity_hash" to (currentUserIdentityHash ?: 0),
+                "identity_fingerprint_prefix" to UserIdentityFingerprint.logPrefix(currentUserIdentityFingerprint),
             ),
         )
         return null
@@ -3377,12 +3410,12 @@ class DouyinNavigationController(
             message = "Douyin rejected the blank message; no real content was sent",
         )
         AutomationStore.recordUserTaskFinished(
-            identityHash = currentUserIdentityHash,
+            identityFingerprint = currentUserIdentityFingerprint,
             outcome = UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED,
             reason = "Douyin displayed the blank-message rejection",
             page = PageKind.MESSAGE_EMPTY_REJECTED,
         )
-        currentUserIdentityHash = null
+        currentUserIdentityFingerprint = null
         currentUserDisplayName = null
         currentUserDisplayNameSource = null
         advanceAfterEmptyMessageProbe()
@@ -4026,12 +4059,12 @@ class DouyinNavigationController(
         )
         enrichCurrentUserDisplayNameFromDirectMessage(currentWindowContext() ?: latestContext)
         AutomationStore.recordUserTaskFinished(
-            identityHash = currentUserIdentityHash,
+            identityFingerprint = currentUserIdentityFingerprint,
             outcome = UserTaskRecord.Outcome.PRIVATE_MESSAGE_UNAVAILABLE,
             reason = reason,
             page = PageKind.USER_PROFILE,
         )
-        currentUserIdentityHash = null
+        currentUserIdentityFingerprint = null
         currentUserDisplayName = null
         currentUserDisplayNameSource = null
 
@@ -4113,12 +4146,12 @@ class DouyinNavigationController(
         )
         enrichCurrentUserDisplayNameFromDirectMessage(currentWindowContext() ?: latestContext)
         AutomationStore.recordUserTaskFinished(
-            identityHash = currentUserIdentityHash,
+            identityFingerprint = currentUserIdentityFingerprint,
             outcome = UserTaskRecord.Outcome.MESSAGE_SEND_FAILED,
             reason = reason,
             page = failurePage,
         )
-        currentUserIdentityHash = null
+        currentUserIdentityFingerprint = null
         currentUserDisplayName = null
         currentUserDisplayNameSource = null
 
@@ -4766,14 +4799,14 @@ class DouyinNavigationController(
         taskActive = false
         queuedTaskSnapshots.clear()
         phase = AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF
-        if (currentUserIdentityHash != null) {
+        if (currentUserIdentityFingerprint != null) {
             AutomationStore.recordUserTaskFinished(
-                identityHash = currentUserIdentityHash,
+                identityFingerprint = currentUserIdentityFingerprint,
                 outcome = UserTaskRecord.Outcome.PAUSED,
                 reason = reason,
                 page = latestContext?.let(pageDetector::detect)?.kind,
             )
-            currentUserIdentityHash = null
+            currentUserIdentityFingerprint = null
             currentUserDisplayName = null
             currentUserDisplayNameSource = null
         }
@@ -4790,14 +4823,14 @@ class DouyinNavigationController(
         commentRuntime.stop()
         taskActive = false
         queuedTaskSnapshots.clear()
-        if (currentUserIdentityHash != null) {
+        if (currentUserIdentityFingerprint != null) {
             AutomationStore.recordUserTaskFinished(
-                identityHash = currentUserIdentityHash,
+                identityFingerprint = currentUserIdentityFingerprint,
                 outcome = UserTaskRecord.Outcome.STOPPED,
                 reason = "Stopped by the operator",
                 page = latestContext?.let(pageDetector::detect)?.kind,
             )
-            currentUserIdentityHash = null
+            currentUserIdentityFingerprint = null
             currentUserDisplayName = null
             currentUserDisplayNameSource = null
         }

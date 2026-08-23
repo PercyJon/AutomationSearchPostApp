@@ -18,6 +18,7 @@
 - P2-G1 从控制器抽取用户标签安全资格策略：新增 [`UserTabCandidatePolicy.kt`](app/src/main/java/com/example/douyinautomation/automation/UserTabCandidatePolicy.kt)，保持“精确标签、完整可见、分类栏内、紧凑高度”的节点与屏幕比例校验，拒绝把内容容器误作用户分类标签。
 - P2-G2 抽取搜索入口选择优先级：新增 [`SearchEntrySelectionPolicy.kt`](app/src/main/java/com/example/douyinautomation/automation/SearchEntrySelectionPolicy.kt)，明确语义节点优先、结构节点次之、两者均失败才使用既有受限比例兜底；后置确认与暂停逻辑保持不变。
 - A1 用户结果行几何归一化：结构行与 OCR 行高度、OCR 卡片间距、关注标签宽度及双帧稳定性阈值均改为按实际屏幕尺寸计算；新增 [`OcrUserResultRowGeometry.kt`](app/src/main/java/com/example/douyinautomation/automation/OcrUserResultRowGeometry.kt)，删除未使用的历史固定行高常量，不改变页面跳转、点击、手势或安全证据顺序。
+- P3 稳定去重与恢复：搜索用户和评论用户的去重、检查点和记录关联改用 SHA-256 身份指纹，历史检查点和记录保留只读兼容；评论候选去重指纹随任务检查点持久化，进程恢复不会再次尝试同一候选；当前主页评论任务的空搜索词检查点也可安全保存和恢复。
 
 ### 已验证项（真机 OnePlus NE2210 / b33aa309）
 
@@ -25,6 +26,7 @@
 - P2-B 真机干跑回归：从 `designer` 搜索、用户主页、第一条视频到评论面板，安全选中匹配候选后以 `comment_dry_run_candidate_selected` 完成；未进入评论用户主页、私信或空白探测。
 - 自动化验证：`./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` 与 `git diff --check` 均通过。
 - A1 真机干跑：用户结果页在结构行节点不足时执行 OCR 回退；首卡缺少可验证的关注标识，任务按安全门终止，未进入用户主页、私信或空白探测。
+- P3 真机干跑：`designer` → 用户标签 → OCR 身份指纹 → 用户主页 → 首条视频 → 评论面板 → 首位安全候选确认 → `COMPLETED`；未点击评论候选头像、未进入评论用户主页、私信或发送步骤。
 
 ### 交接记录
 
@@ -41,6 +43,7 @@
 - [`2026-08-23-p2-user-tab-candidate-policy.md`](docs/2026-08-23-p2-user-tab-candidate-policy.md)
 - [`2026-08-23-p2-search-entry-selection-policy.md`](docs/2026-08-23-p2-search-entry-selection-policy.md)
 - [`2026-08-23-a1-user-result-row-geometry-normalization.md`](docs/2026-08-23-a1-user-result-row-geometry-normalization.md)
+- [`2026-08-23-p3-stable-identity-and-comment-resume.md`](docs/2026-08-23-p3-stable-identity-and-comment-resume.md)
 
 ### 已知限制
 

@@ -5,12 +5,15 @@ package com.example.douyinautomation.automation
  *
  * The record is deliberately app-private. It keeps the operator-visible account label and action
  * content so a completed task can be audited from the Records tab; diagnostic logs still use
- * hashes and never emit these fields.
+ * opaque fingerprints and never emit these fields.
  */
 data class UserTaskRecord(
     val recordId: String,
     val taskId: String,
+    /** Legacy 32-bit field retained so existing app-private records remain readable. */
     val identityHash: Int?,
+    /** SHA-256 reference used to associate new in-progress and finished records safely. */
+    val identityFingerprint: String? = null,
     val displayName: String? = null,
     val userKey: String? = null,
     val messageContent: String? = null,

@@ -45,6 +45,10 @@ class CommentPrivateMessageRuntime(
     private val gestures: GestureEngine,
     /** Owner-supplied OCR capture used only for a malformed next-video comment rail. */
     private val enrichWithOcr: suspend (ScreenContext) -> ScreenContext = { it },
+    /** Restores opaque task-level candidate references after a saved-task resume. */
+    private val restoredCommentCandidateFingerprints: () -> Set<String> = { emptySet() },
+    /** Persists one newly attempted comment candidate before its profile flow begins. */
+    private val onCommentCandidateProcessed: (String) -> Unit = {},
     private val onTerminal: (CommentRuntimeTerminal) -> Unit,
 ) {
     private val stateMachine = CommentEntryStateMachine()
@@ -69,8 +73,8 @@ class CommentPrivateMessageRuntime(
     private var liveRoomExitCount = 0
     private var liveRoomSwipeCount = 0
     private val processedCandidateKeys = LinkedHashSet<String>()
-    /** Task-level identity ledger; prevents the same commenter being probed again on another video. */
-    private val processedTaskCandidateKeys = LinkedHashSet<String>()
+    /** Task-level opaque ledger; survives restart and prevents a commenter being probed twice. */
+    private val processedTaskCandidateLedger = CommentCandidateResumeLedger()
     private var activeCandidate: CommentUserCandidate? = null
     /** Absolute uptime until which post-swipe observations are ignored while the next video settles. */
     private var nextVideoSettleUntilMs = 0L
@@ -140,7 +144,7 @@ class CommentPrivateMessageRuntime(
         liveRoomExitCount = 0
         liveRoomSwipeCount = 0
         processedCandidateKeys.clear()
-        processedTaskCandidateKeys.clear()
+        processedTaskCandidateLedger.restore(restoredCommentCandidateFingerprints())
         activeCandidate = null
         latestObservedContext = null
         observedContextGeneration.incrementAndGet()
@@ -195,7 +199,7 @@ class CommentPrivateMessageRuntime(
         config = null
         ledger.clear()
         processedCandidateKeys.clear()
-        processedTaskCandidateKeys.clear()
+        processedTaskCandidateLedger.clear()
         activeCandidate = null
         latestObservedContext = null
         observedContextGeneration.incrementAndGet()
@@ -909,7 +913,7 @@ class CommentPrivateMessageRuntime(
             .filter { it.avatarBounds != null }
             .filterNot { candidate ->
                 processedCandidateKeys.contains(candidate.identityKey) ||
-                    processedTaskCandidateKeys.contains(candidate.identityKey)
+                    processedTaskCandidateLedger.contains(candidate.identityKey)
             }
         val update = ledger.add(extraction)
         logger.info(
@@ -1009,7 +1013,7 @@ class CommentPrivateMessageRuntime(
                 ),
             )
             processedCandidateKeys += candidate.identityKey
-            processedTaskCandidateKeys += candidate.identityKey
+            processedTaskCandidateLedger.markProcessed(candidate.identityKey)?.let(onCommentCandidateProcessed)
             activeCandidate = candidate
             val result = processCommentCandidate(candidate, context)
             activeCandidate = null
@@ -1068,7 +1072,7 @@ class CommentPrivateMessageRuntime(
             reportMatchStatistics(fresh, postScrollExtraction)
             val added = postScrollExtraction.candidates.count { candidate ->
                 !processedCandidateKeys.contains(candidate.identityKey) &&
-                    !processedTaskCandidateKeys.contains(candidate.identityKey)
+                    !processedTaskCandidateLedger.contains(candidate.identityKey)
             }
             if (added > 0) {
                 logger.info(
@@ -1178,12 +1182,12 @@ class CommentPrivateMessageRuntime(
         candidate: CommentUserCandidate,
         initialContext: ScreenContext,
     ): Boolean {
-        val identityHash = candidate.identityKey.hashCode()
+        val identityFingerprint = UserIdentityFingerprint.fromStableKey(candidate.identityKey)
         val displayName = candidate.authorText?.trim()?.takeIf(String::isNotBlank)
             ?: candidate.identityKey.removePrefix("comment-user:").ifBlank { "评论用户" }
         val messageContent = "空消息模拟（空格）"
         AutomationStore.recordUserTaskStarted(
-            identityHash = identityHash,
+            identityFingerprint = identityFingerprint,
             page = PageKind.UNKNOWN,
             remoteUserKey = candidate.identityKey,
             displayName = displayName,
@@ -1192,7 +1196,7 @@ class CommentPrivateMessageRuntime(
         logger.info(
             "comment_candidate_processing_started",
             attributes = mapOf(
-                "identity_hash" to identityHash,
+                "identity_fingerprint_prefix" to UserIdentityFingerprint.logPrefix(identityFingerprint),
                 "source" to candidate.source.name,
                 "row_top" to candidateTop(candidate),
             ),
@@ -1218,7 +1222,7 @@ class CommentPrivateMessageRuntime(
         }
         if (!click.succeeded) {
             finishCandidate(
-                identityHash,
+                identityFingerprint,
                 displayName,
                 UserTaskRecord.Outcome.IDENTITY_UNAVAILABLE,
                 "未能打开评论用户主页（评论头像不可用）：${click.reason.orEmpty()}",
@@ -1263,7 +1267,7 @@ class CommentPrivateMessageRuntime(
             PageKind.LOGIN,
             -> {
                 finishCandidate(
-                    identityHash,
+                    identityFingerprint,
                     displayName,
                     UserTaskRecord.Outcome.PAUSED,
                     "评论用户主页出现需要人工处理的页面",
@@ -1275,7 +1279,7 @@ class CommentPrivateMessageRuntime(
             PageKind.USER_PROFILE -> Unit
             else -> {
                 finishCandidate(
-                    identityHash,
+                    identityFingerprint,
                     displayName,
                     UserTaskRecord.Outcome.IDENTITY_UNAVAILABLE,
                     "评论用户主页未在限定时间内确认",
@@ -1288,7 +1292,7 @@ class CommentPrivateMessageRuntime(
         val profileContext = profile.context ?: currentContext()
         if (profileContext == null) {
             finishCandidate(
-                identityHash,
+                identityFingerprint,
                 displayName,
                 UserTaskRecord.Outcome.IDENTITY_UNAVAILABLE,
                 "评论用户主页内容不可用",
@@ -1308,7 +1312,7 @@ class CommentPrivateMessageRuntime(
             PageKind.LOGIN,
             -> {
                 finishCandidate(
-                    identityHash,
+                    identityFingerprint,
                     displayName,
                     UserTaskRecord.Outcome.PAUSED,
                     "私信入口后出现需要人工处理的页面",
@@ -1319,7 +1323,7 @@ class CommentPrivateMessageRuntime(
             }
             PageKind.PRIVATE_MESSAGE_RESTRICTED -> {
                 finishCandidate(
-                    identityHash,
+                    identityFingerprint,
                     displayName,
                     UserTaskRecord.Outcome.PRIVATE_MESSAGE_UNAVAILABLE,
                     "对方的私信权限不允许当前账号发送",
@@ -1329,7 +1333,7 @@ class CommentPrivateMessageRuntime(
             }
             else -> {
                 finishCandidate(
-                    identityHash,
+                    identityFingerprint,
                     displayName,
                     if (opening.entryActionSubmitted) {
                         UserTaskRecord.Outcome.MESSAGE_SEND_FAILED
@@ -1350,7 +1354,7 @@ class CommentPrivateMessageRuntime(
         val probe = probeBlankMessage(directMessage.context)
         if (probe.kind == PageKind.MESSAGE_EMPTY_REJECTED) {
             finishCandidate(
-                identityHash,
+                identityFingerprint,
                 displayName,
                 UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED,
                 "抖音提示不能发送空白消息，安全探测完成，未发送真实内容",
@@ -1358,7 +1362,7 @@ class CommentPrivateMessageRuntime(
             )
         } else {
             finishCandidate(
-                identityHash,
+                identityFingerprint,
                 displayName,
                 UserTaskRecord.Outcome.MESSAGE_SEND_FAILED,
                 probe.reason ?: "空消息安全探测未得到确认",
@@ -1958,14 +1962,14 @@ class CommentPrivateMessageRuntime(
     }
 
     private fun finishCandidate(
-        identityHash: Int,
+        identityFingerprint: String,
         displayName: String,
         outcome: UserTaskRecord.Outcome,
         reason: String,
         page: PageKind,
     ) {
         AutomationStore.recordUserTaskFinished(
-            identityHash = identityHash,
+            identityFingerprint = identityFingerprint,
             outcome = outcome,
             reason = reason,
             page = page,
@@ -1974,7 +1978,10 @@ class CommentPrivateMessageRuntime(
         )
         logger.info(
             "comment_candidate_processing_finished",
-            attributes = mapOf("identity_hash" to identityHash, "outcome" to outcome.name),
+            attributes = mapOf(
+                "identity_fingerprint_prefix" to UserIdentityFingerprint.logPrefix(identityFingerprint),
+                "outcome" to outcome.name,
+            ),
         )
     }
 

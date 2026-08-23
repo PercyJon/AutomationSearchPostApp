@@ -165,9 +165,26 @@ data class TaskCheckpoint(
     val taskId: String,
     val snapshot: TaskSnapshot,
     val queryIndex: Int,
-    val processedIdentityHashes: List<Int> = emptyList(),
+    /** SHA-256 references used by all checkpoints written by the current app version. */
+    val processedIdentityFingerprints: List<String> = emptyList(),
+    /** SHA-256 references for comment authors already attempted in this task. */
+    val processedCommentIdentityFingerprints: List<String> = emptyList(),
+    /** Read-only compatibility for checkpoints written before SHA-256 identity references. */
+    val legacyProcessedIdentityHashes: List<Int> = emptyList(),
     val updatedAtMillis: Long,
 )
+
+/** Keeps checkpoint cursor handling valid for both search and current-profile comment tasks. */
+object TaskCheckpointQueryIndexPolicy {
+    fun normalize(snapshot: TaskSnapshot, queryIndex: Int): Int? {
+        if (snapshot.composedQueries.isNotEmpty()) {
+            return queryIndex.takeIf { it in snapshot.composedQueries.indices }
+        }
+        val isCurrentProfileCommentTask = snapshot.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE &&
+            snapshot.commentConfig?.entryMode == CommentPrivateMessageEntryMode.CURRENT_PROFILE
+        return 0.takeIf { isCurrentProfileCommentTask }
+    }
+}
 
 enum class TaskRunStatus {
     RUNNING,

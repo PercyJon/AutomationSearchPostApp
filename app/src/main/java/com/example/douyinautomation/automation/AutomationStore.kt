@@ -149,8 +149,8 @@ object AutomationStore {
     private var remoteSyncQueue: RemoteTaskSyncQueue? = null
     private var lastRemoteStatusSignature: String? = null
     private var remoteConfigFingerprint: Int? = null
-    private val remoteUserKeys = mutableMapOf<Int, String>()
-    private val remoteDisplayNames = mutableMapOf<Int, String>()
+    private val remoteUserKeys = mutableMapOf<String, String>()
+    private val remoteDisplayNames = mutableMapOf<String, String>()
 
     private fun List<UserTaskRecord>.handledCount(): Int = count { record ->
         record.outcome != UserTaskRecord.Outcome.IN_PROGRESS &&
@@ -631,7 +631,7 @@ object AutomationStore {
         }
     }
 
-    /** Persist only opaque identity hashes and the frozen task contract. */
+    /** Persist only opaque identity fingerprints and the frozen task contract. */
     fun saveTaskCheckpoint(checkpoint: TaskCheckpoint) {
         synchronized(recordLock) {
             savedCheckpoint = checkpoint
@@ -699,7 +699,7 @@ object AutomationStore {
 
     /** Create the durable per-user record when a unique row is first selected. */
     fun recordUserTaskStarted(
-        identityHash: Int,
+        identityFingerprint: String,
         page: PageKind? = PageKind.USER_RESULTS,
         remoteUserKey: String? = null,
         displayName: String? = null,
@@ -707,18 +707,22 @@ object AutomationStore {
     ) {
         val taskId = synchronized(recordLock) { currentTaskId } ?: return
         synchronized(recordLock) {
-            remoteUserKey?.takeIf(String::isNotBlank)?.let { remoteUserKeys[identityHash] = it }
-            displayName?.takeIf(String::isNotBlank)?.let { remoteDisplayNames[identityHash] = it }
+            remoteUserKey?.takeIf(String::isNotBlank)?.let { remoteUserKeys[identityFingerprint] = it }
+            displayName?.takeIf(String::isNotBlank)?.let { remoteDisplayNames[identityFingerprint] = it }
         }
         logger.info(
             "task_user_started",
-            attributes = mapOf("task_id_hash" to taskId.hashCode(), "identity_hash" to identityHash),
+            attributes = mapOf(
+                "task_id_hash" to taskId.hashCode(),
+                "identity_fingerprint_prefix" to UserIdentityFingerprint.logPrefix(identityFingerprint),
+            ),
         )
         appendTaskRecord(
             UserTaskRecord(
                 recordId = UUID.randomUUID().toString(),
                 taskId = taskId,
-                identityHash = identityHash,
+                identityHash = null,
+                identityFingerprint = identityFingerprint,
                 displayName = displayName,
                 userKey = remoteUserKey,
                 messageContent = messageContent,
@@ -727,7 +731,7 @@ object AutomationStore {
                 page = page,
             ),
         )
-        enqueueRemoteRecord(identityHash, UserTaskRecord.Outcome.IN_PROGRESS, null, page)
+        enqueueRemoteRecord(identityFingerprint, UserTaskRecord.Outcome.IN_PROGRESS, null, page)
     }
 
     /**
@@ -735,19 +739,19 @@ object AutomationStore {
      * header. The update is limited to the current in-progress record.
      */
     fun updateCurrentUserDisplayName(
-        identityHash: Int?,
+        identityFingerprint: String?,
         displayName: String?,
         page: PageKind = PageKind.USER_PROFILE,
     ) {
-        if (identityHash == null || displayName.isNullOrBlank()) return
+        if (identityFingerprint == null || displayName.isNullOrBlank()) return
         val normalizedName = displayName.trim().take(MAX_DISPLAY_NAME_LENGTH)
         val taskId = synchronized(recordLock) { currentTaskId } ?: return
         var changed = false
         synchronized(recordLock) {
-            remoteDisplayNames[identityHash] = normalizedName
+            remoteDisplayNames[identityFingerprint] = normalizedName
             val index = allTaskRecords.indexOfLast {
                 it.taskId == taskId &&
-                    it.identityHash == identityHash &&
+                    it.identityFingerprint == identityFingerprint &&
                     it.outcome == UserTaskRecord.Outcome.IN_PROGRESS
             }
             if (index >= 0 && allTaskRecords[index].displayName != normalizedName) {
@@ -759,17 +763,20 @@ object AutomationStore {
             }
         }
         if (changed) {
-            enqueueRemoteRecord(identityHash, UserTaskRecord.Outcome.IN_PROGRESS, null, page)
+            enqueueRemoteRecord(identityFingerprint, UserTaskRecord.Outcome.IN_PROGRESS, null, page)
             logger.info(
                 "task_user_display_name_updated",
-                attributes = mapOf("task_id_hash" to taskId.hashCode(), "identity_hash" to identityHash),
+                attributes = mapOf(
+                    "task_id_hash" to taskId.hashCode(),
+                    "identity_fingerprint_prefix" to UserIdentityFingerprint.logPrefix(identityFingerprint),
+                ),
             )
         }
     }
 
     /** Finish the current user's record without creating a second row for the same attempt. */
     fun recordUserTaskFinished(
-        identityHash: Int?,
+        identityFingerprint: String?,
         outcome: UserTaskRecord.Outcome,
         reason: String? = null,
         page: PageKind? = null,
@@ -777,24 +784,26 @@ object AutomationStore {
         displayName: String? = null,
     ) {
         val taskId = synchronized(recordLock) { currentTaskId } ?: return
-        if (identityHash != null) {
+        if (identityFingerprint != null) {
             synchronized(recordLock) {
-                remoteUserKey?.takeIf(String::isNotBlank)?.let { remoteUserKeys[identityHash] = it }
-                displayName?.takeIf(String::isNotBlank)?.let { remoteDisplayNames[identityHash] = it }
+                remoteUserKey?.takeIf(String::isNotBlank)?.let { remoteUserKeys[identityFingerprint] = it }
+                displayName?.takeIf(String::isNotBlank)?.let { remoteDisplayNames[identityFingerprint] = it }
             }
         }
         logger.info(
             "task_user_finished",
             attributes = mapOf(
                 "task_id_hash" to taskId.hashCode(),
-                "identity_hash" to (identityHash ?: 0),
+                "identity_fingerprint_prefix" to UserIdentityFingerprint.logPrefix(identityFingerprint),
                 "outcome" to outcome.name,
             ),
         )
         val now = System.currentTimeMillis()
         synchronized(recordLock) {
             val index = allTaskRecords.indexOfLast {
-                it.taskId == taskId && it.identityHash == identityHash && it.outcome == UserTaskRecord.Outcome.IN_PROGRESS
+                it.taskId == taskId &&
+                    it.identityFingerprint == identityFingerprint &&
+                    it.outcome == UserTaskRecord.Outcome.IN_PROGRESS
             }
             if (index >= 0) {
                 val updated = allTaskRecords[index].copy(
@@ -813,7 +822,8 @@ object AutomationStore {
                     UserTaskRecord(
                         recordId = UUID.randomUUID().toString(),
                         taskId = taskId,
-                        identityHash = identityHash,
+                        identityHash = null,
+                        identityFingerprint = identityFingerprint,
                         displayName = displayName,
                         userKey = remoteUserKey,
                         outcome = outcome,
@@ -825,12 +835,12 @@ object AutomationStore {
                 )
             }
         }
-        enqueueRemoteRecord(identityHash, outcome, reason, page)
+        enqueueRemoteRecord(identityFingerprint, outcome, reason, page)
     }
 
     /** Record a row-level event such as a duplicate or follow-back skip. */
     fun recordUserTaskEvent(
-        identityHash: Int?,
+        identityFingerprint: String?,
         outcome: UserTaskRecord.Outcome,
         reason: String? = null,
         page: PageKind? = PageKind.USER_RESULTS,
@@ -838,17 +848,17 @@ object AutomationStore {
         displayName: String? = null,
     ) {
         val taskId = synchronized(recordLock) { currentTaskId } ?: return
-        if (identityHash != null) {
+        if (identityFingerprint != null) {
             synchronized(recordLock) {
-                remoteUserKey?.takeIf(String::isNotBlank)?.let { remoteUserKeys[identityHash] = it }
-                displayName?.takeIf(String::isNotBlank)?.let { remoteDisplayNames[identityHash] = it }
+                remoteUserKey?.takeIf(String::isNotBlank)?.let { remoteUserKeys[identityFingerprint] = it }
+                displayName?.takeIf(String::isNotBlank)?.let { remoteDisplayNames[identityFingerprint] = it }
             }
         }
         logger.info(
             "task_user_event",
             attributes = mapOf(
                 "task_id_hash" to taskId.hashCode(),
-                "identity_hash" to (identityHash ?: 0),
+                "identity_fingerprint_prefix" to UserIdentityFingerprint.logPrefix(identityFingerprint),
                 "outcome" to outcome.name,
             ),
         )
@@ -857,26 +867,27 @@ object AutomationStore {
             UserTaskRecord(
                 recordId = UUID.randomUUID().toString(),
                 taskId = taskId,
-                        identityHash = identityHash,
-                        displayName = displayName,
-                        userKey = remoteUserKey,
-                        outcome = outcome,
+                identityHash = null,
+                identityFingerprint = identityFingerprint,
+                displayName = displayName,
+                userKey = remoteUserKey,
+                outcome = outcome,
                 startedAtMillis = now,
                 finishedAtMillis = now,
                 page = page,
                 reason = reason,
             ),
         )
-        enqueueRemoteRecord(identityHash, outcome, reason, page)
+        enqueueRemoteRecord(identityFingerprint, outcome, reason, page)
     }
 
     private fun enqueueRemoteRecord(
-        identityHash: Int?,
+        identityFingerprint: String?,
         outcome: UserTaskRecord.Outcome,
         reason: String?,
         page: PageKind?,
     ) {
-        if (identityHash == null) return
+        if (identityFingerprint == null) return
         val remoteId: Long
         val queue: RemoteTaskSyncQueue
         val userKey: String
@@ -884,8 +895,8 @@ object AutomationStore {
         synchronized(recordLock) {
             remoteId = remoteTaskId ?: return
             queue = remoteSyncQueue ?: return
-            userKey = remoteUserKeys[identityHash] ?: return
-            displayName = remoteDisplayNames[identityHash]
+            userKey = remoteUserKeys[identityFingerprint] ?: return
+            displayName = remoteDisplayNames[identityFingerprint]
         }
         queue.enqueueRecord(
             remoteId,
@@ -992,7 +1003,9 @@ object AutomationStore {
         put("task_id", checkpoint.taskId)
         put("query_index", checkpoint.queryIndex)
         put("updated_at", checkpoint.updatedAtMillis)
-        put("processed_identity_hashes", JSONArray(checkpoint.processedIdentityHashes))
+        put("processed_identity_fingerprints", JSONArray(checkpoint.processedIdentityFingerprints))
+        put("processed_comment_identity_fingerprints", JSONArray(checkpoint.processedCommentIdentityFingerprints))
+        put("legacy_processed_identity_hashes", JSONArray(checkpoint.legacyProcessedIdentityHashes))
         put("snapshot", checkpoint.snapshot.toJson())
     }
 
@@ -1160,13 +1173,20 @@ object AutomationStore {
             }.getOrDefault(AutomationTaskType.PROFILE_PRIVATE_MESSAGE),
             commentConfig = snapshotJson.optJSONObject("comment_config")?.toCommentPrivateMessageSnapshot(),
         )
-        val queryIndex = root.getInt("query_index")
-        if (queryIndex !in snapshot.composedQueries.indices) return null
+        val queryIndex = TaskCheckpointQueryIndexPolicy.normalize(
+            snapshot = snapshot,
+            queryIndex = root.getInt("query_index"),
+        ) ?: return null
         TaskCheckpoint(
             taskId = root.getString("task_id"),
             snapshot = snapshot,
             queryIndex = queryIndex,
-            processedIdentityHashes = root.optJSONArray("processed_identity_hashes")?.let { hashes ->
+            processedIdentityFingerprints = root.optJSONArray("processed_identity_fingerprints")?.toStringList().orEmpty(),
+            processedCommentIdentityFingerprints = root.optJSONArray("processed_comment_identity_fingerprints")
+                ?.toStringList()
+                .orEmpty(),
+            legacyProcessedIdentityHashes = (root.optJSONArray("legacy_processed_identity_hashes")
+                ?: root.optJSONArray("processed_identity_hashes"))?.let { hashes ->
                 buildList(hashes.length()) { for (index in 0 until hashes.length()) add(hashes.getInt(index)) }
             }.orEmpty(),
             updatedAtMillis = root.getLong("updated_at"),
@@ -1262,6 +1282,7 @@ object AutomationStore {
         put("record_id", recordId)
         put("task_id", taskId)
         put("identity_hash", identityHash)
+        put("identity_fingerprint", identityFingerprint ?: JSONObject.NULL)
         put("display_name", displayName ?: JSONObject.NULL)
         put("user_key", userKey ?: JSONObject.NULL)
         put("message_content", messageContent ?: JSONObject.NULL)
@@ -1285,6 +1306,7 @@ object AutomationStore {
                             recordId = item.getString("record_id"),
                             taskId = item.getString("task_id"),
                             identityHash = if (item.isNull("identity_hash")) null else item.getInt("identity_hash"),
+                            identityFingerprint = item.optStringOrNull("identity_fingerprint"),
                             displayName = item.optStringOrNull("display_name"),
                             userKey = item.optStringOrNull("user_key"),
                             messageContent = item.optStringOrNull("message_content"),

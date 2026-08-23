@@ -7,6 +7,24 @@ import kotlin.test.assertTrue
 
 class TaskDomainTest {
     @Test
+    fun `checkpoint cursor accepts current profile comment tasks without search queries`() {
+        val snapshot = TaskDraft(
+            id = "current-profile-checkpoint",
+            name = "",
+            taskType = AutomationTaskType.COMMENT_PRIVATE_MESSAGE,
+            commentConfig = CommentPrivateMessageConfig(
+                entryMode = CommentPrivateMessageEntryMode.CURRENT_PROFILE,
+            ),
+        ).toSnapshot(
+            presets = SearchPresetCatalog("test", emptyList(), 0L),
+            nowMillis = 1L,
+        )
+
+        assertEquals(0, TaskCheckpointQueryIndexPolicy.normalize(snapshot, queryIndex = 0))
+        assertEquals(0, TaskCheckpointQueryIndexPolicy.normalize(snapshot, queryIndex = 3))
+    }
+
+    @Test
     fun `region is prefixed once and duplicate queries are removed`() {
         val queries = QueryComposer.composeAll(
             region = "广东",
