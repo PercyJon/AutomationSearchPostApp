@@ -1153,18 +1153,17 @@ class DouyinNavigationController(
         val structuralOutcome = if (!semanticOutcome.succeeded) {
             clickSelector(context, DouyinSelectors.searchEntryStructural)
         } else {
-            ActionOutcome.failure("semantic search selector already succeeded")
+            null
         }
-        val outcome = if (semanticOutcome.succeeded) {
-            semanticOutcome
-        } else if (structuralOutcome.succeeded) {
+        val decision = SearchEntrySelectionPolicy.decide(semanticOutcome, structuralOutcome)
+        if (decision.usedStructuralFallback) {
             logger.info(
                 "search_entry_structural_fallback",
                 message = "The unlabeled clickable search icon was selected by class and region",
-                attributes = mapOf("route" to structuralOutcome.route),
+                attributes = mapOf("route" to requireNotNull(decision.outcome).route),
             )
-            structuralOutcome
-        } else {
+        }
+        val outcome = decision.outcome ?: run {
             logger.warn(
                 "search_entry_selector_fallback",
                 message = "Semantic and structural search selectors were unavailable; using the constrained normalized fallback",

@@ -16,6 +16,7 @@
 - P2 继续收拢 OCR 证据适配：新增 [`OcrTextBlockMapper.kt`](app/src/main/java/com/example/douyinautomation/automation/OcrTextBlockMapper.kt)，让无障碍服务和导航控制器复用相同的 OCR 边界空值与排序规则；新增 [`UserResultsViewportFingerprint.kt`](app/src/main/java/com/example/douyinautomation/automation/UserResultsViewportFingerprint.kt)，让用户结果 OCR 缓存键成为基于屏幕比例的可测试纯函数。
 - P2-F 收拢用户名称解析的来源优先级与 OCR 门控：新增 [`DisplayNameResolutionPolicy.kt`](app/src/main/java/com/example/douyinautomation/automation/DisplayNameResolutionPolicy.kt)，保持主页和私信页的“无障碍优先、有限 OCR 回退”语义一致，不改变各页面候选解析器或私信动作。
 - P2-G1 从控制器抽取用户标签安全资格策略：新增 [`UserTabCandidatePolicy.kt`](app/src/main/java/com/example/douyinautomation/automation/UserTabCandidatePolicy.kt)，保持“精确标签、完整可见、分类栏内、紧凑高度”的节点与屏幕比例校验，拒绝把内容容器误作用户分类标签。
+- P2-G2 抽取搜索入口选择优先级：新增 [`SearchEntrySelectionPolicy.kt`](app/src/main/java/com/example/douyinautomation/automation/SearchEntrySelectionPolicy.kt)，明确语义节点优先、结构节点次之、两者均失败才使用既有受限比例兜底；后置确认与暂停逻辑保持不变。
 
 ### 已验证项（真机 OnePlus NE2210 / b33aa309）
 
@@ -36,6 +37,7 @@
 - [`2026-08-23-p2-user-results-viewport-fingerprint.md`](docs/2026-08-23-p2-user-results-viewport-fingerprint.md)
 - [`2026-08-23-p2-display-name-resolution-policy.md`](docs/2026-08-23-p2-display-name-resolution-policy.md)
 - [`2026-08-23-p2-user-tab-candidate-policy.md`](docs/2026-08-23-p2-user-tab-candidate-policy.md)
+- [`2026-08-23-p2-search-entry-selection-policy.md`](docs/2026-08-23-p2-search-entry-selection-policy.md)
 
 ### 已知限制
 
