@@ -19,6 +19,7 @@ data class OcrUserResultRowMatch(
     val rowBounds: ScreenBounds,
     val followBounds: ScreenBounds,
     val accountBounds: ScreenBounds,
+    internal val screenHeight: Int,
     /** Kept in memory only to ensure two OCR observations refer to the same first result. */
     internal val accountProof: String,
 ) {
@@ -39,13 +40,12 @@ data class OcrUserResultRowMatch(
 
     fun agreesWith(other: OcrUserResultRowMatch): Boolean =
         accountProof == other.accountProof &&
-            abs(rowBounds.top - other.rowBounds.top) <= MAX_STABLE_ROW_DRIFT_PX &&
-            abs(rowBounds.bottom - other.rowBounds.bottom) <= MAX_STABLE_ROW_DRIFT_PX &&
-            abs(followBounds.centerY - other.followBounds.centerY) <= MAX_STABLE_ROW_DRIFT_PX
+            abs(rowBounds.top - other.rowBounds.top) <= stableRowDrift(other) &&
+            abs(rowBounds.bottom - other.rowBounds.bottom) <= stableRowDrift(other) &&
+            abs(followBounds.centerY - other.followBounds.centerY) <= stableRowDrift(other)
 
-    private companion object {
-        const val MAX_STABLE_ROW_DRIFT_PX = 36
-    }
+    private fun stableRowDrift(other: OcrUserResultRowMatch): Int =
+        OcrUserResultRowGeometry.maxStableRowDrift(minOf(screenHeight, other.screenHeight))
 }
 
 /** Which filter rejected the first visible card, for on-device failure-stage diagnostics. */
@@ -72,6 +72,7 @@ object OcrUserResultRowDetector {
     fun analyzeFirstVisible(context: ScreenContext): OcrUserResultRowAnalysis {
         val screenWidth = context.screenSize.width.coerceAtLeast(1)
         val screenHeight = context.screenSize.height.coerceAtLeast(1)
+        val geometry = OcrUserResultRowGeometry.forScreen(context.screenSize)
         val contentTop = (screenHeight * CONTENT_TOP_RATIO).toInt()
         val contentBottom = (screenHeight * CONTENT_BOTTOM_RATIO).toInt()
         val textLeft = (screenWidth * TEXT_LEFT_RATIO).toInt()
@@ -96,8 +97,8 @@ object OcrUserResultRowDetector {
         val title = context.ocrBlocks.asSequence()
             .filter { block -> isUsable(block.bounds) }
             .filter { block -> block.bounds.left in textLeft..textRight }
-            .filter { block -> block.bounds.bottom <= firstAccount.bounds.top + TITLE_BOTTOM_TOLERANCE_PX }
-            .filter { block -> block.bounds.top >= firstAccount.bounds.top - max(MIN_TITLE_DISTANCE_PX, screenHeight / 10) }
+            .filter { block -> block.bounds.bottom <= firstAccount.bounds.top + geometry.titleBottomTolerance }
+            .filter { block -> block.bounds.top >= firstAccount.bounds.top - max(geometry.minTitleDistance, screenHeight / 10) }
             .filter { block -> isLikelyDisplayName(block.text) }
             .filter { block -> abs(block.bounds.left - firstAccount.bounds.left) <= screenWidth * MAX_TEXT_COLUMN_DRIFT_RATIO }
             .sortedBy { block -> block.bounds.top }
@@ -128,10 +129,10 @@ object OcrUserResultRowDetector {
             )
         }
 
-        val rowTop = max(contentTop, title.bounds.top - max(TITLE_TOP_PADDING_PX, title.bounds.height))
+        val rowTop = max(contentTop, title.bounds.top - max(geometry.titleTopPadding, title.bounds.height))
         val provisionalRowBottom = min(
             contentBottom,
-            firstAccount.bounds.bottom + max(ROW_BOTTOM_PADDING_PX, title.bounds.height),
+            firstAccount.bounds.bottom + max(geometry.rowBottomPadding, title.bounds.height),
         )
         val followColumn = context.ocrBlocks
             .filter { block -> isUsable(block.bounds) }
@@ -143,7 +144,7 @@ object OcrUserResultRowDetector {
                     "h=${block.bounds.height},y=${block.bounds.centerY},f=${containsFollowSignal(block.text)}"
             }
         val follow = followColumn.asSequence()
-            .filter { block -> block.bounds.width in MIN_FOLLOW_WIDTH_PX..(screenWidth * MAX_FOLLOW_WIDTH_RATIO).toInt() }
+            .filter { block -> block.bounds.width in geometry.minFollowWidth..(screenWidth * MAX_FOLLOW_WIDTH_RATIO).toInt() }
             .filter { block -> block.bounds.height <= screenHeight * MAX_FOLLOW_HEIGHT_RATIO }
             .filter { block -> isFollowLabel(block.text) }
             .filter { block -> block.bounds.centerY in rowTop.toFloat()..provisionalRowBottom.toFloat() }
@@ -167,7 +168,7 @@ object OcrUserResultRowDetector {
 
         val rowBottom = min(
             contentBottom,
-            max(provisionalRowBottom, follow.bounds.bottom + ROW_BOTTOM_PADDING_PX),
+            max(provisionalRowBottom, follow.bounds.bottom + geometry.rowBottomPadding),
         )
         val rowBounds = ScreenBounds(
             left = 0,
@@ -175,7 +176,7 @@ object OcrUserResultRowDetector {
             right = screenWidth,
             bottom = rowBottom,
         )
-        if (rowBounds.height !in minRowHeight(screenHeight)..maxRowHeight(screenHeight)) {
+        if (rowBounds.height !in rowHeightRange(screenHeight)) {
             return OcrUserResultRowAnalysis(
                 match = null,
                 accountMarkerCount = accountMarkers.size,
@@ -192,6 +193,7 @@ object OcrUserResultRowDetector {
                 rowBounds = rowBounds,
                 followBounds = follow.bounds,
                 accountBounds = firstAccount.bounds,
+                screenHeight = screenHeight,
                 accountProof = proof,
             ),
             accountMarkerCount = accountMarkers.size,
@@ -244,9 +246,10 @@ object OcrUserResultRowDetector {
         return FOLLOW_LABELS.any(normalized::contains) || "关" in normalized
     }
 
-    private fun minRowHeight(screenHeight: Int): Int = max(MIN_ROW_HEIGHT_PX, (screenHeight * MIN_ROW_HEIGHT_RATIO).toInt())
-
-    private fun maxRowHeight(screenHeight: Int): Int = max(MAX_ROW_HEIGHT_PX, (screenHeight * MAX_ROW_HEIGHT_RATIO).toInt())
+    internal fun rowHeightRange(screenHeight: Int): IntRange {
+        val height = screenHeight.coerceAtLeast(1)
+        return (height * MIN_ROW_HEIGHT_RATIO).toInt()..(height * MAX_ROW_HEIGHT_RATIO).toInt()
+    }
 
     private const val CONTENT_TOP_RATIO = 0.15f
     private const val CONTENT_BOTTOM_RATIO = 0.90f
@@ -256,13 +259,6 @@ object OcrUserResultRowDetector {
     private const val MAX_FOLLOW_WIDTH_RATIO = 0.30f
     private const val MAX_FOLLOW_HEIGHT_RATIO = 0.09f
     private const val MAX_TEXT_COLUMN_DRIFT_RATIO = 0.16f
-    private const val MIN_FOLLOW_WIDTH_PX = 32
-    private const val TITLE_BOTTOM_TOLERANCE_PX = 16
-    private const val MIN_TITLE_DISTANCE_PX = 120
-    private const val TITLE_TOP_PADDING_PX = 28
-    private const val ROW_BOTTOM_PADDING_PX = 32
-    private const val MIN_ROW_HEIGHT_PX = 160
-    private const val MAX_ROW_HEIGHT_PX = 440
     private const val MIN_ROW_HEIGHT_RATIO = 0.07f
     private const val MAX_ROW_HEIGHT_RATIO = 0.20f
     private const val MIN_ACCOUNT_PROOF_LENGTH = 2

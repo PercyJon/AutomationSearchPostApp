@@ -31,8 +31,10 @@ enum class UserFollowActionState {
 
 object StructuralUserRowDetector {
     private const val TOP_RATIO = 0.14f
-    private const val MIN_ROW_HEIGHT = 180
-    private const val MAX_ROW_HEIGHT = 400
+    // Derived from the verified 1080×2412 reference surface. Row eligibility must scale with
+    // the actual display height instead of preserving physical-pixel thresholds across devices.
+    private const val MIN_ROW_HEIGHT_RATIO = 0.075f
+    private const val MAX_ROW_HEIGHT_RATIO = 0.166f
     private const val MIN_ROW_WIDTH_RATIO = 0.90f
     private const val MAX_ROW_LEFT_RATIO = 0.05f
 
@@ -144,7 +146,12 @@ object StructuralUserRowDetector {
         node.bounds.left <= (screenWidth * MAX_ROW_LEFT_RATIO).toInt() &&
             node.bounds.right >= (screenWidth * MIN_ROW_WIDTH_RATIO).toInt() &&
             node.bounds.top >= (screenHeight * TOP_RATIO).toInt() &&
-            node.bounds.height in MIN_ROW_HEIGHT..MAX_ROW_HEIGHT
+            node.bounds.height in rowHeightRange(screenHeight)
+
+    internal fun rowHeightRange(screenHeight: Int): IntRange {
+        val height = screenHeight.coerceAtLeast(1)
+        return (height * MIN_ROW_HEIGHT_RATIO).toInt()..(height * MAX_ROW_HEIGHT_RATIO).toInt()
+    }
 
     private fun isStrictAncestor(ancestor: List<Int>, descendant: List<Int>): Boolean =
         ancestor.size < descendant.size && ancestor.indices.all { index -> ancestor[index] == descendant[index] }

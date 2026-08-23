@@ -17,12 +17,14 @@
 - P2-F 收拢用户名称解析的来源优先级与 OCR 门控：新增 [`DisplayNameResolutionPolicy.kt`](app/src/main/java/com/example/douyinautomation/automation/DisplayNameResolutionPolicy.kt)，保持主页和私信页的“无障碍优先、有限 OCR 回退”语义一致，不改变各页面候选解析器或私信动作。
 - P2-G1 从控制器抽取用户标签安全资格策略：新增 [`UserTabCandidatePolicy.kt`](app/src/main/java/com/example/douyinautomation/automation/UserTabCandidatePolicy.kt)，保持“精确标签、完整可见、分类栏内、紧凑高度”的节点与屏幕比例校验，拒绝把内容容器误作用户分类标签。
 - P2-G2 抽取搜索入口选择优先级：新增 [`SearchEntrySelectionPolicy.kt`](app/src/main/java/com/example/douyinautomation/automation/SearchEntrySelectionPolicy.kt)，明确语义节点优先、结构节点次之、两者均失败才使用既有受限比例兜底；后置确认与暂停逻辑保持不变。
+- A1 用户结果行几何归一化：结构行与 OCR 行高度、OCR 卡片间距、关注标签宽度及双帧稳定性阈值均改为按实际屏幕尺寸计算；新增 [`OcrUserResultRowGeometry.kt`](app/src/main/java/com/example/douyinautomation/automation/OcrUserResultRowGeometry.kt)，删除未使用的历史固定行高常量，不改变页面跳转、点击、手势或安全证据顺序。
 
 ### 已验证项（真机 OnePlus NE2210 / b33aa309）
 
 - **非干跑空白安全闭环，10 位评论用户**：搜索 `designer`，匹配词“不错”“漂亮”，任一匹配，1 个视频、每视频上限 10。10 位候选均从已验证的评论左侧头像进入；私信页仅提交单个空格，均收到平台空白消息拒绝，记录为 `BLANK_PROBE_VERIFIED`；任务完成 `10 / 0 / 0`。未发送真实内容，未执行点赞操作。
 - P2-B 真机干跑回归：从 `designer` 搜索、用户主页、第一条视频到评论面板，安全选中匹配候选后以 `comment_dry_run_candidate_selected` 完成；未进入评论用户主页、私信或空白探测。
 - 自动化验证：`./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` 与 `git diff --check` 均通过。
+- A1 真机干跑：用户结果页在结构行节点不足时执行 OCR 回退；首卡缺少可验证的关注标识，任务按安全门终止，未进入用户主页、私信或空白探测。
 
 ### 交接记录
 
@@ -38,6 +40,7 @@
 - [`2026-08-23-p2-display-name-resolution-policy.md`](docs/2026-08-23-p2-display-name-resolution-policy.md)
 - [`2026-08-23-p2-user-tab-candidate-policy.md`](docs/2026-08-23-p2-user-tab-candidate-policy.md)
 - [`2026-08-23-p2-search-entry-selection-policy.md`](docs/2026-08-23-p2-search-entry-selection-policy.md)
+- [`2026-08-23-a1-user-result-row-geometry-normalization.md`](docs/2026-08-23-a1-user-result-row-geometry-normalization.md)
 
 ### 已知限制
 

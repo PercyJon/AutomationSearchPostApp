@@ -4930,8 +4930,6 @@ class DouyinNavigationController(
         const val USER_PAGE_SWIPE_DURATION_MS = 480L
         const val LIVE_ROOM_SWIPE_DURATION_MS = 460L
         const val USER_RESULTS_TOP_RATIO = 0.14f
-        const val USER_ROW_MIN_HEIGHT = 180
-        const val USER_ROW_MAX_HEIGHT = 400
         const val USER_ROW_CONTENT_LEFT_RATIO = 0.24f
         const val USER_ROW_CONTENT_TOP_RATIO = 0.12f
         const val USER_ROW_CONTENT_BOTTOM_RATIO = 0.58f

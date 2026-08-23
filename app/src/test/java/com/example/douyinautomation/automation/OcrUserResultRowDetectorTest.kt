@@ -135,6 +135,12 @@ class OcrUserResultRowDetectorTest {
         assertEquals("donganchuang", identity?.accountHandle)
     }
 
+    @Test
+    fun `scales OCR row height range with screen height`() {
+        assertEquals(168..482, OcrUserResultRowDetector.rowHeightRange(2412))
+        assertEquals(112..321, OcrUserResultRowDetector.rowHeightRange(1608))
+    }
+
     private fun userResultsContext(vararg blocks: OcrTextBlock): ScreenContext = ScreenContext(
         screenSize = ScreenSize(1080, 2412),
         packageName = "com.ss.android.ugc.aweme",

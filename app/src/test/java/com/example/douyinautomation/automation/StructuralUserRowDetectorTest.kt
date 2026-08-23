@@ -128,4 +128,40 @@ class StructuralUserRowDetectorTest {
         assertEquals(messageAction.hierarchyPath, match?.anchor?.hierarchyPath)
         assertEquals(UserFollowActionState.FOLLOW, StructuralUserRowDetector.followActionState(context, match!!))
     }
+
+    @Test
+    fun `scales row height eligibility with the actual display height`() {
+        val shortScreen = ScreenSize(720, 1608)
+
+        val accepted = StructuralUserRowDetector.find(rowContext(shortScreen, rowHeight = 160))
+        val rejected = StructuralUserRowDetector.find(rowContext(shortScreen, rowHeight = 280))
+
+        assertNotNull(accepted)
+        assertEquals(120..266, StructuralUserRowDetector.rowHeightRange(shortScreen.height))
+        assertEquals(null, rejected)
+    }
+
+    private fun rowContext(screenSize: ScreenSize, rowHeight: Int): ScreenContext {
+        val rowTop = (screenSize.height * 0.20f).toInt()
+        val rowPath = listOf(1)
+        return ScreenContext(
+            screenSize = screenSize,
+            nodes = listOf(
+                NodeSnapshot(
+                    hierarchyPath = rowPath,
+                    bounds = ScreenBounds(0, rowTop, (screenSize.width * 0.98f).toInt(), rowTop + rowHeight),
+                ),
+                NodeSnapshot(
+                    hierarchyPath = rowPath + 0,
+                    contentDescription = "关注按钮",
+                    bounds = ScreenBounds(
+                        (screenSize.width * 0.71f).toInt(),
+                        rowTop + rowHeight / 3,
+                        (screenSize.width * 0.93f).toInt(),
+                        rowTop + rowHeight / 2,
+                    ),
+                ),
+            ),
+        )
+    }
 }
