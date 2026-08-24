@@ -257,25 +257,24 @@ fun AppHomeScreen(
                                     showCommentTask -> "评论私信"
                                     showCreateTask -> "新建任务"
                                     selectedSection == HomeSection.TODO -> "待办"
-                                    selectedSection == HomeSection.RECORDS -> "记录"
-                                    selectedSection == HomeSection.SETTINGS -> "设置"
+                                    selectedSection == HomeSection.RECORDS -> "任务记录"
+                                    selectedSection == HomeSection.SETTINGS -> "自动化设置"
                                     else -> "诊断"
                                 },
                                 style = MaterialTheme.typography.titleLarge,
                                 fontWeight = FontWeight.SemiBold,
                             )
-                            Text(
-                                text = when (selectedSection) {
-                                    HomeSection.HOME -> ""
-                                    HomeSection.TODO -> "保存的任务按顺序执行"
-                                    HomeSection.MY -> ""
-                                    HomeSection.RECORDS -> "处理记录"
-                                    HomeSection.SETTINGS -> "设置"
-                                    HomeSection.DIAGNOSTICS -> "诊断"
-                                },
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                            val subtitle = when (selectedSection) {
+                                HomeSection.TODO -> "保存的任务按顺序执行"
+                                else -> ""
+                            }
+                            if (subtitle.isNotEmpty()) {
+                                Text(
+                                    text = subtitle,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
                     }
                 },
@@ -2219,22 +2218,18 @@ private fun TaskRecordsPage(
             .padding(padding)
             .verticalScroll(rememberScrollState())
             .padding(AutomationSpacing.Page),
-        verticalArrangement = Arrangement.spacedBy(AutomationSpacing.Content),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("处理记录", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        Text(
-            "点击任务查看完整结果和用户处理明细",
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        Text("筛选状态", style = MaterialTheme.typography.labelLarge)
         Row(
             modifier = Modifier.horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             listOf("ALL" to "全部", "RUNNING" to "执行中", "COMPLETED" to "已完成", "FAILED" to "失败", "PAUSED" to "暂停", "STOPPED" to "已停止").forEach { (value, label) ->
-                FilterChip(
+                FormChoiceChip(
                     selected = statusFilter == value,
                     onClick = { statusFilter = value },
-                    label = { Text(label) },
+                    label = label,
                 )
             }
         }
@@ -2256,16 +2251,16 @@ private fun TaskHistoryCard(history: TaskHistoryEntry, onClick: () -> Unit) {
             .clickable(onClick = onClick),
         colors = CardDefaults.cardColors(containerColor = AutomationCard),
         border = androidx.compose.foundation.BorderStroke(1.dp, AutomationDivider),
-        shape = MaterialTheme.shapes.medium,
+        shape = RoundedCornerShape(12.dp),
     ) {
         Row(modifier = Modifier.fillMaxWidth()) {
             androidx.compose.foundation.layout.Box(
                 modifier = Modifier
                     .width(4.dp)
-                    .height(92.dp)
+                    .height(84.dp)
                     .background(AutomationBlue),
             )
-            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text(history.taskName, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                     StatusBadge(taskStatusLabel(history.status), taskStatusTone(history.status))
@@ -2743,13 +2738,12 @@ private fun SettingsPage(
             .padding(padding)
             .verticalScroll(rememberScrollState())
             .padding(AutomationSpacing.Page),
-        verticalArrangement = Arrangement.spacedBy(AutomationSpacing.Content),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("设置", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         SettingsSectionCard(title = "账号与授权", icon = Icons.Default.Cloud) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("授权状态", fontWeight = FontWeight.Medium)
+                    Text("授权状态", style = MaterialTheme.typography.labelLarge)
                     StatusBadge(
                         licenseStatusLabel(licenseState.status),
                         when (licenseState.status) {
@@ -2775,24 +2769,28 @@ private fun SettingsPage(
                     )
                 }
                 Text(
-                    "密码不会保存；本机仅使用 Android Keystore 加密保存设备绑定后的移动端授权和设备哈希。",
+                    "密码不会保存；授权与设备哈希仅以 Android Keystore 加密保存在本机。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                OutlinedButton(onClick = { AuthStore.verifyNow() }) {
+                OutlinedButton(
+                    onClick = { AuthStore.verifyNow() },
+                    modifier = Modifier.fillMaxWidth().height(46.dp),
+                    shape = RoundedCornerShape(8.dp),
+                ) {
                     Text("立即验证 heartbeat")
                 }
             }
         }
         SettingsSectionCard(title = "自动化服务", icon = Icons.Default.Accessibility) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 SettingsRow("目标应用", "抖音")
                 SettingsRow("执行方式", "Android 无障碍服务")
                 SettingsRow("安全模式", "空白消息探测")
                 HorizontalDivider()
-                Text("全局动作间隔", fontWeight = FontWeight.Medium)
+                Text("全局动作间隔", style = MaterialTheme.typography.labelLarge)
                 Text(
-                    "留空表示不额外节流。填写后，目标应用的每次点击、输入、返回或滑动之间至少间隔 1000–5000ms；保存后从下一次动作生效。",
+                    "留空：不额外节流；填写范围 1000–5000ms，下一次动作生效。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -2803,10 +2801,11 @@ private fun SettingsPage(
                         actionIntervalMessage = null
                         actionIntervalMessageIsError = false
                     },
-                    modifier = Modifier.fillMaxWidth().height(54.dp),
-                    textStyle = MaterialTheme.typography.bodyLarge,
-                    label = "全局动作间隔（ms，可留空）",
-                    placeholder = "留空：不启用全局间隔",
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                    label = "全局动作间隔（ms）",
+                    placeholder = "留空：不启用",
+                    taskForm = true,
                     singleLine = true,
                 )
                 actionIntervalError?.let { error ->
@@ -2823,7 +2822,8 @@ private fun SettingsPage(
                             "已保存 ${actionIntervalMillis}ms；下一次动作起生效"
                         }
                     },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().height(46.dp),
+                    shape = RoundedCornerShape(8.dp),
                 ) {
                     Text("保存全局动作间隔")
                 }
@@ -2838,25 +2838,24 @@ private fun SettingsPage(
                         },
                     )
                 }
-                Text(
-                    "预设搜索词：开启远程任务后使用后台目录；关闭时使用本地缓存和内置词。地区规则、屏蔽词与任务断点接口已接入客户端网关。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                OutlinedButton(onClick = { openAccessibilitySettings(context) }) {
+                OutlinedButton(
+                    onClick = { openAccessibilitySettings(context) },
+                    modifier = Modifier.fillMaxWidth().height(46.dp),
+                    shape = RoundedCornerShape(8.dp),
+                ) {
                     Text("无障碍服务设置")
                 }
             }
         }
         SettingsSectionCard(title = "任务悬浮窗", icon = Icons.Default.Info) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("显示任务进度", fontWeight = FontWeight.Medium)
+                        Text("显示任务进度", style = MaterialTheme.typography.labelLarge)
                         Text(
                             if (overlayAllowed) "已允许：启动任务后会显示在抖音上方" else "未允许：任务仍可执行，但不会显示悬浮窗",
                             style = MaterialTheme.typography.bodySmall,
@@ -2873,7 +2872,8 @@ private fun SettingsPage(
                         FloatingOverlayService.openPermissionSettings(context)
                         overlayAllowed = FloatingOverlayService.canDrawOverlays(context)
                     },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().height(46.dp),
+                    shape = RoundedCornerShape(8.dp),
                 ) {
                     Text(if (overlayAllowed) "管理悬浮窗权限" else "开启悬浮窗权限")
                 }
@@ -2881,8 +2881,8 @@ private fun SettingsPage(
         }
         SettingsSectionCard(title = "远程任务", icon = Icons.Default.Cloud) {
             Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -2893,7 +2893,7 @@ private fun SettingsPage(
                         modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        Text("显示远程任务", fontWeight = FontWeight.Medium)
+                        Text("显示远程任务", style = MaterialTheme.typography.labelLarge)
                         Text(
                             "默认关闭。开启后，任务页才会显示并刷新后台下发的任务；手机本地新建任务不受影响。",
                             style = MaterialTheme.typography.bodySmall,
@@ -2906,18 +2906,19 @@ private fun SettingsPage(
                     )
                 }
                 HorizontalDivider()
-                Text("远程授权任务 ID", fontWeight = FontWeight.Medium)
                 Text(
-                    "仅清单中的远程任务可以领取、启动或从检查点恢复。本机创建的任务始终视为已授权。可使用中英文逗号、空格或换行分隔。",
+                    "仅清单中的远程任务可以领取、启动或恢复；本机新建任务无需配置。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 CompactOutlinedTextField(
                     value = authorizedRemoteTaskIds,
                     onValueChange = { authorizedRemoteTaskIds = it },
-                    modifier = Modifier.fillMaxWidth().height(54.dp),
-                    textStyle = MaterialTheme.typography.bodyLarge,
-                    label = "例如 101,102",
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                    label = "远程授权任务 ID",
+                    placeholder = "例如 101, 102",
+                    taskForm = true,
                     singleLine = true,
                 )
                 OutlinedButton(
@@ -2926,7 +2927,8 @@ private fun SettingsPage(
                         authorizedRemoteTaskIds = saved.sorted().joinToString(",")
                         remoteAuthorizationMessage = "已保存 ${saved.size} 个远程授权任务 ID"
                     },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().height(46.dp),
+                    shape = RoundedCornerShape(8.dp),
                 ) {
                     Text("保存远程任务授权清单")
                 }
@@ -2936,9 +2938,17 @@ private fun SettingsPage(
             }
         }
         SettingsSectionCard(title = "开发者选项", icon = Icons.Default.Tune) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("截图、OCR、节点树和原始事件仅在诊断页显示。")
-                OutlinedButton(onClick = onOpenDiagnostics) { Text("打开诊断页") }
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    "截图、OCR、节点树和原始事件仅在诊断页显示。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedButton(
+                    onClick = onOpenDiagnostics,
+                    modifier = Modifier.fillMaxWidth().height(46.dp),
+                    shape = RoundedCornerShape(8.dp),
+                ) { Text("打开诊断页") }
             }
         }
     }
@@ -2954,11 +2964,11 @@ private fun SettingsSectionCard(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = AutomationCard),
         border = androidx.compose.foundation.BorderStroke(1.dp, AutomationDivider),
-        shape = MaterialTheme.shapes.large,
+        shape = RoundedCornerShape(12.dp),
     ) {
         Column {
             Row(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
             ) {
@@ -2974,8 +2984,12 @@ private fun SettingsSectionCard(
 @Composable
 private fun SettingsRow(label: String, value: String) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, fontWeight = FontWeight.Medium)
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
     }
 }
 

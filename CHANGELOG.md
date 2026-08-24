@@ -4,6 +4,29 @@
 
 ---
 
+## [未发布] 2026-08-25 —— 设置与任务记录页面视觉收敛
+
+### 修改内容
+
+- 设置/任务记录顶部栏改为明确页面名称，移除页内及副标题的重复层级。
+- 设置卡片、输入框、按钮、任务记录筛选项和记录卡统一为紧凑的圆角矩形比例；仅压缩展示文案，不改变设置读写、授权、任务数据或导航回调。
+
+### 已验证项
+
+- `git diff --check` 与 `./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug -PautomationApiEndpoint=<受管 HTTPS 服务地址>` 通过。
+- **真机 OnePlus NE2210 / b33aa309 / Android 16**：验证“我的 → 自动化设置 → 返回 → 我的 → 任务记录”，并滚动检查悬浮窗、远程任务与开发者选项。没有写入设置、验证 heartbeat、打开权限页、启动/重试任务或调用抖音；测试结束后 App 已停止并返回系统桌面。
+
+### 几何与兼容性检查
+
+- 视觉调整仅使用 Compose `dp`（50dp 输入框、46dp 按钮、34dp 筛选项、12dp/8dp 圆角）；未新增固定 px、自动化坐标、OCR 几何或手势时长。
+- P0 评论入口、双锚点回退、动作节奏和无障碍状态机未修改。
+
+### 交接记录
+
+- [`2026-08-25-settings-records-visual-refinement.md`](docs/2026-08-25-settings-records-visual-refinement.md)
+
+---
+
 ## [未发布] 2026-08-25 —— B 端与评论私信任务表单视觉收敛
 
 ### 修改内容
