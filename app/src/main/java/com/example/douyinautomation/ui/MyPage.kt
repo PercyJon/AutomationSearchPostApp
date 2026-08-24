@@ -47,6 +47,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.douyinautomation.automation.AutomationStore
 import com.example.douyinautomation.automation.AuthStore
 import com.example.douyinautomation.automation.LicenseStatus
 import com.example.douyinautomation.ui.theme.AutomationBlue
@@ -57,7 +58,9 @@ import com.example.douyinautomation.ui.theme.AutomationError
 import com.example.douyinautomation.ui.theme.AutomationPage
 import com.example.douyinautomation.ui.theme.AutomationSpacing
 import com.example.douyinautomation.ui.theme.AutomationSuccess
+import com.example.douyinautomation.ui.theme.AutomationSuccessSurface
 import com.example.douyinautomation.ui.theme.AutomationWarning
+import com.example.douyinautomation.ui.theme.AutomationWarningSurface
 
 /**
  * The account hub deliberately owns only navigation and local sign-out for now.  Server-side
@@ -72,6 +75,7 @@ internal fun MyPage(
     onSignOut: () -> Unit,
 ) {
     val licenseState by AuthStore.uiState.collectAsState()
+    val automationState by AutomationStore.uiState.collectAsState()
     val account = licenseState.accountName
         ?: AuthStore.currentConfig()?.accountUsername
         ?: "未登录"
@@ -114,6 +118,7 @@ internal fun MyPage(
             status = licenseState.status,
         )
         AuthorizationNotice(status = licenseState.status, message = licenseState.message)
+        AutomationServiceNotice(connected = automationState.serviceConnected)
 
         MyMenuSection {
             MyMenuItem(
@@ -157,6 +162,41 @@ internal fun MyPage(
             }
         }
         Spacer(modifier = Modifier.height(12.dp))
+    }
+}
+
+@Composable
+private fun AutomationServiceNotice(connected: Boolean) {
+    val tone = if (connected) AutomationSuccess else AutomationWarning
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = if (connected) AutomationSuccessSurface else AutomationWarningSurface,
+        shape = RoundedCornerShape(10.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Default.Accessibility,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = tone,
+            )
+            Spacer(modifier = Modifier.width(9.dp))
+            Text(
+                text = "自动化服务",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = if (connected) "正常" else "未开启",
+                style = MaterialTheme.typography.labelLarge,
+                color = tone,
+                fontWeight = FontWeight.Medium,
+            )
+        }
     }
 }
 
