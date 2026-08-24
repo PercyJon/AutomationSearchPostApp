@@ -6,6 +6,31 @@ import org.junit.Test
 class InitialHomeSurfacePolicyTest {
 
     @Test
+    fun pendingStartupDefersMissingContextOnlyAtInitialHomePhase() {
+        assertEquals(
+            true,
+            InitialHomeSurfacePolicy.shouldDeferMissingContextRecovery(
+                phase = AutomationPhase.WAITING_FOR_HOME,
+                initialClassificationPending = true,
+            ),
+        )
+        assertEquals(
+            false,
+            InitialHomeSurfacePolicy.shouldDeferMissingContextRecovery(
+                phase = AutomationPhase.WAITING_FOR_SEARCH_ENTRY,
+                initialClassificationPending = true,
+            ),
+        )
+        assertEquals(
+            false,
+            InitialHomeSurfacePolicy.shouldDeferMissingContextRecovery(
+                phase = AutomationPhase.WAITING_FOR_HOME,
+                initialClassificationPending = false,
+            ),
+        )
+    }
+
+    @Test
     fun pendingStartupDefersOnlyUnknownHomeRecovery() {
         assertEquals(
             true,

@@ -9,10 +9,10 @@ class TuningConstantsTest {
     fun navigationLifecycleKeepsTheEstablishedBoundedStartupBudget() {
         val lifecycle = TuningConstants.NavigationLifecycle
 
-        assertEquals(4, TuningConstants.VERSION)
+        assertEquals(5, TuningConstants.VERSION)
         assertEquals(12_000L, lifecycle.STEP_TIMEOUT_MS)
         assertEquals(30_000L, lifecycle.STARTUP_STEP_TIMEOUT_MS)
-        assertEquals(5_000L, lifecycle.INITIAL_SCREEN_SETTLE_DELAY_MS)
+        assertEquals(1_500L, lifecycle.INITIAL_SCREEN_SETTLE_DELAY_MS)
         assertEquals(24, lifecycle.INITIAL_OBSERVATION_ATTEMPTS)
         assertEquals(350L, lifecycle.INITIAL_OBSERVATION_INTERVAL_MS)
         assertEquals(2, lifecycle.INITIAL_OCR_RETRY_EVERY_OBSERVATIONS)
@@ -35,6 +35,15 @@ class TuningConstantsTest {
         assertEquals(3, runtime.MAX_EMPTY_SCROLLS)
         assertEquals(3, runtime.MAX_LIVE_ROOM_EXITS)
         assertEquals(3, runtime.MAX_LIVE_ROOM_SWIPES)
+        assertEquals(250L, runtime.PAGE_POLL_INTERVAL_MS)
+        assertEquals(200L, runtime.FIRST_VIDEO_TRANSITION_INITIAL_DELAY_MS)
+        assertEquals(300L, runtime.FIRST_VIDEO_TRANSITION_PROBE_INTERVAL_MS)
+        assertEquals(100L, runtime.NEXT_VIDEO_TRANSITION_INITIAL_GRACE_MS)
+        assertEquals(300L, runtime.NEXT_VIDEO_TRANSITION_PROBE_INTERVAL_MS)
+        assertEquals(180L, runtime.COMMENT_PANEL_PROBE_INITIAL_DELAY_MS)
+        assertEquals(300L, runtime.COMMENT_PANEL_PROBE_INTERVAL_MS)
+        assertEquals(300L, runtime.POST_SCROLL_POLL_INTERVAL_MS)
+        assertEquals(700L, runtime.NEXT_VIDEO_SETTLE_MS)
     }
 
     @Test

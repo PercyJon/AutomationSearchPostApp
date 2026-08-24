@@ -8,7 +8,7 @@ package com.example.douyinautomation.automation
  * move here without changing their defaults before any future configuration mechanism is added.
  */
 object TuningConstants {
-    const val VERSION = 4
+    const val VERSION = 5
 
     /** Startup polling and phase watchdog values used by [DouyinNavigationController]. */
     object NavigationLifecycle {
@@ -19,7 +19,7 @@ object TuningConstants {
         const val STARTUP_STEP_TIMEOUT_MS = 30_000L
 
         /** Delay after bringing the target app forward before its first reliable tree read. */
-        const val INITIAL_SCREEN_SETTLE_DELAY_MS = 5_000L
+        const val INITIAL_SCREEN_SETTLE_DELAY_MS = 1_500L
 
         /** Bounded sampling window used when no initial callback is delivered. */
         const val INITIAL_OBSERVATION_ATTEMPTS = 24
@@ -40,39 +40,39 @@ object TuningConstants {
         const val INITIAL_ENTRY_TIMEOUT_MS = 60_000L
         const val CANDIDATE_STEP_TIMEOUT_MS = 12_000L
         const val BLANK_PROBE_TIMEOUT_MS = 8_000L
-        const val PAGE_POLL_INTERVAL_MS = 350L
+        const val PAGE_POLL_INTERVAL_MS = 250L
         const val BLANK_PROBE_SETTLE_MS = 250L
 
         /** Bounds retries for independently rendered profile shells and message actions. */
         const val PRIVATE_MESSAGE_ENTRY_ATTEMPTS = 4
         const val PRIVATE_MESSAGE_ENTRY_RETRY_DELAY_MS = 500L
         const val PRIVATE_MESSAGE_ENTRY_POSTCONDITION_TIMEOUT_MS = 3_200L
-        const val RETURN_TO_COMMENT_DELAY_MS = 450L
+        const val RETURN_TO_COMMENT_DELAY_MS = 250L
         const val WORKS_SORT_SETTLE_MS = 140L
 
         const val FIRST_VIDEO_TRANSITION_PROBE_ATTEMPTS = 3
-        const val FIRST_VIDEO_TRANSITION_INITIAL_DELAY_MS = 450L
-        const val FIRST_VIDEO_TRANSITION_PROBE_INTERVAL_MS = 550L
+        const val FIRST_VIDEO_TRANSITION_INITIAL_DELAY_MS = 200L
+        const val FIRST_VIDEO_TRANSITION_PROBE_INTERVAL_MS = 300L
         const val NEXT_VIDEO_TRANSITION_PROBE_ATTEMPTS = 24
-        const val NEXT_VIDEO_TRANSITION_INITIAL_GRACE_MS = 180L
-        const val NEXT_VIDEO_TRANSITION_PROBE_INTERVAL_MS = 500L
+        const val NEXT_VIDEO_TRANSITION_INITIAL_GRACE_MS = 100L
+        const val NEXT_VIDEO_TRANSITION_PROBE_INTERVAL_MS = 300L
 
         /** Strict negative OCR evidence before safely skipping an unverifiable next-video entry. */
         const val NEXT_VIDEO_HIDDEN_ENTRY_LIMIT = 2
         const val NEXT_VIDEO_OCR_PROBE_LIMIT = 2
-        const val VIDEO_CONTROLS_REVEAL_SETTLE_MS = 450L
+        const val VIDEO_CONTROLS_REVEAL_SETTLE_MS = 250L
         const val PROFILE_CONTENT_TIMEOUT_MS = 12_000L
         const val PROFILE_SURFACE_PROBE_ATTEMPTS = 20
-        const val PROFILE_SURFACE_PROBE_INITIAL_DELAY_MS = 250L
-        const val PROFILE_SURFACE_PROBE_INTERVAL_MS = 500L
+        const val PROFILE_SURFACE_PROBE_INITIAL_DELAY_MS = 150L
+        const val PROFILE_SURFACE_PROBE_INTERVAL_MS = 300L
         const val COMMENT_PANEL_PROBE_ATTEMPTS = 6
-        const val COMMENT_PANEL_PROBE_INITIAL_DELAY_MS = 350L
-        const val COMMENT_PANEL_PROBE_INTERVAL_MS = 500L
+        const val COMMENT_PANEL_PROBE_INITIAL_DELAY_MS = 180L
+        const val COMMENT_PANEL_PROBE_INTERVAL_MS = 300L
 
         /** One-based retry index for the existing safety-checked coordinate retry. */
         const val COMMENT_PANEL_NODE_BOUNDS_RETRY_ATTEMPT = 3
         const val INITIAL_COMMENT_CANDIDATE_READ_RETRIES = 3
-        const val INITIAL_COMMENT_CANDIDATE_READ_RETRY_DELAY_MS = 450L
+        const val INITIAL_COMMENT_CANDIDATE_READ_RETRY_DELAY_MS = 300L
         const val MAX_RETURN_TO_COMMENT_BACKS = 3
         const val COMMENT_SURFACE_POLL_ATTEMPTS = 8
 
@@ -81,15 +81,15 @@ object TuningConstants {
         const val MAX_STALE_SCROLLS = 2
         const val MAX_EMPTY_SCROLLS = 3
         const val POST_SCROLL_POLL_ATTEMPTS = 3
-        const val POST_SCROLL_POLL_INTERVAL_MS = 600L
+        const val POST_SCROLL_POLL_INTERVAL_MS = 300L
         const val AVATAR_RESOLVE_RETRIES = 8
-        const val AVATAR_RESOLVE_RETRY_DELAY_MS = 400L
-        const val AVATAR_PROFILE_RETRY_DELAY_MS = 450L
+        const val AVATAR_RESOLVE_RETRY_DELAY_MS = 300L
+        const val AVATAR_PROFILE_RETRY_DELAY_MS = 250L
         const val MAX_LIVE_ROOM_EXITS = 3
         const val MAX_LIVE_ROOM_SWIPES = 3
         const val LIVE_ROOM_SWIPE_DURATION_MS = 460L
         const val NEXT_VIDEO_SWIPE_DURATION_MS = 520L
-        const val NEXT_VIDEO_SETTLE_MS = 1_600L
+        const val NEXT_VIDEO_SETTLE_MS = 700L
         const val BLANK_PROBE_NODE_DUMP_DIRECTORY = "diagnostics/nodes"
     }
 

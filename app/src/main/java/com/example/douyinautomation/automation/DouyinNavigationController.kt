@@ -594,9 +594,9 @@ class DouyinNavigationController(
 
         when (val result = TargetAppLauncher.launch(service)) {
             LaunchResult.Started -> {
-                // Douyin may show a full-screen promotion immediately after cold start. Do not
-                // inspect or click through that surface: give it a bounded five-second settle
-                // window before the first page observation and search action.
+                // Douyin may show a full-screen promotion immediately after cold start. Give
+                // the launch surface a short bounded settle window, then rely on the existing
+                // page-confirmation observer rather than acting on an unverified first frame.
                 logger.info(
                     "initial_screen_settle_started",
                     attributes = mapOf("wait_ms" to TuningConstants.NavigationLifecycle.INITIAL_SCREEN_SETTLE_DELAY_MS),
@@ -5000,6 +5000,19 @@ class DouyinNavigationController(
                 // but a prior task's profile/result tree is never valid startup evidence.
                 val context = currentWindowContext() ?: recentInitialTargetContext()
                 if (context == null) {
+                    if (
+                        InitialHomeSurfacePolicy.shouldDeferMissingContextRecovery(
+                            phase = phase,
+                            initialClassificationPending = initialHomeClassificationPending,
+                        )
+                    ) {
+                        logger.info(
+                            "initial_context_missing_deferred",
+                            message = "The launch surface has no node tree yet; continuing bounded observation without BACK",
+                            attributes = mapOf("observation" to observationAttempt + 1),
+                        )
+                        return@repeat
+                    }
                     logger.warn(
                         "initial_context_missing",
                         message = "No Douyin node tree is available during startup; beginning bounded home recovery",

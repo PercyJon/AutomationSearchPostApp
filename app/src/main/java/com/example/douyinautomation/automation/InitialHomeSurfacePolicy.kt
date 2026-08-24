@@ -8,6 +8,15 @@ package com.example.douyinautomation.automation
 object InitialHomeSurfacePolicy {
 
     /**
+     * A root-less frame is another form of unclassified launch surface. It must not take the
+     * legacy blind-BACK recovery path until ordinary HOME/search classification has completed.
+     */
+    fun shouldDeferMissingContextRecovery(
+        phase: AutomationPhase,
+        initialClassificationPending: Boolean,
+    ): Boolean = initialClassificationPending && phase == AutomationPhase.WAITING_FOR_HOME
+
+    /**
      * A custom-rendered launch surface can be UNKNOWN for several frames while its HOME evidence
      * settles. That state is not evidence that global BACK is safe; the bounded startup observer
      * must collect a confirmed page or let its watchdog take the existing safe-pause path.
