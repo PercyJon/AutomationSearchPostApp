@@ -733,24 +733,19 @@ private fun TaskDashboard(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = AutomationSpacing.Page),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-                Text("任务配置", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-                Text(
-                    "配置搜索词、地区和屏蔽规则。默认使用空格安全探测，不发送真实消息。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                SectionHeader("基础信息")
+                SectionHeader("基础信息", compact = true)
                 CompactOutlinedTextField(
                     value = taskName,
                     onValueChange = { taskName = it },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(54.dp),
-                    textStyle = MaterialTheme.typography.bodyLarge,
-                    label = "任务名称（可选）",
-                    placeholder = "不填则按搜索词+时间自动生成",
+                        .height(50.dp),
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                    label = "任务名称",
+                    placeholder = "选填",
+                    taskForm = true,
                     singleLine = true,
                 )
                 CompactOutlinedTextField(
@@ -764,14 +759,15 @@ private fun TaskDashboard(
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(54.dp),
-                    textStyle = MaterialTheme.typography.bodyLarge,
+                        .height(50.dp),
+                    textStyle = MaterialTheme.typography.bodyMedium,
                     label = "自定义搜索词",
-                    placeholder = "输入搜索词，或点击下方预设",
+                    placeholder = "输入搜索词",
+                    taskForm = true,
                     singleLine = true,
                 )
-                SectionHeader("搜索条件")
-                Text("预设搜索词（点击后填入上方输入框）", style = MaterialTheme.typography.labelMedium)
+                SectionHeader("搜索条件", compact = true)
+                Text("预设搜索词", style = MaterialTheme.typography.labelMedium)
                 PresetChips(
                     presets = presets,
                     selectedIds = selectedPresetIds,
@@ -791,12 +787,14 @@ private fun TaskDashboard(
                     onValueChange = { region = it },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(54.dp),
-                    textStyle = MaterialTheme.typography.bodyLarge,
-                    label = "地区（可选，例如广东）",
+                        .height(50.dp),
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                    label = "地区",
+                    placeholder = "选填",
+                    taskForm = true,
                     singleLine = true,
                 )
-                SectionHeader("筛选条件")
+                SectionHeader("筛选条件", compact = true)
                 if (regionCatalog.items.isNotEmpty()) {
                     Text("后台地区规则", style = MaterialTheme.typography.labelLarge)
                     @OptIn(ExperimentalLayoutApi::class)
@@ -818,10 +816,11 @@ private fun TaskDashboard(
                     onValueChange = { blockedKeywords = it },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(54.dp),
-                    textStyle = MaterialTheme.typography.bodyLarge,
-                    label = "屏蔽关键词（逗号分隔）",
-                    placeholder = "例如：厂，公司",
+                        .height(50.dp),
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                    label = "屏蔽关键词",
+                    placeholder = "逗号分隔",
+                    taskForm = true,
                     singleLine = true,
                 )
                 val blockedPresetKeywords = (blockKeywordCatalog.items.map { it.keyword } + listOf("厂", "公司"))
@@ -829,7 +828,7 @@ private fun TaskDashboard(
                     .filter(String::isNotEmpty)
                     .distinct()
                 if (blockedPresetKeywords.isNotEmpty()) {
-                    Text("预设屏蔽词（点击后替换输入框内容）", style = MaterialTheme.typography.labelMedium)
+                    Text("预设屏蔽词", style = MaterialTheme.typography.labelMedium)
                     val selectedBlocked = blockedKeywords
                         .split(',', '，', '\n')
                         .map(String::trim)
@@ -855,19 +854,24 @@ private fun TaskDashboard(
                         }
                     }
                 }
-                SectionHeader("执行限制")
+                SectionHeader("执行限制", compact = true)
                 CompactOutlinedTextField(
                     value = maxUsers,
                     onValueChange = { value -> maxUsers = TaskUserLimitInputPolicy.sanitizeInput(value) },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(54.dp),
-                    textStyle = MaterialTheme.typography.bodyLarge,
+                        .height(50.dp),
+                    textStyle = MaterialTheme.typography.bodyMedium,
                     label = "最多处理用户数",
+                    taskForm = true,
                     singleLine = true,
                 )
                 if (draftErrors.isNotEmpty()) {
-                    Text(draftErrors.first(), color = MaterialTheme.colorScheme.error)
+                    Text(
+                        draftErrors.first(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
                 }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -903,8 +907,8 @@ private fun TaskDashboard(
                         enabled = canSave,
                         modifier = Modifier
                             .weight(1f)
-                            .height(52.dp),
-                        shape = RoundedCornerShape(26.dp),
+                            .height(46.dp),
+                        shape = RoundedCornerShape(8.dp),
                     ) {
                         Text("保存")
                     }
@@ -921,8 +925,8 @@ private fun TaskDashboard(
                         enabled = canStart,
                         modifier = Modifier
                             .weight(1f)
-                            .height(52.dp),
-                        shape = RoundedCornerShape(26.dp),
+                            .height(46.dp),
+                        shape = RoundedCornerShape(8.dp),
                     ) {
                         Text("立即开始")
                     }
@@ -1135,25 +1139,19 @@ private fun CommentTaskScreen(
             .fillMaxWidth()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = AutomationSpacing.Page, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text("评论区私信", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-        Text(
-            "安全探测模式只提交一个空格，用于确认抖音是否允许发送；不会发送真实内容。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        SectionHeader("开始位置")
+        SectionHeader("开始位置", compact = true)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(
+            FormChoiceChip(
                 selected = entryMode == CommentPrivateMessageEntryMode.CURRENT_PROFILE,
                 onClick = { entryMode = CommentPrivateMessageEntryMode.CURRENT_PROFILE },
-                label = { Text("当前用户主页") },
+                label = "当前用户主页",
             )
-            FilterChip(
+            FormChoiceChip(
                 selected = entryMode == CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE,
                 onClick = { entryMode = CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE },
-                label = { Text("搜索指定用户") },
+                label = "搜索指定用户",
             )
         }
         Row(
@@ -1162,100 +1160,90 @@ private fun CommentTaskScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text("跳过置顶视频", style = MaterialTheme.typography.bodyLarge)
-                Text(
-                    "开启后会跳过带有“置顶”标记的视频，优先处理最新的普通作品。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Text("跳过置顶视频", style = MaterialTheme.typography.labelLarge)
             }
             Switch(checked = skipPinnedVideos, onCheckedChange = { skipPinnedVideos = it })
         }
-        if (entryMode == CommentPrivateMessageEntryMode.CURRENT_PROFILE) {
-            Text(
-                "请先在抖音打开目标用户主页，或停留在普通视频页（非直播、非广告），再从本页点击开始。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        } else {
+        if (entryMode == CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE) {
             CompactOutlinedTextField(
                 value = targetUser,
                 onValueChange = { targetUser = it },
-                modifier = Modifier.fillMaxWidth().height(54.dp),
-                textStyle = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.fillMaxWidth().height(50.dp),
+                textStyle = MaterialTheme.typography.bodyMedium,
                 label = "目标用户",
-                placeholder = "输入用户名或搜索词",
+                placeholder = "用户名或搜索词",
+                taskForm = true,
                 singleLine = true,
             )
         }
-        SectionHeader("任务配置")
+        SectionHeader("任务配置", compact = true)
         CompactOutlinedTextField(
             value = taskName,
             onValueChange = { taskName = it },
-            modifier = Modifier.fillMaxWidth().height(54.dp),
-            textStyle = MaterialTheme.typography.bodyLarge,
-            label = "任务名称（可选）",
-            placeholder = "不填则自动生成",
+            modifier = Modifier.fillMaxWidth().height(50.dp),
+            textStyle = MaterialTheme.typography.bodyMedium,
+            label = "任务名称",
+            placeholder = "选填",
+            taskForm = true,
             singleLine = true,
         )
         CompactOutlinedTextField(
             value = matchKeywords,
             onValueChange = { matchKeywords = it },
-            modifier = Modifier.fillMaxWidth().height(54.dp),
-            textStyle = MaterialTheme.typography.bodyLarge,
-            label = "评论匹配词（可选）",
-            placeholder = "多个词用 | 分隔；留空表示全部评论",
+            modifier = Modifier.fillMaxWidth().height(50.dp),
+            textStyle = MaterialTheme.typography.bodyMedium,
+            label = "评论匹配词",
+            placeholder = "多个词用 | 分隔",
+            taskForm = true,
             singleLine = true,
         )
-        Text("匹配方式", style = MaterialTheme.typography.bodyLarge)
+        Text("匹配方式", style = MaterialTheme.typography.labelLarge)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(
+            FormChoiceChip(
                 selected = matchMode == CommentKeywordMatchMode.ANY,
                 onClick = { matchMode = CommentKeywordMatchMode.ANY },
-                label = { Text("任一匹配") },
+                label = "任一匹配",
             )
-            FilterChip(
+            FormChoiceChip(
                 selected = matchMode == CommentKeywordMatchMode.ALL,
                 onClick = { matchMode = CommentKeywordMatchMode.ALL },
-                label = { Text("全部匹配") },
+                label = "全部匹配",
             )
         }
-        Text(
-            if (matchMode == CommentKeywordMatchMode.ANY) {
-                "评论正文包含任一匹配词即可；留空仍处理全部评论。"
-            } else {
-                "评论正文必须同时包含全部匹配词；留空仍处理全部评论。"
-            },
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             CompactOutlinedTextField(
                 value = maxVideos,
                 onValueChange = { maxVideos = it.filter(Char::isDigit) },
-                modifier = Modifier.weight(1f).height(54.dp),
-                textStyle = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.weight(1f).height(50.dp),
+                textStyle = MaterialTheme.typography.bodyMedium,
                 label = "视频数上限",
+                taskForm = true,
                 singleLine = true,
             )
             CompactOutlinedTextField(
                 value = maxUsers,
                 onValueChange = { maxUsers = it.filter(Char::isDigit) },
-                modifier = Modifier.weight(1f).height(54.dp),
-                textStyle = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.weight(1f).height(50.dp),
+                textStyle = MaterialTheme.typography.bodyMedium,
                 label = "每个视频用户数",
+                taskForm = true,
                 singleLine = true,
             )
         }
         if (errors.isNotEmpty()) {
-            Text(errors.first(), color = MaterialTheme.colorScheme.error)
+            Text(
+                errors.first(),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
         }
-        message?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        Text(
-            "首次真机回归默认：1 个视频、最多 1 个评论用户。评论区不会滚动到底，以免长评论列表造成无界等待。",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        message?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1268,15 +1256,15 @@ private fun CommentTaskScreen(
                     }
                 },
                 enabled = errors.isEmpty(),
-                modifier = Modifier.weight(1f).height(50.dp),
-                shape = RoundedCornerShape(25.dp),
+                modifier = Modifier.weight(1f).height(46.dp),
+                shape = RoundedCornerShape(8.dp),
             ) { Text("保存") }
             if (entryMode == CommentPrivateMessageEntryMode.CURRENT_PROFILE) {
                 FilledTonalButton(
                     onClick = { startPreparedTask(snapshot, suspendedBeforeStart = true) },
                     enabled = canRun,
-                    modifier = Modifier.weight(1f).height(50.dp),
-                    shape = RoundedCornerShape(25.dp),
+                    modifier = Modifier.weight(1f).height(46.dp),
+                    shape = RoundedCornerShape(8.dp),
                 ) { Text("挂起") }
             }
             Button(
@@ -1284,8 +1272,8 @@ private fun CommentTaskScreen(
                     startPreparedTask(snapshot)
                 },
                 enabled = canRun,
-                modifier = Modifier.weight(1f).height(50.dp),
-                shape = RoundedCornerShape(25.dp),
+                modifier = Modifier.weight(1f).height(46.dp),
+                shape = RoundedCornerShape(8.dp),
             ) { Text("立即开始") }
         }
     }
@@ -1658,40 +1646,105 @@ private fun CompactOutlinedTextField(
     textStyle: TextStyle,
     label: String,
     placeholder: String? = null,
+    taskForm: Boolean = false,
     singleLine: Boolean,
     visualTransformation: VisualTransformation = VisualTransformation.None,
 ) {
-    Column(modifier = modifier.padding(top = 4.dp)) {
+    Column(modifier = modifier) {
         Text(
             label,
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurface,
         )
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
-            contentAlignment = Alignment.CenterStart,
-        ) {
-            if (value.isBlank() && placeholder != null) {
-                Text(
-                    placeholder,
-                    style = textStyle,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
-                    maxLines = if (singleLine) 1 else Int.MAX_VALUE,
-                    overflow = TextOverflow.Ellipsis,
+        if (taskForm) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .padding(top = 4.dp),
+                shape = RoundedCornerShape(8.dp),
+                color = AutomationNeutralSurface,
+                border = androidx.compose.foundation.BorderStroke(1.dp, AutomationDivider),
+            ) {
+                TaskFormTextInput(
+                    value = value,
+                    onValueChange = onValueChange,
+                    textStyle = textStyle,
+                    placeholder = placeholder,
+                    singleLine = singleLine,
+                    visualTransformation = visualTransformation,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .fillMaxHeight()
+                        .padding(horizontal = 12.dp),
                 )
             }
-            BasicTextField(
+        } else {
+            TaskFormTextInput(
                 value = value,
                 onValueChange = onValueChange,
-                modifier = Modifier.fillMaxWidth(),
-                textStyle = textStyle.copy(color = MaterialTheme.colorScheme.onSurface),
+                textStyle = textStyle,
+                placeholder = placeholder,
                 singleLine = singleLine,
                 visualTransformation = visualTransformation,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+            )
+            HorizontalDivider(color = AutomationDivider, thickness = 1.dp)
+        }
+    }
+}
+
+@Composable
+private fun TaskFormTextInput(
+    value: String,
+    onValueChange: (String) -> Unit,
+    textStyle: TextStyle,
+    placeholder: String?,
+    singleLine: Boolean,
+    visualTransformation: VisualTransformation,
+    modifier: Modifier,
+) {
+    Box(
+        modifier = modifier,
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        if (value.isBlank() && placeholder != null) {
+            Text(
+                placeholder,
+                style = textStyle,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+                maxLines = if (singleLine) 1 else Int.MAX_VALUE,
+                overflow = TextOverflow.Ellipsis,
             )
         }
-        HorizontalDivider(color = AutomationDivider, thickness = 1.dp)
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            modifier = Modifier.fillMaxWidth(),
+            textStyle = textStyle.copy(color = MaterialTheme.colorScheme.onSurface),
+            singleLine = singleLine,
+            visualTransformation = visualTransformation,
+        )
+    }
+}
+
+@Composable
+@OptIn(ExperimentalMaterial3Api::class)
+private fun FormChoiceChip(
+    selected: Boolean,
+    onClick: () -> Unit,
+    label: String,
+) {
+    CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp.Unspecified) {
+        FilterChip(
+            selected = selected,
+            onClick = onClick,
+            label = { Text(label, style = MaterialTheme.typography.labelLarge) },
+            modifier = Modifier.height(34.dp),
+            shape = RoundedCornerShape(8.dp),
+        )
     }
 }
 
@@ -1726,7 +1779,7 @@ private fun CompactPresetChip(
     selected: Boolean,
     onClick: () -> Unit,
     label: String,
-    shape: Shape = RoundedCornerShape(18.dp),
+    shape: Shape = RoundedCornerShape(8.dp),
 ) {
     val borderColor = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else Color.Transparent
     CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp.Unspecified) {
@@ -1837,13 +1890,16 @@ private fun PrimaryActionButton(
 }
 
 @Composable
-private fun SectionHeader(title: String) {
+private fun SectionHeader(title: String, compact: Boolean = false) {
     Text(
         text = title,
-        style = MaterialTheme.typography.titleLarge,
+        style = if (compact) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge,
         color = MaterialTheme.colorScheme.onSurface,
         fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.padding(top = 14.dp, bottom = 2.dp),
+        modifier = Modifier.padding(
+            top = if (compact) 10.dp else 14.dp,
+            bottom = if (compact) 0.dp else 2.dp,
+        ),
     )
 }
 
