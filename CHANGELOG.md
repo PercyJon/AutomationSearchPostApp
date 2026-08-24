@@ -4,6 +4,30 @@
 
 ---
 
+## [未发布] 2026-08-24 —— M7-C2d 恢复阶段路由拆分
+
+### 修改内容
+
+- 新增 [`RecoveryFlowRouter.kt`](app/src/main/java/com/example/douyinautomation/automation/RecoveryFlowRouter.kt)，将看门狗超时后的既有阶段/页面分流收敛为无副作用路由。
+- [`DouyinNavigationController.kt`](app/src/main/java/com/example/douyinautomation/automation/DouyinNavigationController.kt) 保留启动广告识别与只等待策略、超时预算、恢复动作、跳过归因和暂停；不移动节点/OCR/几何/手势或私信安全链路。
+
+### 已验证项
+
+- 新增 `RecoveryFlowRouterTest`，覆盖启动广告、搜索、首页、用户结果、主页和不支持阶段的既有恢复出口。
+- 自动化验证：`./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` 与 `git diff --check` 均通过。
+- **真机 OnePlus NE2210 / b33aa309**：安装更新后服务 Bound/Enabled、Crashed 为空；停止态没有任务、恢复、页面动作、空白探测或消息发送。
+
+### 几何与兼容性检查
+
+- 未新增 Android 几何尺寸、固定 px、坐标或手势；无需新增 dp 归一化逻辑。
+- 启动广告仍仅等待，节点优先、OCR 辅助、几何校验、页面确认和消息安全门保持不变。
+
+### 交接记录
+
+- [`2026-08-24-m7-c2-recovery-flow-router.md`](docs/2026-08-24-m7-c2-recovery-flow-router.md)
+
+---
+
 ## [未发布] 2026-08-24 —— M7-C2c 用户选择阶段路由拆分
 
 ### 修改内容

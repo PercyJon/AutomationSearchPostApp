@@ -172,7 +172,7 @@
 - [x] **C1**：魔法常量收敛到统一 `TuningConstants` 配置层（集中命名、注释、版本化）。
   - 2026-08-24：已收敛跨流程运营参数；单一检测器证据系数、加密/存储/协议常量继续在所属模块封装，不作为可全局或远程调整的运行参数。
 - [ ] **C2**：`DouyinNavigationController.kt`（4575 行）按阶段拆分：`SearchFlow` / `UserSelectionFlow` / `PrivateMessageFlow` / `RecoveryFlow`。
-  - 进度：2026-08-24 已抽取搜索、用户选择与私信阶段的纯路由；恢复及动作职责仍待按小步验证拆分。
+  - 进度：2026-08-24 已抽取搜索、用户选择、私信和恢复阶段的纯路由；实际动作职责仍待按小步验证拆分。
 - [ ] **C3**：名称解析器统一（`DirectMessageDisplayNameResolver` / `enrichCurrentUserDisplayName*` / `confirmProfileNodeName`）为单一 `DisplayNameResolver`，按来源优先级仲裁。
 - [ ] **C4**：启发式黑/白名单文案（客服/咨询/购物车等）外置为可远程下发 JSON 配置。
 

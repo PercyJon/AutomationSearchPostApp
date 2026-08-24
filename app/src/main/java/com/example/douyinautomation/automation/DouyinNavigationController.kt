@@ -4733,95 +4733,63 @@ class DouyinNavigationController(
             ),
         )
 
-        // A startup ad can leave the underlying HOME node tree visible. Re-check the overlay
-        // before the phase-specific HOME recovery so a timeout can never turn into a tap through
-        // the ad banner.
-        if (timedOutPhase == AutomationPhase.WAITING_FOR_HOME &&
-            context != null &&
-            TransientOverlayDetector.findStartupAd(context) != null
+        // A startup ad can leave the underlying HOME node tree visible. Detect it before routing
+        // so a timeout can never turn into a tap through the ad banner.
+        val startupAd = context
+            ?.takeIf { timedOutPhase == AutomationPhase.WAITING_FOR_HOME }
+            ?.let(TransientOverlayDetector::findStartupAd)
+        when (
+            RecoveryFlowRouter.route(
+                timedOutPhase = timedOutPhase,
+                page = detection?.kind,
+                startupAdVisible = startupAd != null,
+            )
         ) {
-            val startupAd = TransientOverlayDetector.findStartupAd(requireNotNull(context))
-            logger.info(
-                "startup_ad_timeout_recovery_wait",
-                message = "The startup advertisement is still visible; extending the bounded wait",
-                attributes = mapOf("marker" to (startupAd?.marker ?: "unknown")),
-            )
-            await(
-                nextPhase = AutomationPhase.WAITING_FOR_HOME,
-                timeoutDescription = timeoutDescription,
-                resetRecoveryBudget = false,
-            )
-            scheduleInitialObservation()
-            return
-        }
-
-        when (timedOutPhase) {
-            AutomationPhase.WAITING_FOR_SEARCH_RESULTS -> when {
-                context != null && detection?.kind == PageKind.SEARCH_ENTRY -> {
-                    logger.warn(
-                        "search_results_timeout_retry",
-                        message = "Search entry is still visible; revalidating the keyword and resubmitting",
-                    )
-                    enterKeyword(context, preserveTimeoutRecoveryBudget = true)
-                }
-                else -> pause(timeoutDescription)
-            }
-
-            AutomationPhase.WAITING_FOR_SEARCH_ENTRY -> when (detection?.kind) {
-                PageKind.SEARCH_ENTRY -> enterKeyword(context!!)
-                PageKind.SEARCH_RESULTS -> reuseSearchResultsQueryField(requireNotNull(context), "search_entry_timeout_recovery")
-                PageKind.HOME -> openSearch(context!!)
-                else -> pause(timeoutDescription)
-            }
-
-            AutomationPhase.WAITING_FOR_HOME -> when (detection?.kind) {
-                PageKind.HOME -> openSearch(requireNotNull(context))
-                PageKind.SEARCH_ENTRY -> enterKeyword(requireNotNull(context))
-                PageKind.SEARCH_RESULTS -> reuseSearchResultsQueryField(requireNotNull(context), "home_timeout_recovery")
-                PageKind.USER_RESULTS,
-                PageKind.USER_PROFILE,
-                PageKind.DIRECT_MESSAGE -> recoverInitialSurface(requireNotNull(context), requireHome = true)
-                PageKind.UNKNOWN -> {
-                    val startupAd = context?.let(TransientOverlayDetector::findStartupAd)
-                    if (startupAd != null) {
-                        logger.info(
-                            "startup_ad_timeout_recovery_wait",
-                            message = "The startup advertisement is still visible; extending the bounded wait",
-                            attributes = mapOf("marker" to startupAd.marker),
-                        )
-                        await(
-                            nextPhase = AutomationPhase.WAITING_FOR_HOME,
-                            timeoutDescription = timeoutDescription,
-                            resetRecoveryBudget = false,
-                        )
-                        scheduleInitialObservation()
-                    } else {
-                        pause(timeoutDescription)
-                    }
-                }
-                else -> pause(timeoutDescription)
-            }
-
-            AutomationPhase.WAITING_FOR_USER_RESULTS -> when (detection?.kind) {
-                PageKind.USER_RESULTS -> selectVisibleUser(context!!)
-                PageKind.SEARCH_RESULTS -> selectUserTab(context!!)
-                else -> pause(timeoutDescription)
-            }
-
-            AutomationPhase.WAITING_FOR_PROFILE -> when (detection?.kind) {
-                // The profile transition can be delivered without a follow-up accessibility
-                // event on custom-rendered Douyin pages. If the watchdog sees a verified profile,
-                // retry the private-message entry instead of pausing on a screen that is already
-                // ready for the next action.
-                PageKind.USER_PROFILE -> openPrivateMessage(requireNotNull(context))
-                PageKind.USER_RESULTS -> selectVisibleUser(requireNotNull(context))
-                else -> skipMessageSendFailure(
-                    "The user profile did not become available after the bounded recovery window",
-                    failurePage = detection?.kind ?: PageKind.USER_RESULTS,
+            RecoveryFlowRoute.WAIT_FOR_STARTUP_AD -> {
+                logger.info(
+                    "startup_ad_timeout_recovery_wait",
+                    message = "The startup advertisement is still visible; extending the bounded wait",
+                    attributes = mapOf("marker" to requireNotNull(startupAd).marker),
                 )
+                await(
+                    nextPhase = AutomationPhase.WAITING_FOR_HOME,
+                    timeoutDescription = timeoutDescription,
+                    resetRecoveryBudget = false,
+                )
+                scheduleInitialObservation()
             }
 
-            else -> pause(timeoutDescription)
+            RecoveryFlowRoute.RETRY_KEYWORD_PRESERVING_BUDGET -> {
+                logger.warn(
+                    "search_results_timeout_retry",
+                    message = "Search entry is still visible; revalidating the keyword and resubmitting",
+                )
+                enterKeyword(requireNotNull(context), preserveTimeoutRecoveryBudget = true)
+            }
+
+            RecoveryFlowRoute.ENTER_KEYWORD -> enterKeyword(requireNotNull(context))
+            RecoveryFlowRoute.REUSE_SEARCH_ENTRY_QUERY ->
+                reuseSearchResultsQueryField(requireNotNull(context), "search_entry_timeout_recovery")
+
+            RecoveryFlowRoute.OPEN_SEARCH -> openSearch(requireNotNull(context))
+            RecoveryFlowRoute.REUSE_HOME_QUERY ->
+                reuseSearchResultsQueryField(requireNotNull(context), "home_timeout_recovery")
+
+            RecoveryFlowRoute.RECOVER_INITIAL_SURFACE ->
+                recoverInitialSurface(requireNotNull(context), requireHome = true)
+
+            RecoveryFlowRoute.SELECT_VISIBLE_USER -> selectVisibleUser(requireNotNull(context))
+            RecoveryFlowRoute.SELECT_USER_TAB -> selectUserTab(requireNotNull(context))
+            // The profile transition can be delivered without a follow-up accessibility event on
+            // custom-rendered Douyin pages. If the watchdog sees a verified profile, retry the
+            // private-message entry instead of pausing on a screen ready for the next action.
+            RecoveryFlowRoute.OPEN_PRIVATE_MESSAGE -> openPrivateMessage(requireNotNull(context))
+            RecoveryFlowRoute.SKIP_PROFILE_RECOVERY_FAILURE -> skipMessageSendFailure(
+                "The user profile did not become available after the bounded recovery window",
+                failurePage = detection?.kind ?: PageKind.USER_RESULTS,
+            )
+
+            RecoveryFlowRoute.PAUSE_TIMEOUT -> pause(timeoutDescription)
         }
     }
 
