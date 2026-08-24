@@ -66,6 +66,28 @@ class DouyinNavigationController(
             scope.launch { mutex.withLock { finishCommentRuntime(terminal) } }
         },
     )
+    /** Private-message phase orchestration; concrete effects remain controller-owned callbacks. */
+    private val privateMessageFlow = PrivateMessageFlow(
+        completeAtMessagePage = { completeAtMessagePage() },
+        completeEmptyProbe = { completeEmptyMessageProbe() },
+        skipRestricted = { skipRestrictedUser("Douyin requires following before private messaging") },
+        skipDirectMessageFailure = {
+            skipMessageSendFailure("Douyin rejected the message because of the recipient's messaging settings")
+        },
+        scheduleEntryPostcondition = { scheduleMessageEntryPostconditionCheck() },
+        skipMessageResultFailure = {
+            skipMessageSendFailure("Douyin rejected the message because of the recipient's messaging settings")
+        },
+        pauseMessageResultRisk = {
+            pause("A verification or risk screen appeared after sending; manual handoff required")
+        },
+        skipEmptyProbeFailure = {
+            skipMessageSendFailure("The blank-message probe was rejected by the recipient's messaging settings")
+        },
+        pauseEmptyProbeRisk = {
+            pause("A verification or risk screen appeared during the blank-message probe; manual handoff required")
+        },
+    )
     private var phase = AutomationPhase.IDLE
     @Volatile private var taskActive = false
     private var keyword: String? = null
@@ -360,45 +382,7 @@ class DouyinNavigationController(
             null -> Unit
         }
 
-        when (PrivateMessageFlowRouter.route(phase, detection.kind)) {
-            PrivateMessageFlowRoute.COMPLETE_AT_MESSAGE_PAGE -> {
-                completeAtMessagePage()
-                return
-            }
-            PrivateMessageFlowRoute.COMPLETE_EMPTY_PROBE -> {
-                completeEmptyMessageProbe()
-                return
-            }
-            PrivateMessageFlowRoute.SKIP_RESTRICTED -> {
-                skipRestrictedUser("Douyin requires following before private messaging")
-                return
-            }
-            PrivateMessageFlowRoute.SKIP_DIRECT_MESSAGE_FAILURE -> {
-                skipMessageSendFailure("Douyin rejected the message because of the recipient's messaging settings")
-                return
-            }
-            PrivateMessageFlowRoute.SCHEDULE_ENTRY_POSTCONDITION -> {
-                scheduleMessageEntryPostconditionCheck()
-                return
-            }
-            PrivateMessageFlowRoute.SKIP_MESSAGE_RESULT_FAILURE -> {
-                skipMessageSendFailure("Douyin rejected the message because of the recipient's messaging settings")
-                return
-            }
-            PrivateMessageFlowRoute.PAUSE_MESSAGE_RESULT_RISK -> {
-                pause("A verification or risk screen appeared after sending; manual handoff required")
-                return
-            }
-            PrivateMessageFlowRoute.SKIP_EMPTY_PROBE_FAILURE -> {
-                skipMessageSendFailure("The blank-message probe was rejected by the recipient's messaging settings")
-                return
-            }
-            PrivateMessageFlowRoute.PAUSE_EMPTY_PROBE_RISK -> {
-                pause("A verification or risk screen appeared during the blank-message probe; manual handoff required")
-                return
-            }
-            null -> Unit
-        }
+        if (privateMessageFlow.onPageObserved(phase, detection.kind)) return
 
         when (phase) {
             AutomationPhase.WAITING_FOR_PROFILE -> when (detection.kind) {
