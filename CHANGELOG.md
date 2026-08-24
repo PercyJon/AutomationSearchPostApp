@@ -4,6 +4,24 @@
 
 ---
 
+## [未发布] 2026-08-25 —— Android 阶段回归
+
+### 已验证项
+
+- `git diff --check`、`./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug -PautomationApiEndpoint=<受管 HTTPS 服务地址>` 通过。
+- **真机 OnePlus NE2210 / b33aa309 / Android 16**：`./gradlew :app:connectedDebugAndroidTest` 通过 5/5。测试仅覆盖 manifest、无障碍声明、HTTP 桩和合成图像匹配，不启动抖音或执行任务。
+- 回归结束后已重新安装受管服务地址构建的 Debug APK，停止 App 并返回系统桌面。
+
+### 已记录阻塞项
+
+- 后端“一账号一设备、后台解绑”与后端未提交移动端登录基线重叠，继续保持隔离，避免覆盖或混入未知改动。
+
+### 交接记录
+
+- [`2026-08-25-android-regression.md`](docs/2026-08-25-android-regression.md)
+
+---
+
 ## [未发布] 2026-08-25 —— 系统返回导航一致性
 
 ### 修改内容
