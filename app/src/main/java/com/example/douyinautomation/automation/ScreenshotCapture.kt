@@ -34,6 +34,7 @@ class ScreenshotCapture(
     private val sequence = AtomicLong()
     private val captureMutex = Mutex()
     private var lastRequestAtMillis = 0L
+    private var activeNodeOnlyFallbackReason: ScreenshotNodeOnlyFallbackReason? = null
 
     suspend fun capture(tag: String): ScreenshotArtifact = captureMutex.withLock {
         val now = android.os.SystemClock.uptimeMillis()
@@ -57,6 +58,7 @@ class ScreenshotCapture(
                             val hardwareBuffer = screenshot.hardwareBuffer
                             try {
                                 if (!continuation.isActive) return
+                                activeNodeOnlyFallbackReason = null
 
                                 val artifact = writeArtifact(
                                     hardwareBuffer = hardwareBuffer,
@@ -85,12 +87,13 @@ class ScreenshotCapture(
                         }
 
                         override fun onFailure(errorCode: Int) {
-                            val reason = failureName(errorCode)
+                            val failureKind = ScreenshotCaptureFailureKind.fromErrorCode(errorCode)
                             resumeFailure(
                                 continuation = continuation,
                                 exception = ScreenshotCaptureException(
-                                    message = "Accessibility screenshot failed: $reason",
+                                    message = "Accessibility screenshot failed: ${failureKind.diagnosticName}",
                                     errorCode = errorCode,
+                                    failureKind = failureKind,
                                 ),
                             )
                         }
@@ -171,10 +174,26 @@ class ScreenshotCapture(
         continuation: kotlinx.coroutines.CancellableContinuation<ScreenshotArtifact>,
         exception: ScreenshotCaptureException,
     ) {
+        val nodeOnlyFallbackReason = ScreenshotNodeOnlyFallbackPolicy.reasonFor(exception.failureKind)
+        if (
+            ScreenshotNodeOnlyFallbackPolicy.shouldReport(
+                previousReason = activeNodeOnlyFallbackReason,
+                currentReason = nodeOnlyFallbackReason,
+            )
+        ) {
+            logger.warn(
+                "screenshot_pure_node_tree_fallback",
+                message = "Screenshot is unavailable for a protected window; continuing only with accessibility nodes",
+                attributes = mapOf("reason" to nodeOnlyFallbackReason?.name),
+            )
+        }
+        activeNodeOnlyFallbackReason = nodeOnlyFallbackReason
         logger.error(
             "screenshot_failed",
             message = exception.message,
-            attributes = exception.errorCode?.let { mapOf("code" to it, "reason" to failureName(it)) }
+            attributes = exception.errorCode?.let {
+                mapOf("code" to it, "reason" to exception.failureKind?.diagnosticName)
+            }
                 ?: emptyMap(),
             throwable = exception.cause,
         )
@@ -190,16 +209,6 @@ class ScreenshotCapture(
             .trim('_')
             .take(MAX_TAG_LENGTH)
             .ifBlank { "screen" }
-
-    private fun failureName(errorCode: Int): String = when (errorCode) {
-        AccessibilityService.ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR -> "internal_error"
-        AccessibilityService.ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT -> "interval_too_short"
-        AccessibilityService.ERROR_TAKE_SCREENSHOT_INVALID_DISPLAY -> "invalid_display"
-        AccessibilityService.ERROR_TAKE_SCREENSHOT_INVALID_WINDOW -> "invalid_window"
-        AccessibilityService.ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS -> "accessibility_access_unavailable"
-        AccessibilityService.ERROR_TAKE_SCREENSHOT_SECURE_WINDOW -> "secure_window"
-        else -> "unknown_$errorCode"
-    }
 
     companion object {
         private const val ARTIFACT_DIRECTORY = "diagnostics/screenshots"
@@ -228,4 +237,47 @@ class ScreenshotCaptureException(
     message: String,
     cause: Throwable? = null,
     val errorCode: Int? = null,
+    val failureKind: ScreenshotCaptureFailureKind? = null,
 ) : IOException(message, cause)
+
+enum class ScreenshotCaptureFailureKind(
+    val diagnosticName: String,
+) {
+    INTERNAL_ERROR("internal_error"),
+    INTERVAL_TOO_SHORT("interval_too_short"),
+    INVALID_DISPLAY("invalid_display"),
+    INVALID_WINDOW("invalid_window"),
+    ACCESSIBILITY_ACCESS_UNAVAILABLE("accessibility_access_unavailable"),
+    SECURE_WINDOW("secure_window"),
+    UNKNOWN("unknown"),
+    ;
+
+    companion object {
+        fun fromErrorCode(errorCode: Int): ScreenshotCaptureFailureKind = when (errorCode) {
+            AccessibilityService.ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR -> INTERNAL_ERROR
+            AccessibilityService.ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT -> INTERVAL_TOO_SHORT
+            AccessibilityService.ERROR_TAKE_SCREENSHOT_INVALID_DISPLAY -> INVALID_DISPLAY
+            AccessibilityService.ERROR_TAKE_SCREENSHOT_INVALID_WINDOW -> INVALID_WINDOW
+            AccessibilityService.ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS -> ACCESSIBILITY_ACCESS_UNAVAILABLE
+            AccessibilityService.ERROR_TAKE_SCREENSHOT_SECURE_WINDOW -> SECURE_WINDOW
+            else -> UNKNOWN
+        }
+    }
+}
+
+enum class ScreenshotNodeOnlyFallbackReason {
+    SECURE_WINDOW,
+}
+
+internal object ScreenshotNodeOnlyFallbackPolicy {
+    fun reasonFor(failureKind: ScreenshotCaptureFailureKind?): ScreenshotNodeOnlyFallbackReason? =
+        when (failureKind) {
+            ScreenshotCaptureFailureKind.SECURE_WINDOW -> ScreenshotNodeOnlyFallbackReason.SECURE_WINDOW
+            else -> null
+        }
+
+    fun shouldReport(
+        previousReason: ScreenshotNodeOnlyFallbackReason?,
+        currentReason: ScreenshotNodeOnlyFallbackReason?,
+    ): Boolean = previousReason == null && currentReason != null
+}

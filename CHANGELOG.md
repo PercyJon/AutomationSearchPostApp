@@ -4,6 +4,31 @@
 
 ---
 
+## [未发布] 2026-08-24 —— M6-A6 受保护窗口纯节点树降级
+
+### 修改内容
+
+- [`ScreenshotCapture.kt`](app/src/main/java/com/example/douyinautomation/automation/ScreenshotCapture.kt) 将截图失败码归类为 `ScreenshotCaptureFailureKind`；只有 `secure_window` 会显式进入纯节点树降级并记录 `screenshot_pure_node_tree_fallback`。
+- 连续受保护窗口只记录一次；截图成功后重置降级状态。既有调用方继续使用原节点快照或按既有安全门停止，不会以 OCR 缺失为理由放宽页面、节点、几何或点击条件。
+- 不接入 `MediaProjection`，不新增屏幕录制授权、截图绕过或坐标动作。
+
+### 已验证项
+
+- 新增 `ScreenshotNodeOnlyFallbackPolicyTest`，覆盖受保护窗口专属降级、非受保护错误排除、连续降级去重与恢复后重新记录。
+- 自动化验证：`./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` 与 `git diff --check` 均通过。
+- **真机 OnePlus NE2210 / b33aa309**：更新后服务 Bound/Enabled、Crashed 为空；未出现任务启动、检查点恢复、截图失败、空白探测或消息发送。当前页面不是受保护窗口，`secure_window` 分支由单测覆盖。
+
+### 几何与兼容性检查
+
+- 未新增 Android 几何尺寸、固定 px、坐标、手势或权限。
+- 节点优先、OCR 辅助、页面确认、私信安全探测和稳定任务链路均保持不变。
+
+### 交接记录
+
+- [`2026-08-24-m6-screenshot-node-only-fallback.md`](docs/2026-08-24-m6-screenshot-node-only-fallback.md)
+
+---
+
 ## [未发布] 2026-08-24 —— M6-A3 节点树截断可见告警
 
 ### 修改内容
