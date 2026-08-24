@@ -114,6 +114,42 @@ class TaskQueueTest {
         )
     }
 
+    @Test
+    fun `terminal policy starts the next frozen task before considering queue completion`() {
+        assertEquals(
+            LocalTaskQueueTerminalRoute.START_NEXT_TASK,
+            LocalTaskQueueTerminalPolicy.route(
+                hasPendingTask = true,
+                hasLocalQueueSession = true,
+            ),
+        )
+        assertEquals(
+            LocalTaskQueueTerminalRoute.START_NEXT_TASK,
+            LocalTaskQueueTerminalPolicy.route(
+                hasPendingTask = true,
+                hasLocalQueueSession = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `terminal policy completes only the last local queue task`() {
+        assertEquals(
+            LocalTaskQueueTerminalRoute.COMPLETE_QUEUE,
+            LocalTaskQueueTerminalPolicy.route(
+                hasPendingTask = false,
+                hasLocalQueueSession = true,
+            ),
+        )
+        assertEquals(
+            LocalTaskQueueTerminalRoute.FINISH_STANDALONE,
+            LocalTaskQueueTerminalPolicy.route(
+                hasPendingTask = false,
+                hasLocalQueueSession = false,
+            ),
+        )
+    }
+
     private fun snapshot(
         id: String,
         taskType: AutomationTaskType = AutomationTaskType.PROFILE_PRIVATE_MESSAGE,

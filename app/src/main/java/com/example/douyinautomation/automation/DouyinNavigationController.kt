@@ -703,20 +703,27 @@ class DouyinNavigationController(
         phase: AutomationPhase,
         error: String? = null,
     ) {
-        val hasNext = !queuedTaskSnapshots.isEmpty
+        val terminalRoute = LocalTaskQueueTerminalPolicy.route(
+            hasPendingTask = !queuedTaskSnapshots.isEmpty,
+            hasLocalQueueSession = localTaskQueueSession != null,
+        )
+        val hasNext = terminalRoute == LocalTaskQueueTerminalRoute.START_NEXT_TASK
         if (phase == AutomationPhase.FAILED) {
             AutomationStore.publishFailure(error ?: "任务执行失败", openRecords = !hasNext)
         } else {
             AutomationStore.publishPhase(phase, error = error, openRecords = !hasNext)
         }
-        if (hasNext) {
-            scheduleNextQueuedTask()
-        } else {
-            localTaskQueueSession?.let { session ->
-                val completedSession = session.advance(System.currentTimeMillis())
-                localTaskQueueSession = completedSession
-                AutomationStore.saveLocalTaskQueueSession(completedSession)
+        when (terminalRoute) {
+            LocalTaskQueueTerminalRoute.START_NEXT_TASK -> scheduleNextQueuedTask()
+            LocalTaskQueueTerminalRoute.COMPLETE_QUEUE -> {
+                localTaskQueueSession?.let { session ->
+                    val completedSession = session.advance(System.currentTimeMillis())
+                    localTaskQueueSession = completedSession
+                    AutomationStore.saveLocalTaskQueueSession(completedSession)
+                }
             }
+
+            LocalTaskQueueTerminalRoute.FINISH_STANDALONE -> Unit
         }
     }
 

@@ -4,6 +4,30 @@
 
 ---
 
+## [未发布] 2026-08-24 —— P2-I 本地队列终态路由策略
+
+### 修改内容
+
+- 在 [`TaskQueue.kt`](app/src/main/java/com/example/douyinautomation/automation/TaskQueue.kt) 增加 `LocalTaskQueueTerminalPolicy`，将任务终态后的三种既有去向收拢为纯决策：有后续冻结任务则延后启动下一项；无后续且存在本地队列则持久化完成态；无队列则按普通任务结束。
+- [`DouyinNavigationController.kt`](app/src/main/java/com/example/douyinautomation/automation/DouyinNavigationController.kt) 继续负责阶段/失败发布、延时调度、任务启动与队列持久化；不改变完成、失败、到达上限后的现有顺序和动作。
+
+### 已验证项
+
+- `TaskQueueTest` 新增终态路由的完整组合覆盖：有后续任务时优先进入下一项；仅最后一项完成本地队列；无会话的单任务只结束自身。
+- 自动化验证：`./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` 与 `git diff --check` 均通过。
+- **真机 OnePlus NE2210 / b33aa309 烟测**：更新 APK 后无障碍服务重新连接；既有停止态记录未触发 `task_started` 或自动恢复，确认本轮终态路由抽取没有破坏停止态保护。完整多任务“中间项进入下一项、最后一项回记录页”的行为沿用已完成的 P0 真机验收，本轮未改动其调度动作。
+
+### 几何与兼容性检查
+
+- 未新增 Android 几何尺寸、像素常量、坐标或手势参数；无需新增 dp 归一化逻辑。
+- 节点、OCR、消息探测、队列执行顺序和稳定终态动作均保持不变。
+
+### 交接记录
+
+- [`2026-08-24-p2-terminal-queue-routing-policy.md`](docs/2026-08-24-p2-terminal-queue-routing-policy.md)
+
+---
+
 ## [未发布] 2026-08-24 —— P2-H 已保存检查点恢复路由策略
 
 ### 修改内容

@@ -118,6 +118,32 @@ object LocalTaskQueuePolicy {
     }
 }
 
+/** The controller-side work to perform after one task reaches any terminal phase. */
+enum class LocalTaskQueueTerminalRoute {
+    /** Keep the terminal state visible briefly, then start the next frozen task. */
+    START_NEXT_TASK,
+    /** The active task was the last local queue item; persist the completed queue state. */
+    COMPLETE_QUEUE,
+    /** No local queue owns this task, so its normal terminal publication is final. */
+    FINISH_STANDALONE,
+}
+
+/**
+ * Keeps terminal queue routing independent from phase publication and delayed task startup.
+ * A pending frozen task always wins, preserving the existing behavior even if a legacy session
+ * is unavailable in memory.
+ */
+object LocalTaskQueueTerminalPolicy {
+    fun route(
+        hasPendingTask: Boolean,
+        hasLocalQueueSession: Boolean,
+    ): LocalTaskQueueTerminalRoute = when {
+        hasPendingTask -> LocalTaskQueueTerminalRoute.START_NEXT_TASK
+        hasLocalQueueSession -> LocalTaskQueueTerminalRoute.COMPLETE_QUEUE
+        else -> LocalTaskQueueTerminalRoute.FINISH_STANDALONE
+    }
+}
+
 /**
  * Decides whether a paused local queue may reuse the visible target-app page. It never allows
  * comment search tasks to resume in place because a later comment-author profile is
