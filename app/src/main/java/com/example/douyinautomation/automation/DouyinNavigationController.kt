@@ -97,6 +97,12 @@ class DouyinNavigationController(
         selectUserTab = ::selectUserTab,
         selectVisibleUser = { context -> selectVisibleUser(context) },
     )
+    /** User-result terminal and continuation dispatch; row processing remains controller-owned. */
+    private val userSelectionFlow = UserSelectionFlow(
+        completeAtUserLimit = { maxUsers -> completeTaskAtUserLimit(maxUsers) },
+        resumeRemoteAnchor = { context -> resumeRemoteTaskFromAnchor(context) },
+        handleAccountHelpEnd = { handleAccountHelpOnlyEnd() },
+    )
     private var phase = AutomationPhase.IDLE
     @Volatile private var taskActive = false
     private var keyword: String? = null
@@ -1716,41 +1722,19 @@ class DouyinNavigationController(
             !remoteResumePending &&
             minimumAnchorTop == null &&
             UserResultMarkers.accountHelpOnly(context)
-        when (
-            UserSelectionFlowRouter.route(
-                UserSelectionFlowState(
+        if (
+            userSelectionFlow.onSelectionRequested(
+                state = UserSelectionFlowState(
                     maxUsers = maxUsers,
                     processedUserCount = processedUserIdentityRecords.size,
                     remoteResumePending = remoteResumePending,
                     hasViewportAnchor = minimumAnchorTop != null,
                     accountHelpOnly = accountHelpOnly,
                 ),
+                context = context,
             )
         ) {
-            UserSelectionFlowRoute.COMPLETE_AT_USER_LIMIT -> {
-                completeTaskAtUserLimit(requireNotNull(maxUsers))
-                return
-            }
-
-            // A remote task with existing progress must first locate the backend's last-user
-            // anchor. Starting at the first visible row would silently reprocess users when the
-            // process was recreated on a fresh Douyin result page.
-            UserSelectionFlowRoute.RESUME_REMOTE_ANCHOR -> {
-                resumeRemoteTaskFromAnchor(context)
-                return
-            }
-
-            UserSelectionFlowRoute.HANDLE_ACCOUNT_HELP_END -> {
-                logger.info(
-                    "user_results_account_help_marker",
-                    message = "Douyin rendered the account-help row without another selectable result; treating it as a bounded end-of-results signal",
-                )
-                if (advanceToNextQueryIfAvailable("account_help_marker")) return
-                completeTaskAtQueryEnd()
-                return
-            }
-
-            UserSelectionFlowRoute.SELECT_VISIBLE_RESULT -> Unit
+            return
         }
         phase = AutomationPhase.SELECTING_USER_RESULT
         AutomationStore.publishPhase(phase)
@@ -2032,6 +2016,15 @@ class DouyinNavigationController(
             legacyProcessedIdentityHashes = legacyProcessedIdentityHashes,
             processedIdentities = processedUserIdentityRecords,
         )
+
+    private suspend fun handleAccountHelpOnlyEnd() {
+        logger.info(
+            "user_results_account_help_marker",
+            message = "Douyin rendered the account-help row without another selectable result; treating it as a bounded end-of-results signal",
+        )
+        if (advanceToNextQueryIfAvailable("account_help_marker")) return
+        completeTaskAtQueryEnd()
+    }
 
     private fun persistTaskCheckpoint() {
         val snapshot = activeTaskSnapshot ?: return

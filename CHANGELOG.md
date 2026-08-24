@@ -4,6 +4,30 @@
 
 ---
 
+## [未发布] 2026-08-24 —— M7-C2g 用户选择阶段动作编排拆分
+
+### 修改内容
+
+- 新增 [`UserSelectionFlow.kt`](app/src/main/java/com/example/douyinautomation/automation/UserSelectionFlow.kt)，将处理上限、远程锚点续接与账号帮助结束分派移出用户行处理主干。
+- 控制器继续独占候选行身份提取、去重、屏蔽词、关注限制、OCR、几何校验、节点点击、翻页和检查点。
+
+### 已验证项
+
+- 新增 `UserSelectionFlowTest`，覆盖三个既有入口动作及普通候选不消费。
+- 自动化验证：`./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` 与 `git diff --check` 均通过。
+- **真机 OnePlus NE2210 / b33aa309**：安装更新后服务 Bound/Enabled、Crashed 为空；停止态没有任务、恢复、页面动作、空白探测或消息发送。
+
+### 几何与兼容性检查
+
+- 未新增 Android 几何尺寸、固定 px、坐标或手势；无需新增 dp 归一化逻辑。
+- 候选行节点优先、OCR 辅助、几何校验、页面确认和安全兜底顺序保持不变。
+
+### 交接记录
+
+- [`2026-08-24-m7-c2-user-selection-flow-orchestration.md`](docs/2026-08-24-m7-c2-user-selection-flow-orchestration.md)
+
+---
+
 ## [未发布] 2026-08-24 —— M7-C2f 搜索阶段动作编排拆分
 
 ### 修改内容
