@@ -17,7 +17,11 @@ interface ImageMatcher {
     ): ImageMatch?
 }
 
-/** M0 implementation: no image matching is attempted and no screenshot data is retained. */
+/**
+ * Reserved-and-disabled implementation: no image matching is attempted and no screenshot data is
+ * retained. It is the only implementation that may be wired into production until the separate
+ * multi-device, dp-normalized template-matching rollout described in M8-E1 is approved.
+ */
 object NoOpImageMatcher : ImageMatcher {
     override suspend fun findMatch(
         bitmap: Bitmap,
@@ -31,6 +35,7 @@ object NoOpImageMatcher : ImageMatcher {
  * after the provider reports a high-confidence result inside the caller's region; a missing
  * template never falls back to an arbitrary coordinate. The M3-K controller still requires a
  * semantic node for critical actions, so this adapter is diagnostic/verification-only for now.
+ * It is not wired into any automation action in the current build.
  */
 class VerifiedTemplateMatcher(
     private val provider: ImageMatcher,
