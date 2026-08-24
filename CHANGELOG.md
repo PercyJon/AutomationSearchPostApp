@@ -4,6 +4,29 @@
 
 ---
 
+## [未发布] 2026-08-25 —— 待办、任务详情与诊断页面视觉收敛
+
+### 修改内容
+
+- 待办底部操作区、任务记录详情和用户结果卡收敛为紧凑圆角比例。
+- 开发诊断页采用标准返回箭头、统一描边卡片、紧凑输入/预设芯片/控制按钮；所有诊断与自动化动作回调保持不变。
+
+### 已验证项
+
+- `git diff --check` 与 `./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug -PautomationApiEndpoint=<受管 HTTPS 服务地址>` 通过。
+- **真机 OnePlus NE2210 / b33aa309 / Android 16**：验证待办、任务记录详情和开发诊断页。没有开始、暂停、继续、停止、采集、复用、重试或调用抖音；测试后 App 已停止并返回系统桌面。
+
+### 几何与兼容性检查
+
+- 视觉调整仅使用 Compose `dp`（50dp 输入框、46dp 按钮、34dp 芯片、12dp/8dp 圆角、92dp 诊断标签宽度）；未新增固定 px、自动化坐标、OCR 几何或手势时长。
+- P0 评论入口、双锚点回退、动作节奏和无障碍状态机未修改。
+
+### 交接记录
+
+- [`2026-08-25-operational-pages-visual-refinement.md`](docs/2026-08-25-operational-pages-visual-refinement.md)
+
+---
+
 ## [未发布] 2026-08-25 —— 设置与任务记录页面视觉收敛
 
 ### 修改内容

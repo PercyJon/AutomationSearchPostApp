@@ -645,8 +645,9 @@ private fun TaskDashboard(
                         enabled = state.serviceCommandReady && selectedSavedTaskIds.isNotEmpty() && !isTaskActivePhase(state.phase),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = AutomationSpacing.Page, vertical = 8.dp),
-                        shape = RoundedCornerShape(22.dp),
+                            .padding(horizontal = AutomationSpacing.Page, vertical = 6.dp)
+                            .height(46.dp),
+                        shape = RoundedCornerShape(8.dp),
                     ) {
                         Text("开始任务")
                     }
@@ -2298,7 +2299,14 @@ private fun TaskRecordDetailScreen(
         containerColor = AutomationPage,
         topBar = {
             TopAppBar(
-                title = { Text(history?.taskName ?: "任务结果") },
+                title = {
+                    Text(
+                        history?.taskName ?: "任务结果",
+                        style = MaterialTheme.typography.titleLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "返回")
@@ -2324,33 +2332,36 @@ private fun TaskRecordDetailScreen(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = AutomationCard),
                 border = androidx.compose.foundation.BorderStroke(1.dp, AutomationDivider),
-                shape = MaterialTheme.shapes.large,
+                shape = RoundedCornerShape(12.dp),
             ) {
                 Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    Text("任务概览", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                    Text("任务概览", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     StatusBadge(taskStatusLabel(history.status), taskStatusTone(history.status))
                     history.errorMessage?.takeIf(String::isNotBlank)?.let {
                         ErrorBanner("执行异常", taskErrorLabel(it))
                     }
                     HorizontalDivider(color = AutomationDivider)
-                    Text("开始：${formatTaskTime(history.startedAtMillis)}")
-                    Text("更新：${formatTaskTime(history.updatedAtMillis)}")
-                    Text("搜索词组：${history.queryCount} · 用户上限：${history.maxUsers}")
+                    Text("开始：${formatTaskTime(history.startedAtMillis)}", style = MaterialTheme.typography.bodyMedium)
+                    Text("更新：${formatTaskTime(history.updatedAtMillis)}", style = MaterialTheme.typography.bodyMedium)
+                    Text("搜索词组：${history.queryCount} · 用户上限：${history.maxUsers}", style = MaterialTheme.typography.bodyMedium)
                     if (history.searchQueries.isNotEmpty()) {
-                        Text("实际搜索词：${history.searchQueries.joinToString("、")}")
+                        Text("实际搜索词：${history.searchQueries.joinToString("、")}", style = MaterialTheme.typography.bodyMedium)
                     }
-                    history.region?.takeIf(String::isNotBlank)?.let { Text("地区前缀：$it") }
+                    history.region?.takeIf(String::isNotBlank)?.let {
+                        Text("地区前缀：$it", style = MaterialTheme.typography.bodyMedium)
+                    }
                     if (history.blockedKeywords.isNotEmpty()) {
-                        Text("屏蔽词：${history.blockedKeywords.joinToString("、")}")
+                        Text("屏蔽词：${history.blockedKeywords.joinToString("、")}", style = MaterialTheme.typography.bodyMedium)
                     }
-                    Text("执行模式：${executionModeLabel(history.executionMode)}")
+                    Text("执行模式：${executionModeLabel(history.executionMode)}", style = MaterialTheme.typography.bodyMedium)
                     if (history.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE) {
                         Text(
                             "评论匹配：已读取正文 ${history.commentBodiesRead} · 命中正文 ${history.matchedCommentBodies} · 可安全处理 ${history.actionableCommentCandidates}",
                             style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
@@ -2358,13 +2369,18 @@ private fun TaskRecordDetailScreen(
                         MetricItem("已跳过", history.skippedCount.toString(), AutomationWarning)
                         MetricItem("失败", history.failedCount.toString(), AutomationError)
                     }
-                    Text("命中屏蔽词：${history.filteredCount} · 重复用户：${history.duplicateCount}", style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        "命中屏蔽词：${history.filteredCount} · 重复用户：${history.duplicateCount}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     FilledTonalButton(
                         onClick = {
                             AutomationStore.saveTaskDraft(history.toReusableDraft())
                             onReuse()
                         },
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().height(46.dp),
+                        shape = RoundedCornerShape(8.dp),
                     ) { Text("复用此任务配置") }
                     if (history.status in setOf(TaskRunStatus.PAUSED, TaskRunStatus.STOPPED, TaskRunStatus.FAILED)) {
                         OutlinedButton(
@@ -2376,7 +2392,8 @@ private fun TaskRecordDetailScreen(
                                     retryMessage = rejection
                                 }
                             },
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier.fillMaxWidth().height(46.dp),
+                            shape = RoundedCornerShape(8.dp),
                         ) { Text("重新执行（空消息安全探测）") }
                         retryMessage?.let {
                             Text(it, color = MaterialTheme.colorScheme.error)
@@ -2387,8 +2404,8 @@ private fun TaskRecordDetailScreen(
 
             Text(
                 "用户处理结果（${records.size}）",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
             )
             if (records.isEmpty()) {
                 EmptyState("暂无用户记录", "任务执行后，每个用户的处理结果会显示在这里")
@@ -2432,9 +2449,9 @@ private fun UserTaskResultCard(record: UserTaskRecord) {
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = AutomationCard),
         border = androidx.compose.foundation.BorderStroke(1.dp, AutomationDivider),
-        shape = MaterialTheme.shapes.medium,
+        shape = RoundedCornerShape(12.dp),
     ) {
-        Column(modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -2443,7 +2460,7 @@ private fun UserTaskResultCard(record: UserTaskRecord) {
                 Text(
                     visibleName,
                     fontWeight = FontWeight.SemiBold,
-                    style = MaterialTheme.typography.titleMedium,
+                    style = MaterialTheme.typography.titleSmall,
                     modifier = Modifier.weight(1f),
                     softWrap = true,
                 )
