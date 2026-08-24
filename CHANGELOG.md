@@ -4,6 +4,31 @@
 
 ---
 
+## [未发布] 2026-08-24 —— M6-A1 手势时长设备适配
+
+### 修改内容
+
+- 新增 [`GestureTimingPolicy.kt`](app/src/main/java/com/example/douyinautomation/automation/GestureTimingPolicy.kt)：以已验收 120Hz 设备的 60ms 点击 / 260ms 默认滑动为基准，按实际刷新率为低刷新率设备增加手势时长；高刷新率和无效读取均不缩短基准值。
+- [`GestureEngine.kt`](app/src/main/java/com/example/douyinautomation/automation/GestureEngine.kt) 仅在调用方没有显式指定滑动时长时使用该策略；既有节点优先、归一化坐标、页面确认、OCR 与安全门保持原样。
+- 修复首轮真机发现的服务启动崩溃：无障碍服务不再访问非可视 Context 的 `display`，而通过 `DisplayManager` 查询默认屏幕；查询异常时安全回退至已验证基准时长。
+
+### 已验证项
+
+- 新增 `GestureTimingPolicyTest`，覆盖 120Hz 基准、90Hz/60Hz 放宽、快速显示下限和 null/0/NaN 回退。
+- 自动化验证：`./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` 与 `git diff --check` 均通过。
+- **真机 OnePlus NE2210 / b33aa309**：1080×2412、120.00001Hz。安装后服务已绑定且没有 crash；日志记录 `tap_duration_ms=60`、`default_swipe_duration_ms=260`。停止态本地队列没有启动，未出现任务恢复、空白探测或消息发送。
+
+### 几何与兼容性检查
+
+- 未新增 Android 几何尺寸、固定 px 或坐标逻辑；时长根据刷新率动态计算，不涉及 dp 尺寸。
+- 显式时长的评论翻页、直播退出和用户列表翻页保持不变；稳定链路的节点、OCR、页面状态和消息安全规则不变。
+
+### 交接记录
+
+- [`2026-08-24-m6-gesture-timing-adaptation.md`](docs/2026-08-24-m6-gesture-timing-adaptation.md)
+
+---
+
 ## [未发布] 2026-08-24 —— P2-I 本地队列终态路由策略
 
 ### 修改内容

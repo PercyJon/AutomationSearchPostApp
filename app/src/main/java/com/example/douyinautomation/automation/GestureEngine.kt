@@ -3,7 +3,9 @@ package com.example.douyinautomation.automation
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
+import android.hardware.display.DisplayManager
 import android.os.Bundle
+import android.view.Display
 import android.view.accessibility.AccessibilityNodeInfo
 import kotlin.coroutines.resume
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -16,6 +18,26 @@ class GestureEngine(
     private val service: AccessibilityService,
     private val logger: DiagnosticLogger,
 ) {
+    // AccessibilityService is a non-visual Context. Query the default display through
+    // DisplayManager instead of Context.display, which some OEMs reject for a service Context.
+    private val observedRefreshRateHz = runCatching {
+        service.getSystemService(DisplayManager::class.java)
+            ?.getDisplay(Display.DEFAULT_DISPLAY)
+            ?.refreshRate
+    }.getOrNull()
+    private val timingProfile = GestureTimingPolicy.forRefreshRate(observedRefreshRateHz)
+
+    init {
+        logger.info(
+            "gesture_timing_profile",
+            attributes = mapOf(
+                "display_refresh_rate_hz" to observedRefreshRateHz,
+                "tap_duration_ms" to timingProfile.tapDurationMs,
+                "default_swipe_duration_ms" to timingProfile.defaultSwipeDurationMs,
+            ),
+        )
+    }
+
     suspend fun click(node: AccessibilityNodeInfo, fallbackBounds: ScreenBounds): ActionOutcome {
         if (node.isEnabled && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
             return ActionOutcome.success("node_click")
@@ -81,7 +103,7 @@ class GestureEngine(
         startY: Float,
         endX: Float,
         endY: Float,
-        durationMs: Long = SWIPE_DURATION_MS,
+        durationMs: Long? = null,
     ): ActionOutcome {
         if (startX !in 0f..1f || startY !in 0f..1f || endX !in 0f..1f || endY !in 0f..1f) {
             return ActionOutcome.failure("Normalized swipe point is out of range")
@@ -92,14 +114,20 @@ class GestureEngine(
             startY = startY * metrics.heightPixels,
             endX = endX * metrics.widthPixels,
             endY = endY * metrics.heightPixels,
-            durationMs = durationMs,
+            durationMs = durationMs ?: timingProfile.defaultSwipeDurationMs,
         )
     }
 
     private suspend fun dispatchTap(x: Float, y: Float): ActionOutcome = suspendCancellableCoroutine { continuation ->
         val path = Path().apply { moveTo(x, y) }
         val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, TAP_START_DELAY_MS, TAP_DURATION_MS))
+            .addStroke(
+                GestureDescription.StrokeDescription(
+                    path,
+                    GESTURE_START_DELAY_MS,
+                    timingProfile.tapDurationMs,
+                ),
+            )
             .build()
         val dispatched = service.dispatchGesture(
             gesture,
@@ -133,7 +161,7 @@ class GestureEngine(
             lineTo(endX, endY)
         }
         val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, TAP_START_DELAY_MS, durationMs))
+            .addStroke(GestureDescription.StrokeDescription(path, GESTURE_START_DELAY_MS, durationMs))
             .build()
         val dispatched = service.dispatchGesture(
             gesture,
@@ -156,9 +184,7 @@ class GestureEngine(
     }
 
     private companion object {
-        const val TAP_START_DELAY_MS = 0L
-        const val TAP_DURATION_MS = 60L
-        const val SWIPE_DURATION_MS = 260L
+        const val GESTURE_START_DELAY_MS = 0L
     }
 }
 
