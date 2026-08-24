@@ -1742,25 +1742,48 @@ class DouyinNavigationController(
     ) {
         queryTransitionHandled = false
         val maxUsers = activeTaskSnapshot?.maxUsers
-        if (maxUsers != null && processedUserIdentityRecords.size >= maxUsers) {
-            completeTaskAtUserLimit(maxUsers)
-            return
-        }
-        // A remote task with existing progress must first locate the backend's last-user anchor.
-        // Starting at the first visible row would silently reprocess users when the process was
-        // recreated on a fresh Douyin result page, so no row is selected until the anchor is found.
-        if (remoteResumePending && minimumAnchorTop == null) {
-            resumeRemoteTaskFromAnchor(context)
-            return
-        }
-        if (minimumAnchorTop == null && UserResultMarkers.accountHelpOnly(context)) {
-            logger.info(
-                "user_results_account_help_marker",
-                message = "Douyin rendered the account-help row without another selectable result; treating it as a bounded end-of-results signal",
+        val userLimitReached = maxUsers != null && processedUserIdentityRecords.size >= maxUsers
+        // Keep marker inspection after the existing higher-precedence terminal cases. This is a
+        // screen-content read rather than a route effect, and the router remains pure.
+        val accountHelpOnly = !userLimitReached &&
+            !remoteResumePending &&
+            minimumAnchorTop == null &&
+            UserResultMarkers.accountHelpOnly(context)
+        when (
+            UserSelectionFlowRouter.route(
+                UserSelectionFlowState(
+                    maxUsers = maxUsers,
+                    processedUserCount = processedUserIdentityRecords.size,
+                    remoteResumePending = remoteResumePending,
+                    hasViewportAnchor = minimumAnchorTop != null,
+                    accountHelpOnly = accountHelpOnly,
+                ),
             )
-            if (advanceToNextQueryIfAvailable("account_help_marker")) return
-            completeTaskAtQueryEnd()
-            return
+        ) {
+            UserSelectionFlowRoute.COMPLETE_AT_USER_LIMIT -> {
+                completeTaskAtUserLimit(requireNotNull(maxUsers))
+                return
+            }
+
+            // A remote task with existing progress must first locate the backend's last-user
+            // anchor. Starting at the first visible row would silently reprocess users when the
+            // process was recreated on a fresh Douyin result page.
+            UserSelectionFlowRoute.RESUME_REMOTE_ANCHOR -> {
+                resumeRemoteTaskFromAnchor(context)
+                return
+            }
+
+            UserSelectionFlowRoute.HANDLE_ACCOUNT_HELP_END -> {
+                logger.info(
+                    "user_results_account_help_marker",
+                    message = "Douyin rendered the account-help row without another selectable result; treating it as a bounded end-of-results signal",
+                )
+                if (advanceToNextQueryIfAvailable("account_help_marker")) return
+                completeTaskAtQueryEnd()
+                return
+            }
+
+            UserSelectionFlowRoute.SELECT_VISIBLE_RESULT -> Unit
         }
         phase = AutomationPhase.SELECTING_USER_RESULT
         AutomationStore.publishPhase(phase)

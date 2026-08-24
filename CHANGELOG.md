@@ -4,6 +4,30 @@
 
 ---
 
+## [未发布] 2026-08-24 —— M7-C2c 用户选择阶段路由拆分
+
+### 修改内容
+
+- 新增 [`UserSelectionFlowRouter.kt`](app/src/main/java/com/example/douyinautomation/automation/UserSelectionFlowRouter.kt)，把用户结果阶段入口的既有优先级收敛为无副作用路由：处理上限、远程断点锚点、账号帮助结束和可见候选选择。
+- [`DouyinNavigationController.kt`](app/src/main/java/com/example/douyinautomation/automation/DouyinNavigationController.kt) 继续执行远程续接、查询切换、完成记录、节点/OCR/几何验证、点击、手势和检查点写入；账号帮助文本的读取时机保持在原先高优先级分支之后。
+
+### 已验证项
+
+- 新增 `UserSelectionFlowRouterTest`，覆盖处理上限、远程续接、账号帮助、视口锚点和默认选择的优先级。
+- 自动化验证：`./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` 与 `git diff --check` 均通过。
+- **真机 OnePlus NE2210 / b33aa309**：安装更新后服务 Bound/Enabled、Crashed 为空；停止态没有任务、恢复、页面动作、空白探测或消息发送。
+
+### 几何与兼容性检查
+
+- 未新增 Android 几何尺寸、固定 px、坐标或手势；无需新增 dp 归一化逻辑。
+- 节点优先、OCR 辅助、几何校验、页面确认和消息安全门保持不变。
+
+### 交接记录
+
+- [`2026-08-24-m7-c2-user-selection-flow-router.md`](docs/2026-08-24-m7-c2-user-selection-flow-router.md)
+
+---
+
 ## [未发布] 2026-08-24 —— M7-C2b 私信阶段路由拆分
 
 ### 修改内容
