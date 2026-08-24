@@ -3,6 +3,7 @@ package com.example.douyinautomation.ui
 import android.content.Context
 import android.content.Intent
 import android.provider.Settings
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -211,6 +212,23 @@ fun AppHomeScreen(
         }
     }
     val selectedSection = HomeSection.valueOf(section)
+
+    BackHandler(
+        enabled = detailTaskId != null || showCreateTask || showCommentTask || selectedSection != HomeSection.HOME,
+    ) {
+        when {
+            detailTaskId != null -> detailTaskId = null
+            showCreateTask || showCommentTask -> {
+                showCreateTask = false
+                showCommentTask = false
+            }
+            selectedSection == HomeSection.RECORDS ||
+                selectedSection == HomeSection.SETTINGS ||
+                selectedSection == HomeSection.DIAGNOSTICS -> section = HomeSection.MY.name
+            selectedSection == HomeSection.MY || selectedSection == HomeSection.TODO -> section = HomeSection.HOME.name
+            else -> Unit
+        }
+    }
 
     detailTaskId?.let { taskId ->
         TaskRecordDetailScreen(
