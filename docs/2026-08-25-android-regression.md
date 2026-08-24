@@ -11,6 +11,7 @@
 - `./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug -PautomationApiEndpoint=<受管 HTTPS 服务地址>` 通过。
 - `./gradlew :app:connectedDebugAndroidTest` 在 **OnePlus NE2210 / b33aa309 / Android 16** 上通过：**5/5 tests**。
   - 测试只覆盖 Android manifest、无障碍服务声明、HTTP JSON/Authorization 桩和合成 Alpha 图像匹配；不启动抖音、不执行无障碍页面操作、不发送消息。
+- `./gradlew :app:assembleRelease -PautomationApiEndpoint=<受管 HTTPS 服务地址>` 通过。构建产物为 `app/build/outputs/apk/release/app-release-unsigned.apk`（约 86 MB），当前未签名、未安装、未发布。
 
 ## 真机回归摘要
 
@@ -27,3 +28,7 @@
 
 - 后端工作区存在未提交的移动端登录/controller/schema/service/test 基线改动，且与“一账号一设备、后台设备解绑”实现重叠。
 - 为避免覆盖或把未知基线混入 GitHub，本轮未修改后端。后端基线被提交或授权纳入后，应实现并验证：跨设备登录拒绝、管理员设备绑定列表、按账号解绑、App 的服务端退出/解绑同步。
+
+## 未完成的发布前置条件
+
+- 发布 Release APK 需要提供 Android 签名密钥及发布授权；在此之前仅保留成功的未签名构建验证，不将该文件作为可安装发布包交付。
