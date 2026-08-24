@@ -117,7 +117,7 @@ class AutomationExecutionPolicyTest {
     }
 
     @Test
-    fun `action pacer keeps three seconds between reserved action slots`() = runBlocking {
+    fun `blank action interval disables the global action pacer`() = runBlocking {
         var now = 1_000L
         val waits = mutableListOf<Long>()
         val pacer = AutomationActionPacer(
@@ -130,9 +130,45 @@ class AutomationExecutionPolicyTest {
 
         assertEquals(0L, pacer.awaitTurn())
         now += 100L
-        assertEquals(2_900L, pacer.awaitTurn())
-        assertEquals(3_000L, pacer.awaitTurn())
-        assertEquals(listOf(2_900L, 3_000L), waits)
+        assertEquals(0L, pacer.awaitTurn())
+        assertEquals(0L, pacer.awaitTurn())
+        assertTrue(waits.isEmpty())
+    }
+
+    @Test
+    fun `action interval accepts blank and only one to five seconds`() {
+        assertNull(AutomationActionIntervalPolicy.validationError(""))
+        assertNull(AutomationActionIntervalPolicy.validationError("1000"))
+        assertNull(AutomationActionIntervalPolicy.validationError("5000"))
+        assertTrue(AutomationActionIntervalPolicy.validationError("999")?.contains("1000-5000") == true)
+        assertTrue(AutomationActionIntervalPolicy.validationError("5001")?.contains("1000-5000") == true)
+        assertEquals(null, AutomationActionIntervalPolicy.configuredIntervalMillisOrNull(""))
+        assertEquals(1_000L, AutomationActionIntervalPolicy.configuredIntervalMillisOrNull("1000"))
+        assertEquals(5_000L, AutomationActionIntervalPolicy.configuredIntervalMillisOrNull("5000"))
+        assertEquals(null, AutomationActionIntervalPolicy.configuredIntervalMillisOrNull("5001"))
+        assertEquals("1000", AutomationActionIntervalPolicy.sanitizeInput("1a0b0c0"))
+    }
+
+    @Test
+    fun `action pacer reads the configured interval for each new action slot`() = runBlocking {
+        var now = 1_000L
+        var configuredIntervalMillis = 1_000L
+        val waits = mutableListOf<Long>()
+        val pacer = AutomationActionPacer(
+            minIntervalMillisProvider = { configuredIntervalMillis },
+            nowMillis = { now },
+            wait = { duration ->
+                waits += duration
+                now += duration
+            },
+        )
+
+        assertEquals(0L, pacer.awaitTurn())
+        now += 100L
+        assertEquals(900L, pacer.awaitTurn())
+        configuredIntervalMillis = 5_000L
+        assertEquals(5_000L, pacer.awaitTurn())
+        assertEquals(listOf(900L, 5_000L), waits)
     }
 
     @Test

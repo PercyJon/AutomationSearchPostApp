@@ -4,59 +4,52 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class CommentSurfaceSignalsTest {
     private val screen = ScreenSize(1080, 2400)
 
     @Test
-    fun `semantic comment control is found even with a transient visibility flag`() {
-        val commentButton = node(
-            text = "评论",
-            className = "android.widget.ImageButton",
-            left = 900,
-            top = 1250,
-            right = 1010,
-            bottom = 1360,
-        ).copy(isVisibleToUser = false)
-        val context = ScreenContext(
-            screenSize = screen,
-            nodes = listOf(
-                NodeSnapshot(text = "视频", bounds = ScreenBounds(40, 400, 200, 480)),
-                commentButton,
-            ),
+    fun `structural action rail survives transient false visibility flags`() {
+        val rail = (0..2).map { index ->
+            node(
+                text = null,
+                className = "android.widget.ImageButton",
+                left = 900,
+                top = 950 + index * 180,
+                right = 1000,
+                bottom = 1050 + index * 180,
+            ).copy(isVisibleToUser = false)
+        }
+
+        assertEquals(
+            CommentButtonTarget.AccessibilityNode(rail[1]),
+            VideoCommentButtonDetector.find(ScreenContext(screen, nodes = rail)),
         )
-
-        val found = VideoCommentButtonDetector.find(context)
-
-        assertEquals(CommentButtonTarget.AccessibilityNode(commentButton), found)
     }
 
     @Test
-    fun `semantic comment control wins over caption text`() {
-        val commentButton = node(
-            text = "评论",
-            className = "android.widget.ImageButton",
-            left = 900,
-            top = 1250,
-            right = 1010,
-            bottom = 1360,
-        )
-        val context = ScreenContext(
-            screenSize = screen,
-            nodes = listOf(
-                NodeSnapshot(text = "评论区欢迎留言", bounds = ScreenBounds(40, 1700, 600, 1780)),
-                commentButton,
-            ),
-        )
+    fun `right rail selection ignores a misleading comment text label`() {
+        val rail = (0..2).map { index ->
+            node(
+                text = if (index == 0) "评论" else null,
+                className = "android.widget.ImageView",
+                left = 900,
+                top = 950 + index * 180,
+                right = 1000,
+                bottom = 1050 + index * 180,
+            )
+        }
 
-        val found = VideoCommentButtonDetector.find(context)
-
-        assertEquals(CommentButtonTarget.AccessibilityNode(commentButton), found)
+        assertEquals(
+            CommentButtonTarget.AccessibilityNode(rail[1]),
+            VideoCommentButtonDetector.find(ScreenContext(screen, nodes = rail)),
+        )
     }
 
     @Test
-    fun `wide semantic comment parent falls through to the compact action rail bubble`() {
+    fun `wide text parent is ignored while the compact action rail selects the second icon`() {
         val wideParent = node(
             text = "评论 435",
             className = "android.widget.FrameLayout",
@@ -146,40 +139,172 @@ class CommentSurfaceSignalsTest {
     }
 
     @Test
-    fun `OCR comment label targets its verified action bubble above the label`() {
-        val malformedRail = (0..3).map { index ->
-            node(
-                text = null,
-                className = "android.widget.ImageView",
-                left = 900,
-                top = -900 + index * 180,
-                right = 1000,
-                bottom = -900 + index * 180,
-            )
-        }
-        val ocrBounds = ScreenBounds(900, 1560, 1010, 1610)
+    fun `OCR comment text never creates an entry target`() {
         val context = ScreenContext(
             screenSize = screen,
-            nodes = malformedRail,
-            ocrBlocks = listOf(OcrTextBlock("评论", ocrBounds, confidence = 0.96f)),
+            ocrBlocks = listOf(OcrTextBlock("评论", ScreenBounds(900, 1560, 1010, 1610), confidence = 0.96f)),
+        )
+
+        assertNull(VideoCommentButtonDetector.find(context))
+    }
+
+    @Test
+    fun `unconfirmed comment template never creates an entry target`() {
+        val context = ScreenContext(
+            screenSize = screen,
+            commentIconTemplateMatch = CommentIconTemplateMatch(
+                bounds = ScreenBounds(900, 1320, 1010, 1420),
+                confidence = 0.93f,
+            ),
+        )
+
+        assertNull(VideoCommentButtonDetector.find(context))
+    }
+
+    @Test
+    fun `confirmed right rail template becomes a bounded fallback`() {
+        val bounds = ScreenBounds(900, 1320, 1010, 1420)
+        val context = ScreenContext(
+            screenSize = screen,
+            commentIconTemplateMatch = CommentIconTemplateMatch(
+                bounds = bounds,
+                confidence = 0.93f,
+                isConfirmed = true,
+            ),
         )
 
         assertEquals(
-            CommentButtonTarget.OcrFallback(ScreenBounds(893, 1390, 1017, 1514)),
+            CommentButtonTarget.TemplateFallback(bounds, 0.93f),
             VideoCommentButtonDetector.find(context),
         )
     }
 
     @Test
-    fun `out of screen OCR comment label is rejected before deriving a gesture`() {
+    fun `template candidate needs a same-position second screenshot`() {
+        val first = CommentIconTemplateMatch(ScreenBounds(900, 1320, 1010, 1420), confidence = 0.93f)
+        val stableSecond = CommentIconTemplateMatch(ScreenBounds(905, 1325, 1015, 1425), confidence = 0.92f)
+        val differentIcon = CommentIconTemplateMatch(ScreenBounds(900, 1640, 1010, 1740), confidence = 0.94f)
+
+        assertTrue(CommentIconTemplateStabilityPolicy.confirms(first, stableSecond, screen))
+        assertFalse(CommentIconTemplateStabilityPolicy.confirms(first, differentIcon, screen))
+        assertFalse(CommentIconTemplateStabilityPolicy.confirms(first, null, screen))
+    }
+
+    @Test
+    fun `unconfirmed dual anchors never create an entry target`() {
+        val context = ScreenContext(
+            screenSize = screen,
+            actionRailAnchorTemplateMatch = dualAnchorMatch(),
+        )
+
+        assertNull(VideoCommentButtonDetector.find(context))
+    }
+
+    @Test
+    fun `confirmed like and collect anchors derive the intervening comment position`() {
+        val context = ScreenContext(
+            screenSize = screen,
+            actionRailAnchorTemplateMatch = dualAnchorMatch(isConfirmed = true),
+        )
+
+        assertEquals(
+            CommentButtonTarget.DualAnchorFallback(
+                bounds = ScreenBounds(900, 1300, 1000, 1400),
+                likeConfidence = 0.94f,
+                collectConfidence = 0.93f,
+            ),
+            VideoCommentButtonDetector.find(context),
+        )
+    }
+
+    @Test
+    fun `dual anchors reject a reversed or mismatched action rail`() {
+        val reversed = dualAnchorMatch(
+            likeBounds = ScreenBounds(900, 1500, 1000, 1600),
+            collectBounds = ScreenBounds(900, 1100, 1000, 1200),
+            isConfirmed = true,
+        )
+        val differentScale = dualAnchorMatch(
+            likeBounds = ScreenBounds(900, 1100, 1000, 1200),
+            collectBounds = ScreenBounds(890, 1500, 1060, 1670),
+            isConfirmed = true,
+        )
+
+        assertNull(
+            VideoCommentButtonDetector.find(
+                ScreenContext(screenSize = screen, actionRailAnchorTemplateMatch = reversed),
+            ),
+        )
+        assertNull(
+            VideoCommentButtonDetector.find(
+                ScreenContext(screenSize = screen, actionRailAnchorTemplateMatch = differentScale),
+            ),
+        )
+    }
+
+    @Test
+    fun `dual anchors need a stable same-rail second screenshot`() {
+        val first = dualAnchorMatch()
+        val stableSecond = dualAnchorMatch(
+            likeBounds = ScreenBounds(905, 1105, 1005, 1205),
+            collectBounds = ScreenBounds(905, 1505, 1005, 1605),
+        )
+        val shiftedRail = dualAnchorMatch(
+            likeBounds = ScreenBounds(900, 1420, 1000, 1520),
+            collectBounds = ScreenBounds(900, 1820, 1000, 1920),
+        )
+
+        assertTrue(ActionRailAnchorTemplateStabilityPolicy.confirms(first, stableSecond, screen))
+        assertFalse(ActionRailAnchorTemplateStabilityPolicy.confirms(first, shiftedRail, screen))
+        assertFalse(ActionRailAnchorTemplateStabilityPolicy.confirms(first, null, screen))
+    }
+
+    @Test
+    fun `existing template and OCR routes keep priority over dual anchors`() {
+        val dualAnchors = dualAnchorMatch(isConfirmed = true)
+        val templateBounds = ScreenBounds(900, 1320, 1010, 1420)
+        val templateContext = ScreenContext(
+            screenSize = screen,
+            commentIconTemplateMatch = CommentIconTemplateMatch(
+                bounds = templateBounds,
+                confidence = 0.93f,
+                isConfirmed = true,
+            ),
+            actionRailAnchorTemplateMatch = dualAnchors,
+        )
+        val ocrContext = ScreenContext(
+            screenSize = screen,
+            ocrBlocks = listOf(
+                OcrTextBlock("465", ScreenBounds(930, 1420, 1030, 1470), confidence = 0.97f),
+                OcrTextBlock("59", ScreenBounds(930, 1620, 1030, 1670), confidence = 0.96f),
+                OcrTextBlock("1", ScreenBounds(930, 1820, 1030, 1870), confidence = 0.98f),
+                OcrTextBlock("1278", ScreenBounds(930, 2020, 1030, 2070), confidence = 0.95f),
+            ),
+            actionRailAnchorTemplateMatch = dualAnchors,
+        )
+
+        assertEquals(
+            CommentButtonTarget.TemplateFallback(templateBounds, 0.93f),
+            VideoCommentButtonDetector.find(templateContext),
+        )
+        assertEquals(
+            CommentButtonTarget.OcrFallback(ScreenBounds(920, 1505, 1040, 1625)),
+            VideoCommentButtonDetector.find(ocrContext),
+        )
+    }
+
+    @Test
+    fun `ambiguous three-number OCR rail is rejected`() {
         val context = ScreenContext(
             screenSize = screen,
             ocrBlocks = listOf(
-                OcrTextBlock("评论", ScreenBounds(1120, 1560, 1220, 1610), confidence = 0.96f),
+                OcrTextBlock("465", ScreenBounds(930, 1420, 1030, 1470), confidence = 0.97f),
+                OcrTextBlock("187", ScreenBounds(930, 1620, 1030, 1670), confidence = 0.96f),
+                OcrTextBlock("76", ScreenBounds(930, 1820, 1030, 1870), confidence = 0.95f),
             ),
         )
 
-        assertEquals(null, VideoCommentButtonDetector.find(context))
+        assertNull(VideoCommentButtonDetector.find(context))
     }
 
     @Test
@@ -202,6 +327,60 @@ class CommentSurfaceSignalsTest {
                 OcrTextBlock("59", ScreenBounds(930, 1620, 1030, 1670), confidence = 0.96f),
                 OcrTextBlock("1", ScreenBounds(930, 1820, 1030, 1870), confidence = 0.98f),
                 OcrTextBlock("1278", ScreenBounds(930, 2020, 1030, 2070), confidence = 0.95f),
+            ),
+        )
+
+        assertEquals(
+            CommentButtonTarget.OcrFallback(ScreenBounds(920, 1505, 1040, 1625)),
+            VideoCommentButtonDetector.find(context),
+        )
+    }
+
+    @Test
+    fun `trailing share label proves that three numeric slots start with like`() {
+        val context = ScreenContext(
+            screenSize = screen,
+            ocrBlocks = listOf(
+                OcrTextBlock("2474", ScreenBounds(930, 1420, 1030, 1470), confidence = 0.97f),
+                OcrTextBlock("19", ScreenBounds(930, 1620, 1030, 1670), confidence = 0.96f),
+                OcrTextBlock("2", ScreenBounds(930, 1820, 1030, 1870), confidence = 0.98f),
+                OcrTextBlock("分享", ScreenBounds(930, 2020, 1030, 2070), confidence = 0.95f),
+            ),
+        )
+
+        assertEquals(
+            CommentButtonTarget.OcrFallback(ScreenBounds(920, 1505, 1040, 1625)),
+            VideoCommentButtonDetector.find(context),
+        )
+    }
+
+    @Test
+    fun `OCR action-count rail infers the comment bubble when its zero-count slot is absent`() {
+        val context = ScreenContext(
+            screenSize = screen,
+            ocrBlocks = listOf(
+                // Like and favorite have values while comment is zero. The fixed final share
+                // label proves the 0,2,3 slot mapping without using comment text.
+                OcrTextBlock("3.2万", ScreenBounds(930, 1420, 1030, 1470), confidence = 0.97f),
+                OcrTextBlock("1", ScreenBounds(930, 1820, 1030, 1870), confidence = 0.98f),
+                OcrTextBlock("分享", ScreenBounds(930, 2020, 1030, 2070), confidence = 0.95f),
+            ),
+        )
+
+        assertEquals(
+            CommentButtonTarget.OcrFallback(ScreenBounds(920, 1505, 1040, 1625)),
+            VideoCommentButtonDetector.find(context),
+        )
+    }
+
+    @Test
+    fun `trailing share label keeps the first visible count as comment when like is zero`() {
+        val context = ScreenContext(
+            screenSize = screen,
+            ocrBlocks = listOf(
+                OcrTextBlock("19", ScreenBounds(930, 1620, 1030, 1670), confidence = 0.96f),
+                OcrTextBlock("2", ScreenBounds(930, 1820, 1030, 1870), confidence = 0.98f),
+                OcrTextBlock("分享", ScreenBounds(930, 2020, 1030, 2070), confidence = 0.95f),
             ),
         )
 
@@ -380,21 +559,23 @@ class CommentSurfaceSignalsTest {
 
     @Test
     fun `comment entry observation carries the verified button`() {
-        val button = node(
-            text = "评论",
-            className = "android.widget.ImageButton",
-            left = 900,
-            top = 1250,
-            right = 1010,
-            bottom = 1360,
-        )
+        val rail = (0..2).map { index ->
+            node(
+                text = null,
+                className = "android.widget.ImageButton",
+                left = 900,
+                top = 1070 + index * 180,
+                right = 1010,
+                bottom = 1170 + index * 180,
+            )
+        }
+        val button = rail[1]
         val context = ScreenContext(
             screenSize = screen,
             packageName = "com.ss.android.ugc.aweme",
             nodes = listOf(
                 NodeSnapshot(text = "视频", bounds = ScreenBounds(40, 400, 200, 480)),
-                button,
-            ),
+            ) + rail,
         )
 
         val observation = CommentEntrySignalDetector.observe(context)
@@ -404,7 +585,7 @@ class CommentSurfaceSignalsTest {
     }
 
     @Test
-    fun `HOME classified next video accepts only a complete OCR action rail`() {
+    fun `HOME classified next video accepts a complete OCR action rail`() {
         val context = ScreenContext(
             screenSize = screen,
             packageName = "com.ss.android.ugc.aweme",
@@ -442,5 +623,17 @@ class CommentSurfaceSignalsTest {
         isClickable = true,
         isEnabled = true,
         isVisibleToUser = true,
+    )
+
+    private fun dualAnchorMatch(
+        likeBounds: ScreenBounds = ScreenBounds(900, 1100, 1000, 1200),
+        collectBounds: ScreenBounds = ScreenBounds(900, 1500, 1000, 1600),
+        isConfirmed: Boolean = false,
+    ) = ActionRailAnchorTemplateMatch(
+        likeBounds = likeBounds,
+        likeConfidence = 0.94f,
+        collectBounds = collectBounds,
+        collectConfidence = 0.93f,
+        isConfirmed = isConfirmed,
     )
 }

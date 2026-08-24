@@ -28,6 +28,16 @@ class CommentPanelRecoveryPolicyTest {
     }
 
     @Test
+    fun `recovery never uses a visual template coordinate fallback`() {
+        val target = CommentButtonTarget.TemplateFallback(
+            bounds = ScreenBounds(900, 1450, 1010, 1560),
+            confidence = 0.93f,
+        )
+
+        assertNull(CommentPanelRecoveryPolicy.reopenTarget(closedSurface, target, screen))
+    }
+
+    @Test
     fun `recovery rejects an ai analysis tab even when it is clickable`() {
         val target = CommentButtonTarget.AccessibilityNode(
             NodeSnapshot(

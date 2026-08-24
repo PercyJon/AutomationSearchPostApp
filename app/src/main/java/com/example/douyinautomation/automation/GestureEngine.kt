@@ -17,7 +17,11 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 class GestureEngine(
     private val service: AccessibilityService,
     private val logger: DiagnosticLogger,
-    private val actionPacer: AutomationActionPacer = AutomationActionPacer(),
+    private val actionPacer: AutomationActionPacer = AutomationActionPacer(
+        minIntervalMillisProvider = {
+            AutomationActionIntervalSettingsStore.configuredIntervalMillis(service)
+        },
+    ),
 ) {
     // AccessibilityService is a non-visual Context. Query the default display through
     // DisplayManager instead of Context.display, which some OEMs reject for a service Context.

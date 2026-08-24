@@ -128,6 +128,14 @@ class MlKitOcrEngine(
 enum class OcrRegion {
     FULL,
     USER_RESULTS,
+    /**
+     * Narrow player-side crop for right-rail count geometry after a verified video swipe.
+     *
+     * The bounds deliberately use screen ratios: they include the complete action/count rail
+     * with a margin, but exclude caption and most changing video content. This both keeps OCR
+     * bounded and avoids treating unrelated video text as a count-rail candidate.
+     */
+    VIDEO_ACTION_RAIL,
     /** Small top profile crop used only when the accessibility tree clips the profile name. */
     PROFILE_HEADER,
     PROFILE_ACTION,
@@ -138,11 +146,31 @@ enum class OcrRegion {
     fun boundsFor(width: Int, height: Int): Rect? = when (this) {
         FULL -> null
         USER_RESULTS -> Rect(0, (height * 0.12f).roundToInt(), width, (height * 0.96f).roundToInt())
+        VIDEO_ACTION_RAIL -> OcrRegionGeometry.videoActionRailBounds(width, height).toRect()
         PROFILE_HEADER -> Rect(0, (height * 0.08f).roundToInt(), width, (height * 0.35f).roundToInt())
         PROFILE_ACTION -> Rect(0, (height * 0.28f).roundToInt(), width, (height * 0.66f).roundToInt())
         MESSAGE_COMPOSER -> Rect(0, (height * 0.62f).roundToInt(), width, height)
         TOAST -> Rect(0, (height * 0.35f).roundToInt(), width, (height * 0.78f).roundToInt())
     }
+}
+
+/** Pure ratio geometry, separated from Android [Rect] so it remains unit-testable on the JVM. */
+internal object OcrRegionGeometry {
+    fun videoActionRailBounds(width: Int, height: Int): OcrCropBounds = OcrCropBounds(
+        left = (width * 0.68f).roundToInt(),
+        top = (height * 0.36f).roundToInt(),
+        right = width,
+        bottom = (height * 0.96f).roundToInt(),
+    )
+}
+
+internal data class OcrCropBounds(
+    val left: Int,
+    val top: Int,
+    val right: Int,
+    val bottom: Int,
+) {
+    fun toRect(): Rect = Rect(left, top, right, bottom)
 }
 
 private fun Rect.toSourceRect(offset: Pair<Int, Int>, scale: Float): Rect {

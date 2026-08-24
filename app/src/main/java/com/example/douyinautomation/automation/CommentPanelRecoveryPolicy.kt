@@ -3,9 +3,9 @@ package com.example.douyinautomation.automation
 /**
  * Safety policy for returning from a commenter profile to the original video comments.
  *
- * OCR is useful to recognize a page, but never sufficiently specific to tap a comment-panel tab.
- * Reopening is permitted only through a compact accessibility node located in the video action
- * rail.  In particular, this excludes “评论 / AI解析” panel tabs.
+ * OCR and visual templates are useful evidence elsewhere, but neither is sufficiently specific
+ * to tap a comment-panel tab. Reopening is permitted only through a compact accessibility node
+ * located in the video action rail. In particular, this excludes “评论 / AI解析” panel tabs.
  */
 internal object CommentPanelRecoveryPolicy {
     fun reopenTarget(

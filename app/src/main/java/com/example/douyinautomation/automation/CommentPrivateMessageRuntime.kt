@@ -601,6 +601,10 @@ class CommentPrivateMessageRuntime(
             var hiddenEntryObservations = 0
             var controlsRevealAttempted = false
             var ocrProbeCount = 0
+            // Kept inside one post-swipe probe so an old video's matching coordinates cannot
+            // promote a new screenshot by themselves.
+            var previousCommentIconTemplateMatch: CommentIconTemplateMatch? = null
+            var previousActionRailAnchorTemplateMatch: ActionRailAnchorTemplateMatch? = null
             repeat(TuningConstants.CommentRuntime.NEXT_VIDEO_TRANSITION_PROBE_ATTEMPTS) { attempt ->
                 val settleRemaining = (nextVideoSettleUntilMs - SystemClock.uptimeMillis()).coerceAtLeast(0L)
                 delay(
@@ -630,6 +634,55 @@ class CommentPrivateMessageRuntime(
                 ) {
                     ocrProbeCount += 1
                     context = enrichWithOcr(context)
+                    val currentTemplateMatch = context.commentIconTemplateMatch
+                    val templateConfirmed = CommentIconTemplateStabilityPolicy.confirms(
+                        previous = previousCommentIconTemplateMatch,
+                        current = currentTemplateMatch,
+                        screenSize = context.screenSize,
+                    )
+                    val currentActionRailAnchors = context.actionRailAnchorTemplateMatch
+                    val dualAnchorConfirmed = ActionRailAnchorTemplateStabilityPolicy.confirms(
+                        previous = previousActionRailAnchorTemplateMatch,
+                        current = currentActionRailAnchors,
+                        screenSize = context.screenSize,
+                    )
+                    if (currentTemplateMatch != null) {
+                        logger.info(
+                            "comment_icon_template_confirmation",
+                            attributes = mapOf(
+                                "attempt" to (attempt + 1),
+                                "confirmed" to templateConfirmed,
+                                "confidence" to currentTemplateMatch.confidence,
+                            ),
+                        )
+                        previousCommentIconTemplateMatch = currentTemplateMatch
+                        context = context.copy(
+                            commentIconTemplateMatch = currentTemplateMatch.copy(
+                                isConfirmed = templateConfirmed,
+                            ),
+                        )
+                    } else {
+                        previousCommentIconTemplateMatch = null
+                    }
+                    if (currentActionRailAnchors != null) {
+                        logger.info(
+                            "action_rail_dual_anchor_confirmation",
+                            attributes = mapOf(
+                                "attempt" to (attempt + 1),
+                                "confirmed" to dualAnchorConfirmed,
+                                "like_confidence" to currentActionRailAnchors.likeConfidence,
+                                "collect_confidence" to currentActionRailAnchors.collectConfidence,
+                            ),
+                        )
+                        previousActionRailAnchorTemplateMatch = currentActionRailAnchors
+                        context = context.copy(
+                            actionRailAnchorTemplateMatch = currentActionRailAnchors.copy(
+                                isConfirmed = dualAnchorConfirmed,
+                            ),
+                        )
+                    } else {
+                        previousActionRailAnchorTemplateMatch = null
+                    }
                     observation = CommentEntrySignalDetector.observe(
                         context,
                         skipPinnedVideos = config?.skipPinnedVideos == true,
@@ -647,6 +700,8 @@ class CommentPrivateMessageRuntime(
                         "comment_entry" to observation.hasCommentEntry,
                         "changed" to changedFromPreviousVideo,
                         "ocr_blocks" to context.ocrBlocks.size,
+                        "template_confirmed" to (context.commentIconTemplateMatch?.isConfirmed == true),
+                        "dual_anchor_confirmed" to (context.actionRailAnchorTemplateMatch?.isConfirmed == true),
                     ),
                 )
                 if (observation.page in setOf(
@@ -697,6 +752,12 @@ class CommentPrivateMessageRuntime(
                     }
                 }
                 if (changedFromPreviousVideo && observation.hasVideoSurface && observation.hasCommentEntry) {
+                    // The post-swipe probe has already proved that this is a new video with a
+                    // safe comment entry. Replace the swipe-level watchdog before the full
+                    // state-machine observation can inspect the tree and dispatch OPEN_COMMENTS;
+                    // otherwise a slow custom-rendered tree can let "等待下一个视频" win after
+                    // the valid postcondition has been found.
+                    armTimeout("等待下一视频评论入口处理")
                     onObserved(context, pageDetector.detect(context))
                     return@launch
                 }
@@ -906,19 +967,33 @@ class CommentPrivateMessageRuntime(
                 return
             }
         }
-        val newCandidates = extraction.candidates
+        val avatarCandidates = extraction.candidates
             // A real comment candidate must retain a live avatar target. OCR-only text or a
             // location-card text pair is never actionable and must not enter the profile flow.
             .filter { it.avatarBounds != null }
-            .filterNot { candidate ->
-                processedCandidateKeys.contains(candidate.identityKey) ||
-                    processedTaskCandidateLedger.contains(candidate.identityKey)
-            }
+        val currentVideoDuplicateCount = avatarCandidates.count { candidate ->
+            processedCandidateKeys.contains(candidate.identityKey)
+        }
+        val taskLedgerDuplicateCount = avatarCandidates.count { candidate ->
+            !processedCandidateKeys.contains(candidate.identityKey) &&
+                processedTaskCandidateLedger.contains(candidate.identityKey)
+        }
+        val newCandidates = avatarCandidates.filterNot { candidate ->
+            processedCandidateKeys.contains(candidate.identityKey) ||
+                processedTaskCandidateLedger.contains(candidate.identityKey)
+        }
         val update = ledger.add(extraction)
         logger.info(
             "comment_viewport_read",
             attributes = mapOf(
                 "candidate_count" to extraction.candidates.size,
+                "actionable_candidate_count" to avatarCandidates.size,
+                "eligible_candidate_count" to newCandidates.size,
+                "current_video_duplicate_count" to currentVideoDuplicateCount,
+                "task_ledger_duplicate_count" to taskLedgerDuplicateCount,
+                // `new_candidate_count` is retained for diagnostic compatibility: it is the
+                // viewport ledger delta, before task-level dedupe, not the number that can be
+                // safely queued for a private-message attempt.
                 "new_candidate_count" to update.added,
                 "duplicate_candidate_count" to update.duplicates,
                 "ledger_count" to update.total,
@@ -945,14 +1020,17 @@ class CommentPrivateMessageRuntime(
                     ),
                 )
                 delay(TuningConstants.CommentRuntime.INITIAL_COMMENT_CANDIDATE_READ_RETRY_DELAY_MS)
-                val fresh = currentContext()
-                if (fresh != null && CommentSurfaceDetector.detect(fresh).isCommentSurface) {
-                    processCommentViewport(fresh)
-                } else {
-                    armTimeout("等待评论区首屏候选")
-                }
-                // Whether the tree was still empty or temporarily unavailable, do not fall
-                // through to pagination: the next bounded observation owns the same top panel.
+                // A just-confirmed empty or late-rendering comment sheet can temporarily omit
+                // the header/composer signatures from its next accessibility tree. That is not
+                // evidence that the sheet closed: this coroutine is still reading the same
+                // verified top viewport and has not dispatched any navigation action. Prefer a
+                // fresh tree when available, but retain the confirmed snapshot for the remaining
+                // bounded top-viewport reads. Otherwise a single sparse tree waits for a future
+                // callback that some Douyin builds never emit and turns a safely skippable video
+                // into the task-level "等待评论区首屏候选" timeout.
+                processCommentViewport(currentContext() ?: context)
+                // Do not fall through to pagination: the bounded top-viewport reads own this
+                // panel until they either find a verified commenter or skip the video safely.
                 return
             }
             advanceAfterVideo("评论区首屏没有可验证评论用户，未向下滚动")
@@ -1728,7 +1806,6 @@ class CommentPrivateMessageRuntime(
      * text enters logcat. This is the triage signal for the "second video after swipe" miss.
      */
     private fun logCommentButtonMissDiagnostics(context: ScreenContext) {
-        val labels = listOf("评论", "comment", "comments")
         val imageClasses = listOf("imageview", "imagebutton", "button")
 
         fun NodeSnapshot.describe(): String = buildString {
@@ -1750,16 +1827,22 @@ class CommentPrivateMessageRuntime(
             }
         }
 
-        val semanticMatches = context.nodes.filter { node ->
-            val text = node.searchableText().joinToString(" ")
-            TextNormalizer.matchingTerms(text, labels).isNotEmpty()
-        }
         val railCandidates = context.nodes.filter { node ->
+            if (!node.isEnabled ||
+                node.bounds.width <= 0 ||
+                node.bounds.height <= 0 ||
+                node.bounds.left < 0 ||
+                node.bounds.top < 0 ||
+                node.bounds.right > context.screenSize.width ||
+                node.bounds.bottom > context.screenSize.height
+            ) {
+                return@filter false
+            }
             val normalized = node.normalizedBounds(context.screenSize)
             val className = TextNormalizer.normalize(node.className)
             val imageLike = imageClasses.any(className::contains)
             imageLike && normalized.left >= 0.76f && normalized.top in 0.28f..0.90f &&
-                node.bounds.width in 24..220 && node.bounds.height in 24..220
+                normalized.width in 0.02f..0.22f && normalized.height in 0.01f..0.10f
         }
 
         logger.info(
@@ -1768,17 +1851,10 @@ class CommentPrivateMessageRuntime(
                 "page" to PageDetector().detect(context).kind.name,
                 "nodes" to context.nodes.size,
                 "max_depth" to (context.nodes.maxOfOrNull { it.depth } ?: 0),
-                "semantic_matches" to semanticMatches.size,
                 "rail_candidates" to railCandidates.size,
                 "video_index" to videoIndex,
             ),
         )
-        semanticMatches.take(8).forEachIndexed { index, node ->
-            logger.info(
-                "comment_miss_semantic",
-                attributes = mapOf("index" to index, "node" to node.describe()),
-            )
-        }
         railCandidates.sortedBy { it.bounds.centerY }.take(8).forEachIndexed { index, node ->
             logger.info(
                 "comment_miss_rail",
@@ -2056,15 +2132,28 @@ class CommentPrivateMessageRuntime(
     }
 
     /**
-     * Uses accessibility-node activation whenever the rail exposes a usable node. OCR can only
-     * reach this method through [CommentButtonTarget.OcrFallback], which the detector emits after
-     * both node-based selectors fail because Douyin reported malformed bounds for the same rail.
+     * Uses accessibility-node activation whenever the rail exposes a usable node. A coordinate
+     * route can only come from the existing OCR geometry proof, a direct template candidate, or
+     * a like/collect pair already confirmed in two post-swipe screenshots. Every coordinate route
+     * still requires the page-state and comment-panel postconditions owned by the state machine.
      */
     private suspend fun clickCommentButton(
         target: CommentButtonTarget,
         action: String,
     ): ActionOutcome = when (target) {
         is CommentButtonTarget.AccessibilityNode -> clickSnapshot(target.node, action)
+        is CommentButtonTarget.TemplateFallback -> gestures.tapBounds(target.bounds).also { outcome ->
+            logger.info(
+                "comment_action",
+                attributes = mapOf(
+                    "action" to action,
+                    "success" to outcome.succeeded,
+                    "route" to outcome.route,
+                    "source" to "template_fallback",
+                    "confidence" to target.confidence,
+                ),
+            )
+        }
         is CommentButtonTarget.OcrFallback -> gestures.tapBounds(target.bounds).also { outcome ->
             logger.info(
                 "comment_action",
@@ -2073,6 +2162,19 @@ class CommentPrivateMessageRuntime(
                     "success" to outcome.succeeded,
                     "route" to outcome.route,
                     "source" to "ocr_fallback",
+                ),
+            )
+        }
+        is CommentButtonTarget.DualAnchorFallback -> gestures.tapBounds(target.bounds).also { outcome ->
+            logger.info(
+                "comment_action",
+                attributes = mapOf(
+                    "action" to action,
+                    "success" to outcome.succeeded,
+                    "route" to outcome.route,
+                    "source" to "dual_anchor_fallback",
+                    "like_confidence" to target.likeConfidence,
+                    "collect_confidence" to target.collectConfidence,
                 ),
             )
         }

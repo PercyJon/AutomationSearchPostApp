@@ -13,7 +13,36 @@ object AutomationExecutionLimits {
     const val MAX_USERS_PER_TASK = 1_000
     const val MAX_TASKS_PER_LOCAL_QUEUE = 999
     const val MAX_DAILY_UNIQUE_USERS = 9_999
-    const val MIN_ACTION_INTERVAL_MILLIS = 3_000L
+}
+
+/** Validates the optional operator-controlled gap between target-app-changing actions. */
+object AutomationActionIntervalPolicy {
+    const val MIN_CONFIGURABLE_INTERVAL_MILLIS = 1_000L
+    const val MAX_CONFIGURABLE_INTERVAL_MILLIS = 5_000L
+    const val DISABLED_INTERVAL_MILLIS = 0L
+
+    /** Keeps the setting numeric without silently coercing an out-of-range value. */
+    fun sanitizeInput(raw: String): String = raw.filter(Char::isDigit)
+
+    /** A blank value intentionally means that no global pacing gap is imposed. */
+    fun validationError(raw: String): String? {
+        val normalized = raw.trim()
+        if (normalized.isEmpty()) return null
+        val value = normalized.toLongOrNull()
+            ?: return "全局动作间隔必须是 ${MIN_CONFIGURABLE_INTERVAL_MILLIS}-${MAX_CONFIGURABLE_INTERVAL_MILLIS}ms 的整数"
+        return if (value !in MIN_CONFIGURABLE_INTERVAL_MILLIS..MAX_CONFIGURABLE_INTERVAL_MILLIS) {
+            "全局动作间隔必须在 ${MIN_CONFIGURABLE_INTERVAL_MILLIS}-${MAX_CONFIGURABLE_INTERVAL_MILLIS}ms 之间"
+        } else {
+            null
+        }
+    }
+
+    /** Returns null for the disabled/blank setting and for any invalid persisted value. */
+    fun configuredIntervalMillisOrNull(raw: String?): Long? {
+        val normalized = raw?.trim().orEmpty()
+        if (validationError(normalized) != null) return null
+        return normalized.toLongOrNull()
+    }
 }
 
 /** Keeps the form's empty/default behavior stable across the legacy 20-person draft migration. */
@@ -151,7 +180,9 @@ object DailyUserLimitPolicy {
  * and comment-runtime coroutines.
  */
 class AutomationActionPacer(
-    private val minIntervalMillis: Long = AutomationExecutionLimits.MIN_ACTION_INTERVAL_MILLIS,
+    private val minIntervalMillisProvider: () -> Long = {
+        AutomationActionIntervalPolicy.DISABLED_INTERVAL_MILLIS
+    },
     private val nowMillis: () -> Long = { android.os.SystemClock.uptimeMillis() },
     private val wait: suspend (Long) -> Unit = { kotlinx.coroutines.delay(it) },
 ) {
@@ -160,6 +191,7 @@ class AutomationActionPacer(
 
     suspend fun awaitTurn(): Long = mutex.withLock {
         val previous = lastActionAtMillis
+        val minIntervalMillis = minIntervalMillisProvider().coerceAtLeast(0L)
         val requiredWait = previous
             ?.let { (minIntervalMillis - (nowMillis() - it)).coerceAtLeast(0L) }
             ?: 0L

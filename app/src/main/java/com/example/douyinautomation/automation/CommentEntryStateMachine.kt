@@ -234,9 +234,9 @@ object CommentEntrySignalDetector {
         val worksTabSelected = worksTabTarget?.isSelected ?: true
         val commentButton = VideoCommentButtonDetector.find(context)
         // Comment text in a caption is not permission to click. The state machine is only told
-        // that a comment entry exists when the semantic/structural speech-bubble selector found
-        // a verified action-rail node, or when its malformed bounds require the detector's
-        // narrowly-scoped right-rail OCR fallback.
+        // that a comment entry exists when the detector found the second item of a verified
+        // right-side icon rail, a two-frame-confirmed visual bubble, or when malformed node
+        // bounds require the detector's narrowly-scoped numeric-geometry OCR fallback.
         val hasCommentEntry = commentButton != null
         val firstVideoTarget = firstVideoTarget(
             context,
@@ -247,8 +247,10 @@ object CommentEntrySignalDetector {
         )
         val hasFirstVideoTarget = firstVideoTarget != null
         // The action rail itself is stronger evidence than incidental caption/OCR text: the
-        // detector only returns a semantic “评论” control on the right rail, or the second item
-        // of a verified three-or-more-icon action rail. Some custom-rendered video pages expose
+        // detector only returns the second item of a verified three-or-more-icon action rail, a
+        // two-frame-confirmed bounded visual bubble, or a target inferred from a complete or
+        // uniquely gapped numeric rail. Some custom-rendered
+        // video pages expose
         // neither “播放” nor a full-width video node, so requiring those weaker visual markers
         // made a genuine video wait until its watchdog expired even though its comment button
         // was already safely actionable.
@@ -256,7 +258,7 @@ object CommentEntrySignalDetector {
         // Douyin renders the immersive video player opened from a profile's first video tile with
         // the same bottom-navigation labels as the home feed, so PageDetector can classify that
         // genuine video surface as HOME instead of UNKNOWN. The verified right-rail comment button
-        // is authoritative in both cases: a home-classified screen carrying a semantic/structural
+        // is authoritative in both cases: a home-classified screen carrying a verified right-rail
         // speech-bubble action is the opened video, and proceeding lets the WAITING_FOR_VIDEO →
         // OPEN_COMMENTS transition fire instead of idling into the “等待视频页面” watchdog. The
         // weaker visual marker (a wide node plus “播放/暂停/作品” text) is still restricted to

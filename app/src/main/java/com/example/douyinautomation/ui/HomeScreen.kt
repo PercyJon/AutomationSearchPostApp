@@ -101,6 +101,8 @@ import androidx.compose.ui.unit.Dp
 import com.example.douyinautomation.BuildConfig
 import com.example.douyinautomation.CommentRegressionPreset
 import com.example.douyinautomation.automation.AutomationCommand
+import com.example.douyinautomation.automation.AutomationActionIntervalPolicy
+import com.example.douyinautomation.automation.AutomationActionIntervalSettingsStore
 import com.example.douyinautomation.automation.AutomationExecutionLimits
 import com.example.douyinautomation.automation.AutomationPhase
 import com.example.douyinautomation.automation.AutomationStore
@@ -2676,6 +2678,12 @@ private fun SettingsPage(
     var configMessage by rememberSaveable { mutableStateOf<String?>(null) }
     var authorizedRemoteTaskIds by rememberSaveable { mutableStateOf(RemoteTaskAuthorizationStore.loadRaw(context)) }
     var remoteAuthorizationMessage by rememberSaveable { mutableStateOf<String?>(null) }
+    var actionIntervalMillis by rememberSaveable {
+        mutableStateOf(AutomationActionIntervalSettingsStore.loadRaw(context))
+    }
+    var actionIntervalMessage by rememberSaveable { mutableStateOf<String?>(null) }
+    var actionIntervalMessageIsError by rememberSaveable { mutableStateOf(false) }
+    val actionIntervalError = AutomationActionIntervalPolicy.validationError(actionIntervalMillis)
     Column(
         modifier = Modifier
             .padding(padding)
@@ -2834,6 +2842,55 @@ private fun SettingsPage(
                 SettingsRow("目标应用", "抖音")
                 SettingsRow("执行方式", "Android 无障碍服务")
                 SettingsRow("安全模式", "空白消息探测")
+                HorizontalDivider()
+                Text("全局动作间隔", fontWeight = FontWeight.Medium)
+                Text(
+                    "留空表示不额外节流。填写后，目标应用的每次点击、输入、返回或滑动之间至少间隔 1000–5000ms；保存后从下一次动作生效。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                CompactOutlinedTextField(
+                    value = actionIntervalMillis,
+                    onValueChange = { value ->
+                        actionIntervalMillis = AutomationActionIntervalPolicy.sanitizeInput(value)
+                        actionIntervalMessage = null
+                        actionIntervalMessageIsError = false
+                    },
+                    modifier = Modifier.fillMaxWidth().height(54.dp),
+                    textStyle = MaterialTheme.typography.bodyLarge,
+                    label = "全局动作间隔（ms，可留空）",
+                    placeholder = "留空：不启用全局间隔",
+                    singleLine = true,
+                )
+                actionIntervalError?.let { error ->
+                    Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
+                OutlinedButton(
+                    enabled = actionIntervalError == null,
+                    onClick = {
+                        val saveError = AutomationActionIntervalSettingsStore.save(context, actionIntervalMillis)
+                        actionIntervalMessageIsError = saveError != null
+                        actionIntervalMessage = saveError ?: if (actionIntervalMillis.isBlank()) {
+                            "已关闭全局动作间隔"
+                        } else {
+                            "已保存 ${actionIntervalMillis}ms；下一次动作起生效"
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("保存全局动作间隔")
+                }
+                actionIntervalMessage?.let { message ->
+                    Text(
+                        message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (actionIntervalMessageIsError) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        },
+                    )
+                }
                 Text(
                     "预设搜索词：开启远程任务后使用后台目录；关闭时使用本地缓存和内置词。地区规则、屏蔽词与任务断点接口已接入客户端网关。",
                     style = MaterialTheme.typography.bodySmall,

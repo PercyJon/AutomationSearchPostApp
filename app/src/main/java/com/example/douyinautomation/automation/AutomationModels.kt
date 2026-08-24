@@ -146,11 +146,53 @@ data class OcrTextBlock(
     val confidence: Float? = null,
 )
 
+/** A bounded visual candidate; it is evidence only until the caller completes all safety gates. */
+data class CommentIconTemplateMatch(
+    val bounds: ScreenBounds,
+    val confidence: Float,
+    /** Only the next-video probe may promote two stable screenshots to an actionable candidate. */
+    val isConfirmed: Boolean = false,
+) {
+    init {
+        require(bounds.width > 0 && bounds.height > 0) { "Template match bounds must be non-empty." }
+        require(confidence in 0f..1f) { "Template match confidence must be between 0 and 1." }
+    }
+}
+
+/**
+ * Two independently matched action icons from the same screenshot. Their bounds are evidence
+ * only: the next-video probe must first confirm the pair across two screenshots, then derive
+ * the intervening comment position from the validated action-rail geometry.
+ */
+data class ActionRailAnchorTemplateMatch(
+    val likeBounds: ScreenBounds,
+    val likeConfidence: Float,
+    val collectBounds: ScreenBounds,
+    val collectConfidence: Float,
+    /** Only the next-video probe may promote a stable pair to an actionable fallback. */
+    val isConfirmed: Boolean = false,
+) {
+    init {
+        require(likeBounds.width > 0 && likeBounds.height > 0) {
+            "Like anchor bounds must be non-empty."
+        }
+        require(collectBounds.width > 0 && collectBounds.height > 0) {
+            "Collect anchor bounds must be non-empty."
+        }
+        require(likeConfidence in 0f..1f) { "Like confidence must be between 0 and 1." }
+        require(collectConfidence in 0f..1f) { "Collect confidence must be between 0 and 1." }
+    }
+}
+
 data class ScreenContext(
     val screenSize: ScreenSize = ScreenSize(1080, 1920),
     val packageName: String? = null,
     val nodes: List<NodeSnapshot> = emptyList(),
     val ocrBlocks: List<OcrTextBlock> = emptyList(),
+    /** Present only on the bounded next-video screenshot path; never inferred from OCR text. */
+    val commentIconTemplateMatch: CommentIconTemplateMatch? = null,
+    /** Present only on the bounded next-video screenshot path; never inferred from OCR text. */
+    val actionRailAnchorTemplateMatch: ActionRailAnchorTemplateMatch? = null,
     val capturedAtMillis: Long = 0L,
 ) {
     fun normalizedBounds(node: NodeSnapshot): NormalizedRect = node.normalizedBounds(screenSize)

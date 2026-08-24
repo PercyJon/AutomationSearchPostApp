@@ -1,7 +1,9 @@
 package com.example.douyinautomation.automation
 
 import android.accessibilityservice.AccessibilityService
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Rect
 import android.view.accessibility.AccessibilityNodeInfo
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
@@ -15,6 +17,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlin.coroutines.coroutineContext
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 /**
  * Deliberately bounded state machine. M2 inspects and navigates to each verified direct-message
@@ -36,6 +39,16 @@ class DouyinNavigationController(
 ) {
     private val mutex = Mutex()
     private val windowContextReader = DouyinWindowContextReader(service, inspector)
+    /** P0-only visual evidence source; it is bounded to the supplied comment bubble asset. */
+    private val commentIconTemplateMatcher: ImageMatcher = VerifiedTemplateMatcher(
+        provider = AlphaMaskedCommentIconMatcher(service.assets),
+        minimumConfidence = COMMENT_ICON_TEMPLATE_MIN_CONFIDENCE,
+    )
+    /** P0-only visual evidence source for the supplied like and collect action-rail anchors. */
+    private val actionRailAnchorTemplateMatcher: ImageMatcher = VerifiedTemplateMatcher(
+        provider = AlphaMaskedActionIconMatcher(service.assets),
+        minimumConfidence = ACTION_RAIL_ANCHOR_TEMPLATE_MIN_CONFIDENCE,
+    )
     /** Opaque comment-author references persisted with the active task checkpoint. */
     private val processedCommentCandidateFingerprints = LinkedHashSet<String>()
     /** Isolated P4-B comment-surface runner; the existing profile runner remains unchanged. */
@@ -51,7 +64,7 @@ class DouyinNavigationController(
             captureContextWithOcr(
                 base = base,
                 tag = "comment_next_video_rail",
-                region = OcrRegion.FULL,
+                region = OcrRegion.VIDEO_ACTION_RAIL,
             ) ?: base
         },
         restoredCommentCandidateFingerprints = { processedCommentCandidateFingerprints.toSet() },
@@ -3724,17 +3737,58 @@ class DouyinNavigationController(
             val bitmap = withContext(Dispatchers.IO) { BitmapFactory.decodeFile(artifact.path) }
                 ?: return@runCatching base
             try {
+                val commentIconTemplateMatch = if (tag == "comment_next_video_rail") {
+                    captureCommentIconTemplateMatch(bitmap, base.screenSize)
+                } else {
+                    null
+                }
+                val actionRailAnchorTemplateMatch = if (tag == "comment_next_video_rail") {
+                    captureActionRailAnchorTemplateMatch(bitmap, base.screenSize)
+                } else {
+                    null
+                }
                 val result = engine.recognize(bitmap, region)
                 base.copy(
                     ocrBlocks = OcrTextBlockMapper.map(
                         result = result,
                         // The P0 first-card detector must correlate a name line with the
-                        // follower and account lines of that same card. Other OCR consumers
-                        // retain their historical whole-block representation.
-                        preserveLineGeometry = region == OcrRegion.USER_RESULTS,
+                        // follower and account lines of that same card. The next-video action
+                        // rail likewise needs independent count-line geometry to verify either a
+                        // complete rail or the unique interior gap left by a zero count before
+                        // deriving the comment bubble. Other OCR consumers retain their
+                        // historical whole-block representation.
+                        preserveLineGeometry = region == OcrRegion.USER_RESULTS ||
+                            tag == "comment_next_video_rail",
                     ),
+                    commentIconTemplateMatch = commentIconTemplateMatch,
+                    actionRailAnchorTemplateMatch = actionRailAnchorTemplateMatch,
                     capturedAtMillis = System.currentTimeMillis(),
                 ).also {
+                    commentIconTemplateMatch?.let { match ->
+                        val normalized = match.bounds.normalized(base.screenSize)
+                        logger.info(
+                            "comment_icon_template_candidate",
+                            attributes = mapOf(
+                                "confidence" to match.confidence,
+                                "center_x" to normalized.centerX,
+                                "center_y" to normalized.centerY,
+                            ),
+                        )
+                    }
+                    actionRailAnchorTemplateMatch?.let { anchors ->
+                        val like = anchors.likeBounds.normalized(base.screenSize)
+                        val collect = anchors.collectBounds.normalized(base.screenSize)
+                        logger.info(
+                            "action_rail_dual_anchor_candidate",
+                            attributes = mapOf(
+                                "like_confidence" to anchors.likeConfidence,
+                                "collect_confidence" to anchors.collectConfidence,
+                                "like_center_y" to like.centerY,
+                                "collect_center_y" to collect.centerY,
+                                "x_spread" to kotlin.math.abs(like.centerX - collect.centerX),
+                            ),
+                        )
+                    }
                     latestContext = it
                     latestOcrContext = it
                 }
@@ -3752,6 +3806,111 @@ class DouyinNavigationController(
             )
         }.getOrNull()
     }
+
+    /**
+     * The matcher sees screenshot coordinates while accessibility reports screen coordinates.
+     * Map through ratios so the visual candidate remains valid when their captured heights differ
+     * by status-bar or cutout insets.
+     */
+    private suspend fun captureCommentIconTemplateMatch(
+        bitmap: Bitmap,
+        screenSize: ScreenSize,
+    ): CommentIconTemplateMatch? {
+        val searchRegion = Rect(
+            (bitmap.width * COMMENT_ICON_TEMPLATE_SEARCH_LEFT_FRACTION).roundToInt(),
+            (bitmap.height * COMMENT_ICON_TEMPLATE_SEARCH_TOP_FRACTION).roundToInt(),
+            bitmap.width,
+            (bitmap.height * COMMENT_ICON_TEMPLATE_SEARCH_BOTTOM_FRACTION).roundToInt(),
+        )
+        val match = commentIconTemplateMatcher.findMatch(
+            bitmap = bitmap,
+            templateId = AlphaMaskedCommentIconMatcher.TEMPLATE_ID,
+            searchRegion = searchRegion,
+        ) ?: return null
+        val bounds = mapScreenshotBounds(match.bounds, bitmap, screenSize)
+        return bounds.takeIf { it.width > 0 && it.height > 0 }
+            ?.let { CommentIconTemplateMatch(bounds = it, confidence = match.confidence) }
+    }
+
+    /**
+     * Finds the supplied like and collect templates independently in their expected vertical
+     * bands. This returns evidence only; the runtime still needs two stable screenshots and the
+     * detector must derive a valid intervening comment slot before a tap is possible.
+     */
+    private suspend fun captureActionRailAnchorTemplateMatch(
+        bitmap: Bitmap,
+        screenSize: ScreenSize,
+    ): ActionRailAnchorTemplateMatch? {
+        val likeMatch = actionRailAnchorTemplateMatcher.findMatch(
+            bitmap = bitmap,
+            templateId = AlphaMaskedActionIconMatcher.LIKE_TEMPLATE_ID,
+            searchRegion = actionRailTemplateSearchRegion(
+                bitmap = bitmap,
+                topFraction = LIKE_ANCHOR_TEMPLATE_SEARCH_TOP_FRACTION,
+                bottomFraction = LIKE_ANCHOR_TEMPLATE_SEARCH_BOTTOM_FRACTION,
+            ),
+        )
+        if (likeMatch == null) {
+            logger.info(
+                "action_rail_dual_anchor_probe",
+                attributes = mapOf("like_available" to false, "collect_attempted" to false),
+            )
+            return null
+        }
+        val collectMatch = actionRailAnchorTemplateMatcher.findMatch(
+            bitmap = bitmap,
+            templateId = AlphaMaskedActionIconMatcher.COLLECT_TEMPLATE_ID,
+            searchRegion = actionRailTemplateSearchRegion(
+                bitmap = bitmap,
+                topFraction = COLLECT_ANCHOR_TEMPLATE_SEARCH_TOP_FRACTION,
+                bottomFraction = COLLECT_ANCHOR_TEMPLATE_SEARCH_BOTTOM_FRACTION,
+            ),
+        )
+        logger.info(
+            "action_rail_dual_anchor_probe",
+            attributes = mapOf(
+                "like_available" to true,
+                "collect_attempted" to true,
+                "collect_available" to (collectMatch != null),
+            ),
+        )
+        if (collectMatch == null) return null
+        val likeBounds = mapScreenshotBounds(likeMatch.bounds, bitmap, screenSize)
+        val collectBounds = mapScreenshotBounds(collectMatch.bounds, bitmap, screenSize)
+        return ActionRailAnchorTemplateMatch(
+            likeBounds = likeBounds,
+            likeConfidence = likeMatch.confidence,
+            collectBounds = collectBounds,
+            collectConfidence = collectMatch.confidence,
+        )
+    }
+
+    private fun actionRailTemplateSearchRegion(
+        bitmap: Bitmap,
+        topFraction: Float,
+        bottomFraction: Float,
+    ): Rect = Rect(
+        (bitmap.width * ACTION_RAIL_ANCHOR_TEMPLATE_SEARCH_LEFT_FRACTION).roundToInt(),
+        (bitmap.height * topFraction).roundToInt(),
+        bitmap.width,
+        (bitmap.height * bottomFraction).roundToInt(),
+    )
+
+    /** Converts screenshot-space visual evidence through display ratios, never fixed pixels. */
+    private fun mapScreenshotBounds(
+        screenshotBounds: Rect,
+        bitmap: Bitmap,
+        screenSize: ScreenSize,
+    ): ScreenBounds = ScreenBounds(
+        left = (screenshotBounds.left.toFloat() / bitmap.width * screenSize.width).roundToInt()
+            .coerceIn(0, screenSize.width),
+        top = (screenshotBounds.top.toFloat() / bitmap.height * screenSize.height).roundToInt()
+            .coerceIn(0, screenSize.height),
+        right = (screenshotBounds.right.toFloat() / bitmap.width * screenSize.width).roundToInt()
+            .coerceIn(0, screenSize.width),
+        bottom = (screenshotBounds.bottom.toFloat() / bitmap.height * screenSize.height).roundToInt()
+            .coerceIn(0, screenSize.height),
+    )
 
     private suspend fun captureEmptyMessageProbeContext(): ScreenContext? {
         val base = currentWindowContext() ?: latestContext ?: return null
@@ -5075,6 +5234,19 @@ class DouyinNavigationController(
     }
 
     private companion object {
+        // Screen-ratio region for the player action rail. These are deliberately not absolute
+        // screenshot pixels: the matcher owns no fallback point outside this bounded column.
+        const val COMMENT_ICON_TEMPLATE_SEARCH_LEFT_FRACTION = 0.72f
+        const val COMMENT_ICON_TEMPLATE_SEARCH_TOP_FRACTION = 0.42f
+        const val COMMENT_ICON_TEMPLATE_SEARCH_BOTTOM_FRACTION = 0.82f
+        const val COMMENT_ICON_TEMPLATE_MIN_CONFIDENCE = 0.86f
+        const val ACTION_RAIL_ANCHOR_TEMPLATE_SEARCH_LEFT_FRACTION = 0.72f
+        const val LIKE_ANCHOR_TEMPLATE_SEARCH_TOP_FRACTION = 0.40f
+        const val LIKE_ANCHOR_TEMPLATE_SEARCH_BOTTOM_FRACTION = 0.65f
+        const val COLLECT_ANCHOR_TEMPLATE_SEARCH_TOP_FRACTION = 0.56f
+        const val COLLECT_ANCHOR_TEMPLATE_SEARCH_BOTTOM_FRACTION = 0.86f
+        const val ACTION_RAIL_ANCHOR_TEMPLATE_MIN_CONFIDENCE = 0.88f
+
         val searchSubmitSelector = SelectorRequest(
             name = "search-submit",
             // The submit target is the visible, non-editable top-right label. Requiring a

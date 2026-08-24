@@ -1,137 +1,220 @@
 package com.example.douyinautomation.automation
 
-/** A comment-entry target verified from accessibility, or the narrow OCR-only final fallback. */
+/** A comment-entry target verified from accessibility, a confirmed visual template, or OCR geometry. */
 sealed interface CommentButtonTarget {
     data class AccessibilityNode(val node: NodeSnapshot) : CommentButtonTarget
+
+    /**
+     * Only emitted after the next-video probe confirmed the same bounded template candidate in
+     * two screenshots. The caller still requires a video-page state and a comment-sheet
+     * postcondition before considering the coordinate gesture successful.
+     */
+    data class TemplateFallback(
+        val bounds: ScreenBounds,
+        val confidence: Float,
+    ) : CommentButtonTarget
 
     /**
      * Only emitted when the video action rail has unusable accessibility bounds. The caller must
      * issue a coordinate gesture directly; an OCR block is never resolved as an accessibility node.
      */
     data class OcrFallback(val bounds: ScreenBounds) : CommentButtonTarget
+
+    /**
+     * Derived only from two stable, independently matched like and collect icons that prove the
+     * comment slot between them. This stays behind all existing selector, bubble-template, and
+     * OCR-geometry routes.
+     */
+    data class DualAnchorFallback(
+        val bounds: ScreenBounds,
+        val likeConfidence: Float,
+        val collectConfidence: Float,
+    ) : CommentButtonTarget
 }
 
 /**
- * Finds the comment speech-bubble control on a video page. Semantic labels are authoritative;
- * the structural fallback uses the ordered right-side action rail (like, comment, favorite,
- * share). OCR is permitted only as a final coordinate-tap fallback for malformed rail bounds.
+ * Finds the comment speech-bubble control on a video page from the ordered right-side action
+ * icons (like, comment, favorite, share). Current Douyin players do not expose a textual comment
+ * label there: accessibility text and OCR “评论” are deliberately not entrance evidence.
+ *
+ * When the icon nodes have unusable bounds, a supplied alpha-aware bubble template may assist
+ * only after two stable next-video screenshots. OCR can otherwise recover the target from the
+ * geometry of the numeric labels below the icons. If both of those routes fail, two independently
+ * stable visual anchors (like above, collect below) can prove the intervening comment slot. A
+ * zero count may omit its label, so the OCR fallback accepts a complete four-slot number rail, or
+ * a rail whose fixed trailing share label uniquely proves the numeric-slot order. OCR text never
+ * directly authorizes a tap.
  */
 object VideoCommentButtonDetector {
-    private val labels = listOf("评论", "comment", "comments")
     private val imageClasses = listOf("imageview", "imagebutton", "button")
 
-    /** Maximum vertical centre delta for two rail layers to be treated as the same position. */
-    private const val RAIL_CLUSTER_TOLERANCE = 30
-
     fun find(context: ScreenContext): CommentButtonTarget? {
-        // Douyin's custom-rendered video page can report isVisibleToUser=false for an actionable
-        // right-rail speech-bubble even though the node is on-screen and clickable: the uiautomator
-        // tree proves the node exists with clickable=true/enabled=true while the live accessibility
-        // flag is transiently false. A verified semantic match plus on-screen bounds is
-        // authoritative, so do not discard it on that transient visibility flag; visibility only
-        // ranks a candidate lower. The structural rail fallback below keeps its stricter
-        // visibility check because it has no semantic label to fall back on.
-        val semantic = context.nodes.asSequence()
-            .filter { it.isEnabled && it.isClickable && it.bounds != ScreenBounds.EMPTY }
-            .filter { node ->
-                val text = node.searchableText().joinToString(" ")
-                TextNormalizer.matchingTerms(text, labels).isNotEmpty()
-            }
-            // The rendered rail can expose a wide clickable parent containing both the comment
-            // bubble and its count.  That parent may acknowledge ACTION_CLICK without opening
-            // the panel, so semantic text alone is not enough: require the same compact
-            // right-rail geometry used by the safe panel-reopen policy.  A wide parent then
-            // falls through to the ordered image-rail selector below, which chooses the actual
-            // second (comment) control.
-            .filter { node ->
-                val bounds = node.normalizedBounds(context.screenSize)
-                bounds.left >= SEMANTIC_RAIL_LEFT &&
-                    bounds.top in SEMANTIC_RAIL_TOP..SEMANTIC_RAIL_BOTTOM &&
-                    bounds.width <= SEMANTIC_RAIL_MAX_WIDTH &&
-                    bounds.height <= SEMANTIC_RAIL_MAX_HEIGHT
-            }
-            .maxByOrNull { node ->
-                val text = node.searchableText().joinToString(" ")
-                TextNormalizer.matchingTerms(text, labels).size * 10 +
-                    if (node.normalizedBounds(context.screenSize).left >= 0.78f) 1 else 0 +
-                    if (node.isVisibleToUser) 2 else 0
-            }
-        if (semantic != null) return CommentButtonTarget.AccessibilityNode(semantic)
+        structuralActionRail(context)?.getOrNull(1)?.let { button ->
+            return CommentButtonTarget.AccessibilityNode(button)
+        }
+        templateIconFallback(context)?.let { return it }
+        ocrActionCountRailFallback(context)?.let { return it }
+        return dualAnchorFallback(context)
+    }
 
-        // The post-swipe video can render its action rail as non-clickable ImageView children
-        // (for example id=gmn/c8q click=false) whose parent container owns the click handler.
-        // A coordinate tap at the bubble's centre still opens the panel even when ACTION_CLICK is
-        // unavailable, so a geometrically verified rail item must not be discarded solely for the
-        // clickable flag. When both clickable and non-clickable layers exist, the clickable item
-        // still ranks first for the same position.
-        val railCandidates = context.nodes.asSequence()
+    private fun templateIconFallback(context: ScreenContext): CommentButtonTarget.TemplateFallback? {
+        val match = context.commentIconTemplateMatch?.takeIf(CommentIconTemplateMatch::isConfirmed)
+            ?: return null
+        if (!hasOnScreenBounds(match.bounds, context.screenSize)) return null
+        val normalized = match.bounds.normalized(context.screenSize)
+        return CommentButtonTarget.TemplateFallback(match.bounds, match.confidence).takeIf {
+            match.confidence >= TEMPLATE_MIN_CONFIDENCE &&
+                normalized.left >= TEMPLATE_RAIL_LEFT &&
+                normalized.centerY in TEMPLATE_RAIL_TOP..TEMPLATE_RAIL_BOTTOM &&
+                normalized.width in TEMPLATE_ICON_MIN_WIDTH..TEMPLATE_ICON_MAX_WIDTH &&
+                normalized.height in TEMPLATE_ICON_MIN_HEIGHT..TEMPLATE_ICON_MAX_HEIGHT
+        }
+    }
+
+    private fun dualAnchorFallback(context: ScreenContext): CommentButtonTarget.DualAnchorFallback? {
+        val anchors = context.actionRailAnchorTemplateMatch
+            ?.takeIf(ActionRailAnchorTemplateMatch::isConfirmed)
+            ?: return null
+        val bounds = deriveCommentBoundsFromDualAnchors(anchors, context.screenSize) ?: return null
+        return CommentButtonTarget.DualAnchorFallback(
+            bounds = bounds,
+            likeConfidence = anchors.likeConfidence,
+            collectConfidence = anchors.collectConfidence,
+        )
+    }
+
+    /**
+     * Like, comment and collect are consecutive player actions. A valid like/collect pair must
+     * therefore share a rail, have comparable rendered sizes, and span exactly two ordinary icon
+     * slots. The resulting coordinate is the midpoint; it never relies on screen pixels.
+     */
+    private fun deriveCommentBoundsFromDualAnchors(
+        anchors: ActionRailAnchorTemplateMatch,
+        screenSize: ScreenSize,
+    ): ScreenBounds? {
+        if (!hasOnScreenBounds(anchors.likeBounds, screenSize) ||
+            !hasOnScreenBounds(anchors.collectBounds, screenSize)
+        ) {
+            return null
+        }
+        val like = anchors.likeBounds.normalized(screenSize)
+        val collect = anchors.collectBounds.normalized(screenSize)
+        if (!isDualAnchorIcon(like) || !isDualAnchorIcon(collect) ||
+            collect.centerY <= like.centerY
+        ) {
+            return null
+        }
+        val xSpread = kotlin.math.abs(like.centerX - collect.centerX)
+        val widthRatio = minOf(like.width, collect.width) / maxOf(like.width, collect.width)
+        val heightRatio = minOf(like.height, collect.height) / maxOf(like.height, collect.height)
+        val slotGap = (collect.centerY - like.centerY) / DUAL_ANCHOR_SPANNED_SLOT_COUNT
+        if (xSpread > ACTION_RAIL_MAX_X_SPREAD_FRACTION ||
+            widthRatio < DUAL_ANCHOR_MIN_SIZE_RATIO ||
+            heightRatio < DUAL_ANCHOR_MIN_SIZE_RATIO ||
+            slotGap !in ACTION_RAIL_MIN_SLOT_GAP_FRACTION..ACTION_RAIL_MAX_SLOT_GAP_FRACTION
+        ) {
+            return null
+        }
+
+        val halfWidth = ((anchors.likeBounds.width + anchors.collectBounds.width) /
+            (2 * DUAL_ANCHOR_HALF_SIZE_DIVISOR)).coerceAtLeast(1)
+        val halfHeight = ((anchors.likeBounds.height + anchors.collectBounds.height) /
+            (2 * DUAL_ANCHOR_HALF_SIZE_DIVISOR)).coerceAtLeast(1)
+        val centerX = ((anchors.likeBounds.centerX + anchors.collectBounds.centerX) / 2f).toInt()
+        val centerY = ((anchors.likeBounds.centerY + anchors.collectBounds.centerY) / 2f).toInt()
+        val bounds = ScreenBounds(
+            left = (centerX - halfWidth).coerceAtLeast(0),
+            top = (centerY - halfHeight).coerceAtLeast(0),
+            right = (centerX + halfWidth).coerceAtMost(screenSize.width),
+            bottom = (centerY + halfHeight).coerceAtMost(screenSize.height),
+        )
+        val normalized = bounds.normalized(screenSize)
+        return bounds.takeIf {
+            it.width > 0 &&
+                it.height > 0 &&
+                normalized.left >= TEMPLATE_RAIL_LEFT &&
+                normalized.centerY in TEMPLATE_RAIL_TOP..TEMPLATE_RAIL_BOTTOM &&
+                normalized.width in TEMPLATE_ICON_MIN_WIDTH..TEMPLATE_ICON_MAX_WIDTH &&
+                normalized.height in TEMPLATE_ICON_MIN_HEIGHT..TEMPLATE_ICON_MAX_HEIGHT
+        }
+    }
+
+    private fun isDualAnchorIcon(bounds: NormalizedRect): Boolean =
+        bounds.left >= TEMPLATE_RAIL_LEFT &&
+            bounds.centerY in ACTION_RAIL_TOP..ACTION_RAIL_BOTTOM &&
+            bounds.width in TEMPLATE_ICON_MIN_WIDTH..TEMPLATE_ICON_MAX_WIDTH &&
+            bounds.height in TEMPLATE_ICON_MIN_HEIGHT..TEMPLATE_ICON_MAX_HEIGHT
+
+    private fun structuralActionRail(context: ScreenContext): List<NodeSnapshot>? {
+        // The player can transiently report isVisibleToUser=false for a live image node. The
+        // complete, on-screen and evenly spaced icon rail is the proof; visibility only ranks
+        // duplicate layers at the same position and is never the sole reason to reject it.
+        val candidates = context.nodes.asSequence()
             .filter { node ->
-                if (!node.isVisibleToUser || !node.isEnabled) return@filter false
+                if (!node.isEnabled || !hasOnScreenBounds(node.bounds, context.screenSize)) {
+                    return@filter false
+                }
                 val normalized = node.normalizedBounds(context.screenSize)
                 val className = TextNormalizer.normalize(node.className)
-                val imageLike = imageClasses.any(className::contains)
-                imageLike && normalized.left >= 0.76f && normalized.top in 0.28f..0.90f &&
-                    node.bounds.width in 24..220 && node.bounds.height in 24..220
+                imageClasses.any(className::contains) &&
+                    normalized.left >= ACTION_RAIL_LEFT &&
+                    normalized.top in ACTION_RAIL_TOP..ACTION_RAIL_BOTTOM &&
+                    normalized.width in ACTION_ICON_MIN_WIDTH..ACTION_ICON_MAX_WIDTH &&
+                    normalized.height in ACTION_ICON_MIN_HEIGHT..ACTION_ICON_MAX_HEIGHT
             }
             .sortedBy { it.bounds.centerY }
             .toList()
 
-        // Cluster rail positions top-to-bottom, keeping the clickable node whenever the same
-        // position is also rendered as a non-clickable duplicate layer. The post-swipe video can
-        // expose both `id=gmn` (clickable) and `id=c8q` (non-clickable) ImageViews for the same
-        // bubble; preferring the clickable one preserves ACTION_CLICK while still resolving the
-        // position when only the non-clickable layer is present.
         val rail = mutableListOf<NodeSnapshot>()
-        for (candidate in railCandidates) {
-            val samePosition = rail.lastOrNull {
-                kotlin.math.abs(it.bounds.centerY - candidate.bounds.centerY) <= RAIL_CLUSTER_TOLERANCE
+        candidates.forEach { candidate ->
+            val existing = rail.lastOrNull {
+                kotlin.math.abs(
+                    it.normalizedBounds(context.screenSize).centerY -
+                        candidate.normalizedBounds(context.screenSize).centerY,
+                ) <= RAIL_LAYER_CLUSTER_TOLERANCE_FRACTION
             }
-            if (samePosition == null) {
-                rail.add(candidate)
-            } else if (candidate.isClickable && !samePosition.isClickable) {
-                rail[rail.lastIndex] = candidate
+            when {
+                existing == null -> rail.add(candidate)
+                candidate.isClickable && !existing.isClickable -> rail[rail.lastIndex] = candidate
+                candidate.isVisibleToUser && !existing.isVisibleToUser -> rail[rail.lastIndex] = candidate
             }
         }
 
-        // A real action rail contains at least the heart, comment and one additional action. The
-        // second item is the speech bubble according to the supplied Douyin layouts. Requiring a
-        // populated rail prevents an arbitrary right-side button from becoming a comment tap.
-        rail.takeIf { it.size >= 3 }?.getOrNull(1)?.let { button ->
-            return CommentButtonTarget.AccessibilityNode(button)
-        }
+        return rail.windowed(
+            size = MIN_ACTION_RAIL_SLOTS,
+            step = 1,
+            partialWindows = false,
+        ).firstOrNull { isVerifiedActionIconRail(it, context.screenSize) }
+    }
 
-        // Some Douyin builds expose the entire right rail with a negative Y or zero-height
-        // accessibility bounds while the pixels remain visible. At this point both semantic and
-        // structural accessibility selectors have rejected the rail, so use the on-screen OCR
-        // "评论" label as the narrowly-scoped final fallback. Requiring a compact right-side
-        // block prevents captions or an already-open comment panel from becoming a tap target.
-        val ocrLabelFallback = context.ocrBlocks.asSequence()
-            .filter { block -> block.bounds.width > 0 && block.bounds.height > 0 }
-            .filter { block ->
-                val normalized = block.bounds.normalized(context.screenSize)
-                normalized.centerX >= OCR_RAIL_LEFT && normalized.centerY in OCR_RAIL_TOP..OCR_RAIL_BOTTOM
-            }
-            .filter { block -> TextNormalizer.matchingTerms(block.text, labels).isNotEmpty() }
-            .maxByOrNull { block ->
-                val normalized = block.bounds.normalized(context.screenSize)
-                (block.confidence ?: 0f) + normalized.centerX
-            }
-        if (ocrLabelFallback != null) {
-            return commentIconBoundsAboveLabel(ocrLabelFallback, context.screenSize)
-                ?.let(CommentButtonTarget::OcrFallback)
-        }
+    private fun hasOnScreenBounds(bounds: ScreenBounds, screenSize: ScreenSize): Boolean =
+        bounds.width > 0 &&
+            bounds.height > 0 &&
+            bounds.left >= 0 &&
+            bounds.top >= 0 &&
+            bounds.right <= screenSize.width &&
+            bounds.bottom <= screenSize.height
 
-        // The speech-bubble itself contains no text on some current player layouts, but its
-        // right-side count column remains readable: like, comment, favorite, share. Infer the
-        // bubble only from a complete, evenly-spaced four-count rail and always select the second
-        // slot. This is deliberately stricter than a single numeric OCR match, so a caption,
-        // location card, or a lone number can never turn into a social-action tap.
-        return ocrActionCountRailFallback(context)
+    private fun isVerifiedActionIconRail(
+        rail: List<NodeSnapshot>,
+        screenSize: ScreenSize,
+    ): Boolean {
+        if (rail.size != MIN_ACTION_RAIL_SLOTS) return false
+        val normalized = rail.map { it.normalizedBounds(screenSize) }
+        val gaps = normalized.zipWithNext { upper, lower -> lower.centerY - upper.centerY }
+        val minGap = gaps.minOrNull() ?: return false
+        val maxGap = gaps.maxOrNull() ?: return false
+        val xCenters = normalized.map(NormalizedRect::centerX)
+        val xSpread = (xCenters.maxOrNull() ?: 0f) - (xCenters.minOrNull() ?: 0f)
+        return minGap >= ACTION_RAIL_MIN_SLOT_GAP_FRACTION &&
+            maxGap <= ACTION_RAIL_MAX_SLOT_GAP_FRACTION &&
+            maxGap / minGap <= ACTION_RAIL_MAX_GAP_RATIO &&
+            xSpread <= ACTION_RAIL_MAX_X_SPREAD_FRACTION
     }
 
     private fun ocrActionCountRailFallback(context: ScreenContext): CommentButtonTarget.OcrFallback? {
         val rawCounts = context.ocrBlocks.asSequence()
-            .filter { block -> block.bounds.width > 0 && block.bounds.height > 0 }
+            .filter { block -> hasOnScreenBounds(block.bounds, context.screenSize) }
             .filter { block ->
                 val normalized = block.bounds.normalized(context.screenSize)
                 normalized.centerX >= OCR_COUNT_RAIL_LEFT &&
@@ -140,13 +223,28 @@ object VideoCommentButtonDetector {
             .filter { block -> engagementCountPattern.matches(TextNormalizer.normalize(block.text)) }
             .sortedBy { it.bounds.centerY }
             .toList()
+        val trailingShareMarkers = context.ocrBlocks.asSequence()
+            .filter { block -> hasOnScreenBounds(block.bounds, context.screenSize) }
+            .filter { block ->
+                val normalized = block.bounds.normalized(context.screenSize)
+                normalized.centerX >= OCR_COUNT_RAIL_LEFT &&
+                    normalized.centerY in OCR_COUNT_RAIL_TOP..OCR_COUNT_RAIL_BOTTOM
+            }
+            .filter { block ->
+                TextNormalizer.matchingTerms(block.text, trailingShareMarkerTerms).isNotEmpty()
+            }
+            .sortedBy { it.bounds.centerY }
+            .toList()
 
-        // OCR can emit overlapping duplicates for the same small numeric label. Keep the more
-        // confident one within a single line before validating the action stack geometry.
+        // OCR can emit overlapping duplicates for one small label. Keep the most confident
+        // line before proving the action-stack geometry.
         val counts = mutableListOf<OcrTextBlock>()
         rawCounts.forEach { candidate ->
             val existing = counts.lastOrNull {
-                kotlin.math.abs(it.bounds.centerY - candidate.bounds.centerY) <= OCR_COUNT_CLUSTER_TOLERANCE
+                kotlin.math.abs(
+                    it.bounds.normalized(context.screenSize).centerY -
+                        candidate.bounds.normalized(context.screenSize).centerY,
+                ) <= OCR_COUNT_CLUSTER_TOLERANCE_FRACTION
             }
             when {
                 existing == null -> counts.add(candidate)
@@ -156,128 +254,363 @@ object VideoCommentButtonDetector {
             }
         }
 
-        return counts.windowed(size = 4, step = 1, partialWindows = false).firstNotNullOfOrNull { rail ->
-            val gaps = rail.zipWithNext { upper, lower -> lower.bounds.centerY - upper.bounds.centerY }
-            val minGap = gaps.minOrNull() ?: return@firstNotNullOfOrNull null
-            val maxGap = gaps.maxOrNull() ?: return@firstNotNullOfOrNull null
-            val spacing = gaps.sorted()[gaps.size / 2].toFloat()
-            val minimumAllowedGap = context.screenSize.height * OCR_COUNT_MIN_GAP_FRACTION
-            val maximumAllowedGap = context.screenSize.height * OCR_COUNT_MAX_GAP_FRACTION
-            val alignedXs = rail.map { it.bounds.centerX }
-            val xSpread = (alignedXs.maxOrNull() ?: 0f) - (alignedXs.minOrNull() ?: 0f)
+        val layout = findVerifiedCountRailLayout(
+            counts = counts,
+            trailingShareMarkers = trailingShareMarkers,
+            screenSize = context.screenSize,
+        ) ?: return null
+        return deriveCommentIconBounds(layout, context.screenSize)
+            ?.let(CommentButtonTarget::OcrFallback)
+    }
 
-            if (minGap.toFloat() < minimumAllowedGap ||
-                maxGap.toFloat() > maximumAllowedGap ||
-                maxGap.toFloat() / minGap.toFloat() > OCR_COUNT_MAX_GAP_RATIO ||
-                xSpread > context.screenSize.width * OCR_COUNT_MAX_X_SPREAD_FRACTION
-            ) {
-                return@firstNotNullOfOrNull null
-            }
+    private fun findVerifiedCountRailLayout(
+        counts: List<OcrTextBlock>,
+        trailingShareMarkers: List<OcrTextBlock>,
+        screenSize: ScreenSize,
+    ): OcrCountRailLayout? {
+        counts.windowed(size = COMPLETE_ACTION_RAIL_SLOTS, step = 1, partialWindows = false)
+            .firstNotNullOfOrNull { completeCountRailLayout(it, screenSize) }
+            ?.let { return it }
 
-            val commentCount = rail[1]
-            val targetCenterX = alignedXs.average().toFloat()
-            val targetCenterY = commentCount.bounds.centerY - spacing * OCR_COMMENT_ICON_OFFSET_FRACTION
-            val firstCountCenterY = rail.first().bounds.centerY
-            if (targetCenterY <= firstCountCenterY + spacing * OCR_MIN_ICON_GAP_FRACTION ||
-                targetCenterY >= commentCount.bounds.centerY - spacing * OCR_MIN_ICON_GAP_FRACTION
-            ) {
-                return@firstNotNullOfOrNull null
-            }
+        countRailLayoutWithTrailingShareMarker(counts, trailingShareMarkers, screenSize)
+            ?.let { return it }
 
-            val halfSide = (spacing * OCR_COMMENT_ICON_SIZE_FRACTION)
-                .toInt()
-                .coerceIn(OCR_COMMENT_ICON_MIN_HALF_SIDE, OCR_COMMENT_ICON_MAX_HALF_SIDE)
-            val centerX = targetCenterX.toInt()
-            val centerY = targetCenterY.toInt()
-            val bounds = ScreenBounds(
-                left = (centerX - halfSide).coerceAtLeast(0),
-                top = (centerY - halfSide).coerceAtLeast(0),
-                right = (centerX + halfSide).coerceAtMost(context.screenSize.width),
-                bottom = (centerY + halfSide).coerceAtMost(context.screenSize.height),
-            )
-            bounds.takeIf { it.width >= OCR_COMMENT_ICON_MIN_HALF_SIDE * 2 && it.height >= OCR_COMMENT_ICON_MIN_HALF_SIDE * 2 }
-                ?.let(CommentButtonTarget::OcrFallback)
-        }
+        // When a count is zero, its label is absent. With exactly one interior gap the remaining
+        // three labels have a unique slot mapping: 0,2,3 means comment is zero; 0,1,3 means a
+        // later action is zero and the observed second label remains the comment anchor. Equal
+        // gaps can also mean an omitted edge slot, so they stay rejected rather than guessed.
+        return counts.windowed(size = MISSING_ONE_COUNT_RAIL_SLOTS, step = 1, partialWindows = false)
+            .firstNotNullOfOrNull { singleInteriorMissingCountRailLayout(it, screenSize) }
+    }
+
+    private fun completeCountRailLayout(
+        rail: List<OcrTextBlock>,
+        screenSize: ScreenSize,
+        countCenterBlocks: List<OcrTextBlock> = rail,
+    ): OcrCountRailLayout? {
+        val spacing = evenlySpacedCountColumn(rail, screenSize) ?: return null
+        return OcrCountRailLayout(
+            firstCountCenterY = rail.first().bounds.centerY,
+            commentCountCenterY = rail[1].bounds.centerY,
+            slotSpacing = spacing,
+            countCenterX = countCenterBlocks.map { it.bounds.centerX }.average().toFloat(),
+        )
     }
 
     /**
-     * Douyin renders the OCR-visible “评论” label below its speech-bubble icon. A text-box tap
-     * can therefore be acknowledged as a gesture while leaving the panel closed. The label has
-     * already passed the compact right-rail check above; derive only the immediately preceding
-     * icon area from screen-relative geometry and keep a visible gap above the text.
+     * The share action is the fixed fourth slot on the player rail. Its visible label can prove
+     * the index of the preceding numeric labels, but is never itself a target or click reason.
      */
-    private fun commentIconBoundsAboveLabel(
-        label: OcrTextBlock,
+    private fun countRailLayoutWithTrailingShareMarker(
+        counts: List<OcrTextBlock>,
+        trailingShareMarkers: List<OcrTextBlock>,
         screenSize: ScreenSize,
-    ): ScreenBounds? {
-        // NormalizedRect clamps out-of-screen geometry for ranking. That is useful for a live
-        // node, but never sufficient for an OCR-derived gesture: refuse the raw label before
-        // deriving any click area from it.
-        if (
-            label.bounds.width <= 0 ||
-                label.bounds.height <= 0 ||
-                label.bounds.left < 0 ||
-                label.bounds.top < 0 ||
-                label.bounds.right > screenSize.width ||
-                label.bounds.bottom > screenSize.height
+    ): OcrCountRailLayout? {
+        for (shareMarker in trailingShareMarkers) {
+            val countsBeforeShare = counts.filter { it.bounds.centerY < shareMarker.bounds.centerY }
+            countsBeforeShare.windowed(
+                size = MISSING_ONE_COUNT_RAIL_SLOTS,
+                step = 1,
+                partialWindows = false,
+            ).firstNotNullOfOrNull { countRail ->
+                completeCountRailLayout(
+                    rail = countRail + shareMarker,
+                    screenSize = screenSize,
+                    countCenterBlocks = countRail,
+                )
+            }?.let { return it }
+
+            countsBeforeShare.windowed(size = 2, step = 1, partialWindows = false)
+                .firstNotNullOfOrNull { countRail ->
+                    twoCountRailWithTrailingShareMarker(countRail, shareMarker, screenSize)
+                }?.let { return it }
+        }
+        return null
+    }
+
+    private fun twoCountRailWithTrailingShareMarker(
+        counts: List<OcrTextBlock>,
+        shareMarker: OcrTextBlock,
+        screenSize: ScreenSize,
+    ): OcrCountRailLayout? {
+        if (counts.size != 2) return null
+        val rail = counts + shareMarker
+        if (!isAlignedCountColumn(rail, screenSize)) return null
+
+        val firstGap = counts[1].bounds.centerY - counts[0].bounds.centerY
+        val secondGap = shareMarker.bounds.centerY - counts[1].bounds.centerY
+        val spacing = minOf(firstGap, secondGap)
+        if (!isAllowedCountSlotSpacing(spacing, screenSize)) return null
+
+        val firstToSecondRatio = firstGap / secondGap
+        val secondToFirstRatio = secondGap / firstGap
+        val firstCountCenterY = counts.first().bounds.centerY
+        val commentCountCenterY: Float
+        val precedingCountCenterY: Float
+        when {
+            // Slots 0,2,3: comment count is zero and its label is absent.
+            firstToSecondRatio in MISSING_SLOT_DOUBLE_GAP_MIN_RATIO..MISSING_SLOT_DOUBLE_GAP_MAX_RATIO -> {
+                precedingCountCenterY = firstCountCenterY
+                commentCountCenterY = firstCountCenterY + spacing
+            }
+            // Slots 0,1,3: a later count is zero; the second visible number is comment.
+            secondToFirstRatio in MISSING_SLOT_DOUBLE_GAP_MIN_RATIO..MISSING_SLOT_DOUBLE_GAP_MAX_RATIO -> {
+                precedingCountCenterY = firstCountCenterY
+                commentCountCenterY = counts[1].bounds.centerY
+            }
+            // Slots 1,2,3: like count is zero; the first visible number is comment.
+            firstToSecondRatio <= OCR_COUNT_MAX_GAP_RATIO &&
+                secondToFirstRatio <= OCR_COUNT_MAX_GAP_RATIO -> {
+                precedingCountCenterY = firstCountCenterY - spacing
+                commentCountCenterY = firstCountCenterY
+            }
+            else -> return null
+        }
+        return OcrCountRailLayout(
+            firstCountCenterY = precedingCountCenterY,
+            commentCountCenterY = commentCountCenterY,
+            slotSpacing = spacing,
+            countCenterX = counts.map { it.bounds.centerX }.average().toFloat(),
+        )
+    }
+
+    private fun singleInteriorMissingCountRailLayout(
+        rail: List<OcrTextBlock>,
+        screenSize: ScreenSize,
+    ): OcrCountRailLayout? {
+        if (rail.size != MISSING_ONE_COUNT_RAIL_SLOTS || !isAlignedCountColumn(rail, screenSize)) {
+            return null
+        }
+        val firstGap = rail[1].bounds.centerY - rail[0].bounds.centerY
+        val secondGap = rail[2].bounds.centerY - rail[1].bounds.centerY
+        val spacing = minOf(firstGap, secondGap)
+        if (!isAllowedCountSlotSpacing(spacing, screenSize)) return null
+
+        val firstToSecondRatio = firstGap / secondGap
+        val secondToFirstRatio = secondGap / firstGap
+        val firstCountCenterY = rail.first().bounds.centerY
+        val commentCountCenterY = when {
+            // Slots 0,2,3: comment count is zero and its label is absent.
+            firstToSecondRatio in MISSING_SLOT_DOUBLE_GAP_MIN_RATIO..MISSING_SLOT_DOUBLE_GAP_MAX_RATIO ->
+                firstCountCenterY + spacing
+            // Slots 0,1,3: a later count is zero; the visible second label is comment.
+            secondToFirstRatio in MISSING_SLOT_DOUBLE_GAP_MIN_RATIO..MISSING_SLOT_DOUBLE_GAP_MAX_RATIO ->
+                rail[1].bounds.centerY
+            else -> return null
+        }
+        return OcrCountRailLayout(
+            firstCountCenterY = firstCountCenterY,
+            commentCountCenterY = commentCountCenterY,
+            slotSpacing = spacing,
+            countCenterX = rail.map { it.bounds.centerX }.average().toFloat(),
+        )
+    }
+
+    private fun evenlySpacedCountColumn(
+        rail: List<OcrTextBlock>,
+        screenSize: ScreenSize,
+    ): Float? {
+        if (rail.size != COMPLETE_ACTION_RAIL_SLOTS || !isAlignedCountColumn(rail, screenSize)) {
+            return null
+        }
+        val gaps = rail.zipWithNext { upper, lower -> lower.bounds.centerY - upper.bounds.centerY }
+        val minGap = gaps.minOrNull() ?: return null
+        val maxGap = gaps.maxOrNull() ?: return null
+        if (!isAllowedCountSlotSpacing(minGap, screenSize) ||
+            !isAllowedCountSlotSpacing(maxGap, screenSize) ||
+            maxGap / minGap > OCR_COUNT_MAX_GAP_RATIO
         ) {
             return null
         }
-        val screenHeight = screenSize.height.coerceAtLeast(1)
-        val halfSide = (screenHeight * OCR_LABEL_ICON_HALF_SIDE_RATIO).toInt().coerceAtLeast(1)
-        val centerY = label.bounds.top - (screenHeight * OCR_LABEL_ICON_CENTER_OFFSET_RATIO).toInt()
-        val centerX = label.bounds.centerX.toInt()
-        val left = (centerX - halfSide).coerceAtLeast(0)
-        val top = (centerY - halfSide).coerceAtLeast(0)
-        val right = (centerX + halfSide).coerceAtMost(screenSize.width)
-        val bottom = (centerY + halfSide).coerceAtMost(screenSize.height)
-        if (right <= left || bottom <= top) return null
+        return gaps.sorted()[gaps.size / 2].toFloat()
+    }
+
+    private fun isAlignedCountColumn(
+        rail: List<OcrTextBlock>,
+        screenSize: ScreenSize,
+    ): Boolean {
+        val xCenters = rail.map { it.bounds.normalized(screenSize).centerX }
+        val xSpread = (xCenters.maxOrNull() ?: 0f) - (xCenters.minOrNull() ?: 0f)
+        return xSpread <= OCR_COUNT_MAX_X_SPREAD_FRACTION
+    }
+
+    private fun isAllowedCountSlotSpacing(
+        spacing: Float,
+        screenSize: ScreenSize,
+    ): Boolean {
+        val normalizedSpacing = spacing / screenSize.height
+        return normalizedSpacing in OCR_COUNT_MIN_GAP_FRACTION..OCR_COUNT_MAX_GAP_FRACTION
+    }
+
+    private fun deriveCommentIconBounds(
+        layout: OcrCountRailLayout,
+        screenSize: ScreenSize,
+    ): ScreenBounds? {
+        val targetCenterY = layout.commentCountCenterY -
+            layout.slotSpacing * OCR_COMMENT_ICON_OFFSET_FRACTION
+        if (targetCenterY <= layout.firstCountCenterY + layout.slotSpacing * OCR_MIN_ICON_GAP_FRACTION ||
+            targetCenterY >= layout.commentCountCenterY - layout.slotSpacing * OCR_MIN_ICON_GAP_FRACTION
+        ) {
+            return null
+        }
+
+        val halfSide = (layout.slotSpacing * OCR_COMMENT_ICON_SIZE_FRACTION).toInt().coerceAtLeast(1)
+        val centerX = layout.countCenterX.toInt()
+        val centerY = targetCenterY.toInt()
         val bounds = ScreenBounds(
-            left = left,
-            top = top,
-            right = right,
-            bottom = bottom,
+            left = (centerX - halfSide).coerceAtLeast(0),
+            top = (centerY - halfSide).coerceAtLeast(0),
+            right = (centerX + halfSide).coerceAtMost(screenSize.width),
+            bottom = (centerY + halfSide).coerceAtMost(screenSize.height),
         )
         val normalized = bounds.normalized(screenSize)
-        val minimumClearance = (screenHeight * OCR_LABEL_ICON_MIN_CLEARANCE_RATIO).toInt()
         return bounds.takeIf {
             it.width > 0 &&
                 it.height > 0 &&
-                it.bottom <= label.bounds.top - minimumClearance &&
-                normalized.centerX >= OCR_RAIL_LEFT &&
-                normalized.centerY in OCR_RAIL_TOP..OCR_RAIL_BOTTOM
+                normalized.centerX >= OCR_COUNT_RAIL_LEFT &&
+                normalized.centerY in ACTION_RAIL_TOP..ACTION_RAIL_BOTTOM &&
+                normalized.width in OCR_COMMENT_ICON_MIN_WIDTH..OCR_COMMENT_ICON_MAX_WIDTH &&
+                normalized.height in OCR_COMMENT_ICON_MIN_HEIGHT..OCR_COMMENT_ICON_MAX_HEIGHT
         }
     }
 
-    private const val OCR_RAIL_LEFT = 0.76f
-    private const val OCR_RAIL_TOP = 0.28f
-    private const val OCR_RAIL_BOTTOM = 0.90f
-    private const val SEMANTIC_RAIL_LEFT = 0.76f
-    private const val SEMANTIC_RAIL_TOP = 0.28f
-    private const val SEMANTIC_RAIL_BOTTOM = 0.90f
-    private const val SEMANTIC_RAIL_MAX_WIDTH = 0.24f
-    private const val SEMANTIC_RAIL_MAX_HEIGHT = 0.18f
-    // Current Douyin players can place the count labels slightly left of their right-rail icons
-    // (about 78% of the display width on the verified device). Keep this as a screen ratio: the
-    // fallback still requires all four evenly spaced count slots before it derives the comment
-    // bubble, so a caption or a lone number cannot become a coordinate target.
+    private data class OcrCountRailLayout(
+        val firstCountCenterY: Float,
+        val commentCountCenterY: Float,
+        val slotSpacing: Float,
+        val countCenterX: Float,
+    )
+
+    private const val ACTION_RAIL_LEFT = 0.76f
+    private const val ACTION_RAIL_TOP = 0.28f
+    private const val ACTION_RAIL_BOTTOM = 0.90f
+    private const val ACTION_ICON_MIN_WIDTH = 0.02f
+    private const val ACTION_ICON_MAX_WIDTH = 0.22f
+    private const val ACTION_ICON_MIN_HEIGHT = 0.01f
+    private const val ACTION_ICON_MAX_HEIGHT = 0.10f
+    private const val MIN_ACTION_RAIL_SLOTS = 3
+    private const val RAIL_LAYER_CLUSTER_TOLERANCE_FRACTION = 0.0125f
+    private const val ACTION_RAIL_MIN_SLOT_GAP_FRACTION = 0.035f
+    private const val ACTION_RAIL_MAX_SLOT_GAP_FRACTION = 0.16f
+    private const val ACTION_RAIL_MAX_GAP_RATIO = 1.45f
+    private const val ACTION_RAIL_MAX_X_SPREAD_FRACTION = 0.08f
+    // Count labels can sit slightly left of the icon centres. They are only geometric anchors.
     private const val OCR_COUNT_RAIL_LEFT = 0.74f
     private const val OCR_COUNT_RAIL_TOP = 0.42f
     private const val OCR_COUNT_RAIL_BOTTOM = 0.93f
-    private const val OCR_COUNT_CLUSTER_TOLERANCE = 28
+    private const val OCR_COUNT_CLUSTER_TOLERANCE_FRACTION = 0.012f
+    private const val COMPLETE_ACTION_RAIL_SLOTS = 4
+    private const val MISSING_ONE_COUNT_RAIL_SLOTS = 3
     private const val OCR_COUNT_MIN_GAP_FRACTION = 0.035f
     private const val OCR_COUNT_MAX_GAP_FRACTION = 0.16f
     private const val OCR_COUNT_MAX_GAP_RATIO = 1.45f
     private const val OCR_COUNT_MAX_X_SPREAD_FRACTION = 0.08f
-    private const val OCR_LABEL_ICON_CENTER_OFFSET_RATIO = 0.045f
-    private const val OCR_LABEL_ICON_HALF_SIDE_RATIO = 0.026f
-    private const val OCR_LABEL_ICON_MIN_CLEARANCE_RATIO = 0.012f
+    private const val MISSING_SLOT_DOUBLE_GAP_MIN_RATIO = 1.65f
+    private const val MISSING_SLOT_DOUBLE_GAP_MAX_RATIO = 2.35f
     private const val OCR_COMMENT_ICON_OFFSET_FRACTION = 0.40f
     private const val OCR_COMMENT_ICON_SIZE_FRACTION = 0.30f
     private const val OCR_MIN_ICON_GAP_FRACTION = 0.16f
-    private const val OCR_COMMENT_ICON_MIN_HALF_SIDE = 42
-    private const val OCR_COMMENT_ICON_MAX_HALF_SIDE = 80
+    private const val OCR_COMMENT_ICON_MIN_WIDTH = 0.03f
+    private const val OCR_COMMENT_ICON_MAX_WIDTH = 0.20f
+    private const val OCR_COMMENT_ICON_MIN_HEIGHT = 0.015f
+    private const val OCR_COMMENT_ICON_MAX_HEIGHT = 0.12f
+    private const val TEMPLATE_MIN_CONFIDENCE = 0.86f
+    private const val TEMPLATE_RAIL_LEFT = 0.72f
+    private const val TEMPLATE_RAIL_TOP = 0.42f
+    private const val TEMPLATE_RAIL_BOTTOM = 0.82f
+    private const val TEMPLATE_ICON_MIN_WIDTH = 0.05f
+    private const val TEMPLATE_ICON_MAX_WIDTH = 0.15f
+    private const val TEMPLATE_ICON_MIN_HEIGHT = 0.02f
+    private const val TEMPLATE_ICON_MAX_HEIGHT = 0.11f
+    private const val DUAL_ANCHOR_SPANNED_SLOT_COUNT = 2f
+    private const val DUAL_ANCHOR_HALF_SIZE_DIVISOR = 2
+    private const val DUAL_ANCHOR_MIN_SIZE_RATIO = 0.70f
     private val engagementCountPattern = Regex("^\\d+(?:[.,]\\d+)?(?:万|亿|w|k|m)?$")
+    private val trailingShareMarkerTerms = listOf("分享", "share")
+}
+
+/**
+ * A visual candidate may only become actionable when two screenshots agree on its normalized
+ * centre and size. This is intentionally separate from the matcher so a prior video's position
+ * can never make a new screenshot confirmed by itself.
+ */
+internal object CommentIconTemplateStabilityPolicy {
+    fun confirms(
+        previous: CommentIconTemplateMatch?,
+        current: CommentIconTemplateMatch?,
+        screenSize: ScreenSize,
+    ): Boolean {
+        if (previous == null || current == null) return false
+        val first = previous.bounds.normalized(screenSize)
+        val second = current.bounds.normalized(screenSize)
+        if (first.width == 0f || first.height == 0f || second.width == 0f || second.height == 0f) {
+            return false
+        }
+        val centreToleranceX = maxOf(first.width, second.width) * MAX_CENTER_SHIFT_BY_ICON_SIZE
+        val centreToleranceY = maxOf(first.height, second.height) * MAX_CENTER_SHIFT_BY_ICON_SIZE
+        val widthRatio = minOf(first.width, second.width) / maxOf(first.width, second.width)
+        val heightRatio = minOf(first.height, second.height) / maxOf(first.height, second.height)
+        return kotlin.math.abs(first.centerX - second.centerX) <= centreToleranceX &&
+            kotlin.math.abs(first.centerY - second.centerY) <= centreToleranceY &&
+            widthRatio >= MIN_SIZE_RATIO &&
+            heightRatio >= MIN_SIZE_RATIO
+    }
+
+    private const val MAX_CENTER_SHIFT_BY_ICON_SIZE = 0.60f
+    private const val MIN_SIZE_RATIO = 0.70f
+}
+
+/** The two anchors must independently remain at the same normalized positions and scale. */
+internal object ActionRailAnchorTemplateStabilityPolicy {
+    fun confirms(
+        previous: ActionRailAnchorTemplateMatch?,
+        current: ActionRailAnchorTemplateMatch?,
+        screenSize: ScreenSize,
+    ): Boolean {
+        if (previous == null || current == null) return false
+        return isStable(previous.likeBounds, current.likeBounds, screenSize) &&
+            isStable(previous.collectBounds, current.collectBounds, screenSize) &&
+            hasStableInterAnchorGap(previous, current, screenSize)
+    }
+
+    private fun isStable(
+        previous: ScreenBounds,
+        current: ScreenBounds,
+        screenSize: ScreenSize,
+    ): Boolean {
+        val first = previous.normalized(screenSize)
+        val second = current.normalized(screenSize)
+        if (first.width == 0f || first.height == 0f || second.width == 0f || second.height == 0f) {
+            return false
+        }
+        val centerToleranceX = maxOf(first.width, second.width) * MAX_CENTER_SHIFT_BY_ICON_SIZE
+        val centerToleranceY = maxOf(first.height, second.height) * MAX_CENTER_SHIFT_BY_ICON_SIZE
+        val widthRatio = minOf(first.width, second.width) / maxOf(first.width, second.width)
+        val heightRatio = minOf(first.height, second.height) / maxOf(first.height, second.height)
+        return kotlin.math.abs(first.centerX - second.centerX) <= centerToleranceX &&
+            kotlin.math.abs(first.centerY - second.centerY) <= centerToleranceY &&
+            widthRatio >= MIN_SIZE_RATIO &&
+            heightRatio >= MIN_SIZE_RATIO
+    }
+
+    private fun hasStableInterAnchorGap(
+        previous: ActionRailAnchorTemplateMatch,
+        current: ActionRailAnchorTemplateMatch,
+        screenSize: ScreenSize,
+    ): Boolean {
+        val previousLike = previous.likeBounds.normalized(screenSize)
+        val previousCollect = previous.collectBounds.normalized(screenSize)
+        val currentLike = current.likeBounds.normalized(screenSize)
+        val currentCollect = current.collectBounds.normalized(screenSize)
+        val previousGap = previousCollect.centerY - previousLike.centerY
+        val currentGap = currentCollect.centerY - currentLike.centerY
+        if (previousGap <= 0f || currentGap <= 0f) return false
+        return minOf(previousGap, currentGap) / maxOf(previousGap, currentGap) >= MIN_GAP_RATIO
+    }
+
+    private const val MAX_CENTER_SHIFT_BY_ICON_SIZE = 0.60f
+    private const val MIN_SIZE_RATIO = 0.70f
+    private const val MIN_GAP_RATIO = 0.70f
 }
 
 data class CommentPanelEndDetection(

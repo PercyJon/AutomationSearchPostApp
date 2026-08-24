@@ -4,6 +4,109 @@
 
 ---
 
+## [未发布] 2026-08-24 —— P0 右侧动作栏点赞/收藏双锚点回退
+
+### 修改内容
+
+- 为已有的下一视频右侧栏截图增加 Alpha 感知的点赞、收藏图标模板匹配；分享图标不参与动作栏证据或点击。
+- 只有两个锚点同栏、同尺度、跨越两个连续动作槽、并在连续两帧稳定时，才按屏幕比例推导中间的评论图标候选。
+- 候选严格排在既有无障碍节点、评论气泡模板和 OCR 数字栏几何之后；点击后仍需既有视频页及评论面板后置确认。
+- 新增仅记录匹配可用性的诊断日志，区分“右栏尚未显现”与“点赞/收藏模板未命中”；未放宽任何阈值或既有安全门。
+
+### 已验证项
+
+- `CommentSurfaceSignalsTest` 覆盖未确认、反序/异尺度拒绝、两帧稳定、中点推导及既有模板/OCR 优先级；Android 设备侧 `AlphaMaskedActionIconMatcherInstrumentedTest` 验证真实 APK 资产可由 Android `AssetManager`/`Bitmap` 匹配。
+- `./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug`、`git diff --check` 通过；此前同机 `:app:connectedDebugAndroidTest` 的 5 项设备测试通过。
+- **真机 OnePlus NE2210 / b33aa309 / Android 16**：操作者确认系统“允许本 App 调起抖音”后，`designer × 3 × 1` 空白探测路径完整完成。第 2、3 视频均记录 like/collect 双锚点候选（约 `0.973/0.993` 与 `0.991/0.905`），但 OCR 几何先安全定位评论入口，故按优先级以 `ocr_fallback` 打开并确认评论面板；3 位用户均为 `BLANK_PROBE_VERIFIED`，没有点赞、收藏、分享、真实消息或 `dual_anchor_fallback` 点击。
+
+### 几何与兼容性检查
+
+- 新增的搜索区域、同栏校验、尺寸/间距和中点坐标均使用截图或屏幕比例；未新增固定 Android px、固定点击点或设备相关手势时长。
+- 双锚点只能在节点、OCR 与评论模板均不足时作为最后回退；OCR 仍须经几何、视频页状态和评论面板确认，不能直接作为点击依据。
+
+### 交接记录
+
+- [`2026-08-24-p0-action-rail-dual-anchor-fallback.md`](docs/2026-08-24-p0-action-rail-dual-anchor-fallback.md)
+
+---
+
+## [未发布] 2026-08-24 —— 全局动作间隔改为操作员设置
+
+### 修改内容
+
+- 移除无障碍动作的固定 3 秒默认间隔；设置页“自动化服务”新增“全局动作间隔（ms，可留空）”。
+- 留空即不施加全局节流；仅可保存 1000–5000ms。无效值会显示错误且不写入本地偏好。
+- `GestureEngine` 在每个新动作槽位读取已保存设置，因此变更不需要重绑无障碍服务；页面确认、OCR、重试次数和其他既有等待常量未修改。
+
+### 已验证项
+
+- JVM 用例覆盖默认无节流、1000/5000ms 边界、非法值拒绝和运行时读取新间隔；`./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` 通过。
+- **真机 OnePlus NE2210 / b33aa309 / Android 16**：设置页默认空值可见；999 被拒绝；1000 可保存；最终已恢复为空值且私有偏好为空。无障碍服务仍启用，未启动任务或操作抖音。
+
+### 几何与兼容性检查
+
+- 未新增 Android 几何、固定 px、坐标或手势时长；设置页只复用既有 Compose `dp` 布局。
+- 节点优先、OCR→几何验证→页面确认及所有任务安全门保持不变。
+
+### 交接记录
+
+- [`2026-08-24-action-pacing-setting.md`](docs/2026-08-24-action-pacing-setting.md)
+
+---
+
+## [未发布] 2026-08-24 —— P0 下一视频右侧栏 OCR 时序优化
+
+### 修改内容
+
+- 仅将下一视频评论入口的两次 OCR 从全屏改为右侧动作栏的截图比例区域
+  （横向 `0.68..1.00`、纵向 `0.36..0.96`）；不改变模板匹配的完整截图受限搜索区域。
+- 保留原有无障碍节点优先、双帧视觉稳定、OCR 数字栏几何校验、页面状态确认和评论面板后置确认；OCR 仍不能直接授权点击。
+- 新增 JVM 纯比例几何测试，避免 Android 本地单元测试桩的 `Rect` 实现影响区域计算回归。
+
+### 已验证项
+
+- `./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug`（340 个 JVM 测试）及 `git diff --check` 通过。
+- **真机 OnePlus NE2210 / b33aa309 / Android 16**：`designer × 3 × 1` 空消息安全路径完整完成。第 1→2、2→3 视频均以既有 OCR 几何回退确认评论入口并打开评论面板；3 位用户均为 `BLANK_PROBE_VERIFIED`。所有动作槽为 `wait_ms=0`，未记录点赞、收藏、分享或真实消息动作。
+- 同机样本中，右侧栏 OCR 从截图请求到完成约 2.68 / 3.52 秒；修改前失败样本的两次全屏 OCR 为约 4.09 / 4.11 秒。该数值仅用于本机同路径对比，不作为多机型性能承诺。
+
+### 几何与兼容性检查
+
+- 新区域仅使用截图宽高比例；未新增固定 Android px、dp 尺寸、坐标点击点或设备相关手势时长。
+- 已登记但尚未实施的“点赞 + 收藏双锚点插值”视觉回退，必须另起独立验证轮，并在当前时序优化结束后才可开始。
+
+### 交接记录
+
+- [`2026-08-24-latency-optimization-round-1.md`](docs/2026-08-24-latency-optimization-round-1.md)
+- [`2026-08-24-p0-comment-next-video-and-transition-latency.md`](docs/2026-08-24-p0-comment-next-video-and-transition-latency.md)
+
+---
+
+## [未发布] 2026-08-24 —— P0 评论入口半透明图标受限视觉回退
+
+### 修改内容
+
+- 将操作者提供的评论气泡 PNG 作为应用资产；仅为 `comment_next_video_rail` 的已有私有截图增加 Alpha 感知的本地匹配。
+- 匹配不比较固定白色 RGB，而是校验气泡前景与三个透明孔位的相对亮暗关系；候选尺寸与搜索区域均使用截图/屏幕比例。
+- 视觉候选必须连续两帧在归一化位置和尺寸上稳定，随后仍需 `HOME/UNKNOWN` 视频页确认与既有评论面板后验，才允许作为节点/OCR 均不可用时的最后坐标回退。
+- 评论区恢复仍只接受无障碍节点，明确拒绝视觉和 OCR 坐标回退。
+
+### 已验证项
+
+- JVM 用例覆盖首帧拒绝、双帧稳定、已确认右侧模板边界及恢复路径拒绝视觉回退；`git diff --check && ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` 通过。
+- 使用真机保存的 1080 × 2412 视频截图离线校准：评论气泡被唯一保留，心形、收藏和分享未通过三个孔位的相对对比。
+- **真机 OnePlus NE2210 / b33aa309 / Android 16**：早期启动门样本曾在 `UNKNOWN` 安全暂停。后续集成回归的 `designer × 3 × 1` 已完整完成；第 2、3 视频使用 OCR 几何回退打开评论面板，评论模板仅作为首帧候选而未单独形成点击证据。该结果证明联合入口链路可闭环，不单独宣告模板回退或多机型回归通过。
+
+### 几何与兼容性检查
+
+- 未新增固定 Android px、固定点击点或设备密度阈值；右侧区域、候选大小、坐标映射和双帧稳定均为屏幕比例。
+- Alpha/亮度/置信度与采样数量是图像特征参数，不是 Android 布局尺寸；完整多分辨率真机回归仍是通用模板匹配发布前置条件。
+
+### 交接记录
+
+- [`2026-08-24-p0-comment-next-video-and-transition-latency.md`](docs/2026-08-24-p0-comment-next-video-and-transition-latency.md)
+
+---
+
 ## [未发布] 2026-08-24 —— M8-E2 执行限额、远程任务授权与操作节流
 
 ### 修改内容
