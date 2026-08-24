@@ -32,8 +32,7 @@ import androidx.compose.material.icons.filled.ListAlt
 import androidx.compose.material.icons.filled.Business
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Send
-import androidx.compose.material.icons.filled.History
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.CheckCircle
@@ -164,6 +163,7 @@ import com.example.douyinautomation.ui.theme.AutomationWarningSurface
 private enum class HomeSection {
     HOME,
     TODO,
+    MY,
     RECORDS,
     SETTINGS,
     DIAGNOSTICS,
@@ -236,40 +236,49 @@ fun AppHomeScreen(
     }
 
     if (selectedSection == HomeSection.DIAGNOSTICS) {
-        DiagnosticsScreen(onBack = { section = HomeSection.SETTINGS.name })
+        DiagnosticsScreen(onBack = { section = HomeSection.MY.name })
         return
     }
 
     Scaffold(
         containerColor = AutomationPage,
         topBar = {
-            if (showCreateTask || showCommentTask || selectedSection == HomeSection.RECORDS || selectedSection == HomeSection.SETTINGS || selectedSection == HomeSection.DIAGNOSTICS) {
+            if (showCreateTask || showCommentTask || selectedSection == HomeSection.MY || selectedSection == HomeSection.RECORDS || selectedSection == HomeSection.SETTINGS || selectedSection == HomeSection.DIAGNOSTICS) {
                 TopAppBar(
                 title = {
-                    Column {
+                    if (selectedSection == HomeSection.MY && !showCreateTask && !showCommentTask) {
                         Text(
-                            when {
-                                showCommentTask -> "评论私信"
-                                showCreateTask -> "新建任务"
-                                selectedSection == HomeSection.TODO -> "待办"
-                                selectedSection == HomeSection.RECORDS -> "记录"
-                                selectedSection == HomeSection.SETTINGS -> "设置"
-                                else -> "诊断"
-                            },
+                            text = "我的",
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.SemiBold,
                         )
-                        Text(
-                            text = when (selectedSection) {
-                                HomeSection.HOME -> ""
-                                HomeSection.TODO -> "保存的任务按顺序执行"
-                                HomeSection.RECORDS -> "处理记录"
-                                HomeSection.SETTINGS -> "设置"
-                                HomeSection.DIAGNOSTICS -> "诊断"
-                            },
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                    } else {
+                        Column {
+                            Text(
+                                when {
+                                    showCommentTask -> "评论私信"
+                                    showCreateTask -> "新建任务"
+                                    selectedSection == HomeSection.TODO -> "待办"
+                                    selectedSection == HomeSection.RECORDS -> "记录"
+                                    selectedSection == HomeSection.SETTINGS -> "设置"
+                                    else -> "诊断"
+                                },
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                text = when (selectedSection) {
+                                    HomeSection.HOME -> ""
+                                    HomeSection.TODO -> "保存的任务按顺序执行"
+                                    HomeSection.MY -> ""
+                                    HomeSection.RECORDS -> "处理记录"
+                                    HomeSection.SETTINGS -> "设置"
+                                    HomeSection.DIAGNOSTICS -> "诊断"
+                                },
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 },
                 navigationIcon = {
@@ -279,6 +288,10 @@ fun AppHomeScreen(
                             showCommentTask = false
                         }) {
                             Icon(Icons.Default.ArrowBack, contentDescription = "返回首页")
+                        }
+                    } else if (selectedSection == HomeSection.RECORDS || selectedSection == HomeSection.SETTINGS) {
+                        IconButton(onClick = { section = HomeSection.MY.name }) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "返回我的")
                         }
                     }
                 },
@@ -305,16 +318,10 @@ fun AppHomeScreen(
                         label = { Text("待办") },
                     )
                     NavigationBarItem(
-                        selected = selectedSection == HomeSection.RECORDS,
-                        onClick = { section = HomeSection.RECORDS.name },
-                        icon = { Icon(Icons.Default.History, contentDescription = null) },
-                        label = { Text("记录") },
-                    )
-                    NavigationBarItem(
-                        selected = selectedSection == HomeSection.SETTINGS,
-                        onClick = { section = HomeSection.SETTINGS.name },
-                        icon = { Icon(Icons.Default.Settings, contentDescription = null) },
-                        label = { Text("设置") },
+                        selected = selectedSection == HomeSection.MY || selectedSection == HomeSection.RECORDS || selectedSection == HomeSection.SETTINGS,
+                        onClick = { section = HomeSection.MY.name },
+                        icon = { Icon(Icons.Default.Person, contentDescription = null) },
+                        label = { Text("我的") },
                     )
                 }
             }
@@ -380,6 +387,14 @@ fun AppHomeScreen(
                 onOpenCreateTask = { showCreateTask = true },
                 onOpenCommentTask = { showCommentTask = true },
                 onOpenTodo = { section = HomeSection.TODO.name },
+            )
+
+            HomeSection.MY -> MyPage(
+                padding = padding,
+                onOpenRecords = { section = HomeSection.RECORDS.name },
+                onOpenSettings = { section = HomeSection.SETTINGS.name },
+                onOpenDiagnostics = { section = HomeSection.DIAGNOSTICS.name },
+                onSignOut = { AuthStore.clearConfig(context) },
             )
 
             HomeSection.RECORDS -> TaskRecordsPage(
