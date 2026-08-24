@@ -332,54 +332,35 @@ class DouyinNavigationController(
             if (phase == AutomationPhase.WAITING_FOR_PROFILE) return
         }
 
+        when (SearchFlowRouter.route(phase, detection.kind)) {
+            SearchFlowRoute.OPEN_SEARCH -> {
+                openSearch(context)
+                return
+            }
+            SearchFlowRoute.RECOVER_INITIAL_SURFACE -> {
+                recoverInitialSurface(context, requireHome = true)
+                return
+            }
+            SearchFlowRoute.ENTER_KEYWORD -> {
+                enterKeyword(context)
+                return
+            }
+            SearchFlowRoute.REUSE_RESULTS_QUERY -> {
+                reuseSearchResultsQueryField(context, "search_entry_wait")
+                return
+            }
+            SearchFlowRoute.SELECT_USER_TAB -> {
+                selectUserTab(context)
+                return
+            }
+            SearchFlowRoute.SELECT_VISIBLE_USER -> {
+                selectVisibleUser(context)
+                return
+            }
+            null -> Unit
+        }
+
         when (phase) {
-            AutomationPhase.WAITING_FOR_HOME -> when (detection.kind) {
-                PageKind.HOME -> openSearch(context)
-                // Every comment-task launch is normalized through the Douyin home surface. The
-                // launcher may restore a stale search/profile/video activity; do not reuse its
-                // query or tap a control on that page because it can submit the wrong keyword.
-                PageKind.SEARCH_ENTRY -> recoverInitialSurface(context, requireHome = true)
-                // Starting Douyin does not always create a fresh activity. If the previous
-                // operator run left the app on a result page, the launch intent can restore that
-                // page (including its old query) instead of showing the home feed. The result
-                // page still exposes the real editable query field, so reuse that verified field
-                // rather than submitting the stale query or waiting for a search-entry event that
-                // will never arrive.
-                PageKind.SEARCH_RESULTS -> recoverInitialSurface(context, requireHome = true)
-                PageKind.USER_RESULTS,
-                PageKind.USER_PROFILE,
-                PageKind.DIRECT_MESSAGE
-                -> recoverInitialSurface(context, requireHome = true)
-                // The launcher restores the last Douyin activity instead of a fresh home feed
-                // on several builds.  A video-detail activity does not expose a dedicated page
-                // kind (and is therefore UNKNOWN), but it is still safe to leave with the
-                // bounded, semantic back-navigation recovery below.  Waiting for OCR here was
-                // both slow and ineffective: it cannot turn a video detail surface into HOME.
-                PageKind.UNKNOWN -> recoverInitialSurface(context, requireHome = true)
-                else -> Unit
-            }
-
-            AutomationPhase.WAITING_FOR_SEARCH_ENTRY -> when (detection.kind) {
-                PageKind.SEARCH_ENTRY -> enterKeyword(context)
-                // Some Douyin builds transition straight from the restored search surface to
-                // results while keeping the editable query field at the top. Treat this as an
-                // actionable search surface only when that node is present; never accept a
-                // visually similar result label as proof that the requested query was entered.
-                PageKind.SEARCH_RESULTS -> reuseSearchResultsQueryField(context, "search_entry_wait")
-                else -> Unit
-            }
-
-            AutomationPhase.WAITING_FOR_SEARCH_RESULTS -> when (detection.kind) {
-                PageKind.SEARCH_RESULTS -> selectUserTab(context)
-                PageKind.USER_RESULTS -> selectVisibleUser(context)
-                else -> Unit
-            }
-
-            AutomationPhase.WAITING_FOR_USER_RESULTS -> when (detection.kind) {
-                PageKind.USER_RESULTS -> selectVisibleUser(context)
-                else -> Unit
-            }
-
             AutomationPhase.WAITING_FOR_PROFILE -> when (detection.kind) {
                 PageKind.USER_PROFILE -> openPrivateMessage(context)
                 else -> Unit

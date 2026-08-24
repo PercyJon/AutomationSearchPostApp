@@ -4,6 +4,30 @@
 
 ---
 
+## [未发布] 2026-08-24 —— M7-C2a 搜索阶段路由拆分
+
+### 修改内容
+
+- 新增 [`SearchFlowRouter.kt`](app/src/main/java/com/example/douyinautomation/automation/SearchFlowRouter.kt)，将首页、搜索入口、搜索结果与用户结果四个等待阶段的“页面类型 → 既有下一步”收敛为无副作用路由。
+- [`DouyinNavigationController.kt`](app/src/main/java/com/example/douyinautomation/automation/DouyinNavigationController.kt) 继续执行原有搜索、恢复、关键词录入、用户标签和用户行方法；不移动节点/OCR/手势/超时/私信动作。
+
+### 已验证项
+
+- 新增 `SearchFlowRouterTest`，覆盖首页受限恢复、搜索入口、搜索结果、用户结果和无关页面。
+- 自动化验证：`./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` 与 `git diff --check` 均通过。
+- **真机 OnePlus NE2210 / b33aa309**：更新后服务 Bound/Enabled、Crashed 为空；停止态没有任务、恢复、搜索动作、页面点击、滑动、空白探测或消息发送。
+
+### 几何与兼容性检查
+
+- 未新增 Android 几何尺寸、固定 px、坐标或手势；无需新增 dp 归一化逻辑。
+- 节点优先、OCR 辅助、几何校验、页面确认和消息安全门保持不变。
+
+### 交接记录
+
+- [`2026-08-24-m7-c2-search-flow-router.md`](docs/2026-08-24-m7-c2-search-flow-router.md)
+
+---
+
 ## [未发布] 2026-08-24 —— M7-C1 跨流程调参收敛完成
 
 ### 修改内容
