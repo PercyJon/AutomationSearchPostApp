@@ -4,6 +4,30 @@
 
 ---
 
+## [未发布] 2026-08-24 —— M7-C3 统一显示名称解析器
+
+### 修改内容
+
+- 新增 `DisplayNameResolver` 作为用户主页和私信页显示名称的唯一控制器入口：统一页面表面委托、OCR 门控、无障碍优先的来源仲裁与主页二次一致确认。
+- `DouyinNavigationController` 不再直接依赖 `ProfileDisplayNameResolver`、`DirectMessageDisplayNameResolver` 或自行实现主页名称确认；页面级候选提取、OCR 区域、节点/几何过滤、记录字段、点击、手势、导航和消息发送均未改变。
+
+### 已验证项
+
+- 新增 `DisplayNameResolverTest`；主页、私信、策略的既有名称解析测试同时通过。
+- `./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` 与 `git diff --check` 均通过。
+- **真机 OnePlus NE2210 / b33aa309 / Android 16**：新包安装后无障碍服务可绑定、无崩溃。发现设备中有历史恢复状态，已在任何自动化动作前停止服务；未点击抖音、未输入或发送消息，未以历史任务伪造 C3 行为验证。
+
+### 几何与兼容性检查
+
+- 未新增或修改 Android 几何尺寸、固定 px、坐标或手势时长；无需新增 dp 归一化逻辑。
+- 节点优先、OCR→几何验证→页面确认、头像排除、风险暂停和空白消息安全门保持不变。
+
+### 交接记录
+
+- [`2026-08-24-m7-c3-display-name-resolver.md`](docs/2026-08-24-m7-c3-display-name-resolver.md)
+
+---
+
 ## [未发布] 2026-08-24 —— 评论搜索恢复与悬浮窗真机回归
 
 ### 修改内容

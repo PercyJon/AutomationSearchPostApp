@@ -2971,14 +2971,34 @@ class DouyinNavigationController(
     private suspend fun enrichCurrentUserDisplayName(context: ScreenContext) {
         val identityFingerprint = currentUserIdentityFingerprint ?: return
         val listName = currentUserDisplayName
-        val nodeCandidate = ProfileDisplayNameResolver.fromAccessibility(context, listName)
-        val confirmedNodeName = nodeCandidate?.let {
-            confirmProfileNodeName(it, listName)
+        val nodeCandidate = DisplayNameResolver.fromAccessibility(
+            surface = DisplayNameResolver.Surface.PROFILE,
+            context = context,
+            previousName = listName,
+        )
+        val confirmedNodeName = nodeCandidate?.let { firstCandidate ->
+            DisplayNameResolver.confirmProfileAccessibility(
+                firstCandidate = firstCandidate,
+                confirmationAttempts = TuningConstants.NavigationFlow.PROFILE_NAME_CONFIRM_ATTEMPTS,
+                awaitNextConfirmation = {
+                    delay(TuningConstants.NavigationFlow.PROFILE_NAME_CONFIRM_INTERVAL_MS)
+                },
+                nextCandidate = { previousCandidate ->
+                    currentWindowContext()?.let { liveContext ->
+                        DisplayNameResolver.fromAccessibility(
+                            surface = DisplayNameResolver.Surface.PROFILE,
+                            context = liveContext,
+                            previousName = previousCandidate,
+                        )
+                    }
+                },
+            )
         }
-        if (confirmedNodeName != null) {
-            currentUserDisplayName = confirmedNodeName
-            currentUserDisplayNameSource = UserResultIdentity.Source.ACCESSIBILITY
-            AutomationStore.updateCurrentUserDisplayName(identityFingerprint, confirmedNodeName)
+        val nodeResolution = DisplayNameResolver.arbitrate(confirmedNodeName, null)
+        if (nodeResolution != null) {
+            currentUserDisplayName = nodeResolution.value
+            currentUserDisplayNameSource = nodeResolution.source
+            AutomationStore.updateCurrentUserDisplayName(identityFingerprint, nodeResolution.value)
             logger.info(
                 "profile_display_name_resolved",
                 attributes = mapOf(
@@ -2990,10 +3010,22 @@ class DouyinNavigationController(
             return
         }
 
+        if (nodeCandidate != null) {
+            logger.warn(
+                "profile_display_name_unstable",
+                message = "The profile title changed between accessibility snapshots; OCR fallback will be considered",
+                attributes = mapOf(
+                    "had_previous_name" to !listName.isNullOrBlank(),
+                    "identity_fingerprint_prefix" to UserIdentityFingerprint.logPrefix(currentUserIdentityFingerprint),
+                ),
+            )
+        }
+
         // OCR is intentionally limited to uncertain rows. Accessibility-backed names are not
         // rescanned unless the profile node was unstable; OCR-backed rows always receive one
         // profile-header pass so a list-level glyph error cannot be persisted unchanged.
-        val shouldUseProfileOcr = DisplayNameResolutionPolicy.shouldUseProfileOcr(
+        val shouldUseProfileOcr = DisplayNameResolver.shouldUseOcr(
+            surface = DisplayNameResolver.Surface.PROFILE,
             hasOcrEngine = ocr != null,
             currentSource = currentUserDisplayNameSource,
             listName = listName,
@@ -3006,10 +3038,17 @@ class DouyinNavigationController(
             tag = "profile_header_identity",
             region = OcrRegion.PROFILE_HEADER,
         ) ?: return
-        val ocrName = ProfileDisplayNameResolver.fromOcr(enriched, currentUserDisplayName) ?: return
-        currentUserDisplayName = ocrName
-        currentUserDisplayNameSource = UserResultIdentity.Source.OCR
-        AutomationStore.updateCurrentUserDisplayName(identityFingerprint, ocrName)
+        val ocrResolution = DisplayNameResolver.arbitrate(
+            accessibilityCandidate = null,
+            ocrCandidate = DisplayNameResolver.fromOcr(
+                surface = DisplayNameResolver.Surface.PROFILE,
+                context = enriched,
+                previousName = currentUserDisplayName,
+            ),
+        ) ?: return
+        currentUserDisplayName = ocrResolution.value
+        currentUserDisplayNameSource = ocrResolution.source
+        AutomationStore.updateCurrentUserDisplayName(identityFingerprint, ocrResolution.value)
         logger.info(
             "profile_display_name_resolved",
             attributes = mapOf(
@@ -3029,14 +3068,23 @@ class DouyinNavigationController(
     private suspend fun enrichCurrentUserDisplayNameFromDirectMessage(context: ScreenContext?) {
         val identityFingerprint = currentUserIdentityFingerprint ?: return
         var directContext = context ?: currentWindowContext() ?: return
-        val nodeName = DirectMessageDisplayNameResolver.fromAccessibility(
-            directContext,
-            currentUserDisplayName,
+        val nodeName = DisplayNameResolver.fromAccessibility(
+            surface = DisplayNameResolver.Surface.DIRECT_MESSAGE,
+            context = directContext,
+            previousName = currentUserDisplayName,
         )
-        if (nodeName != null) {
-            currentUserDisplayName = nodeName
-            currentUserDisplayNameSource = UserResultIdentity.Source.ACCESSIBILITY
-            AutomationStore.updateCurrentUserDisplayName(identityFingerprint, nodeName, PageKind.DIRECT_MESSAGE)
+        val nodeResolution = DisplayNameResolver.arbitrate(
+            accessibilityCandidate = nodeName,
+            ocrCandidate = null,
+        )
+        if (nodeResolution != null) {
+            currentUserDisplayName = nodeResolution.value
+            currentUserDisplayNameSource = nodeResolution.source
+            AutomationStore.updateCurrentUserDisplayName(
+                identityFingerprint,
+                nodeResolution.value,
+                PageKind.DIRECT_MESSAGE,
+            )
             logger.info(
                 "direct_message_display_name_resolved",
                 attributes = mapOf(
@@ -3047,9 +3095,12 @@ class DouyinNavigationController(
             return
         }
 
-        if (!DisplayNameResolutionPolicy.shouldUseDirectMessageOcr(
+        if (!DisplayNameResolver.shouldUseOcr(
+                surface = DisplayNameResolver.Surface.DIRECT_MESSAGE,
                 hasOcrEngine = ocr != null,
-                hasAccessibilityCandidate = false,
+                currentSource = currentUserDisplayNameSource,
+                listName = currentUserDisplayName,
+                hasAccessibilityCandidate = nodeName != null,
             )
         ) return
         directContext = captureContextWithOcr(
@@ -3057,13 +3108,21 @@ class DouyinNavigationController(
             tag = "direct_message_identity",
             region = OcrRegion.PROFILE_HEADER,
         ) ?: directContext
-        val ocrName = DirectMessageDisplayNameResolver.fromOcr(
-            directContext,
-            currentUserDisplayName,
+        val ocrResolution = DisplayNameResolver.arbitrate(
+            accessibilityCandidate = null,
+            ocrCandidate = DisplayNameResolver.fromOcr(
+                surface = DisplayNameResolver.Surface.DIRECT_MESSAGE,
+                context = directContext,
+                previousName = currentUserDisplayName,
+            ),
         ) ?: return
-        currentUserDisplayName = ocrName
-        currentUserDisplayNameSource = UserResultIdentity.Source.OCR
-        AutomationStore.updateCurrentUserDisplayName(identityFingerprint, ocrName, PageKind.DIRECT_MESSAGE)
+        currentUserDisplayName = ocrResolution.value
+        currentUserDisplayNameSource = ocrResolution.source
+        AutomationStore.updateCurrentUserDisplayName(
+            identityFingerprint,
+            ocrResolution.value,
+            PageKind.DIRECT_MESSAGE,
+        )
         logger.info(
             "direct_message_display_name_resolved",
             attributes = mapOf(
@@ -3071,38 +3130,6 @@ class DouyinNavigationController(
                 "identity_fingerprint_prefix" to UserIdentityFingerprint.logPrefix(identityFingerprint),
             ),
         )
-    }
-
-    /**
-     * A profile header can briefly expose the previous account while the page animation settles.
-     * Confirm the same semantic title in two consecutive trees before persisting it.
-     */
-    private suspend fun confirmProfileNodeName(
-        firstCandidate: String,
-        previousName: String?,
-    ): String? {
-        var candidate = firstCandidate
-        repeat(TuningConstants.NavigationFlow.PROFILE_NAME_CONFIRM_ATTEMPTS - 1) {
-            delay(TuningConstants.NavigationFlow.PROFILE_NAME_CONFIRM_INTERVAL_MS)
-            // A second inspection must come from a fresh root; reusing the initial snapshot
-            // would make the confirmation meaningless during a transient profile animation.
-            val liveContext = currentWindowContext() ?: return null
-            val next = ProfileDisplayNameResolver.fromAccessibility(liveContext, candidate)
-                ?: return null
-            if (ProfileDisplayNameResolver.equivalent(candidate, next)) {
-                return next
-            }
-            candidate = next
-        }
-        logger.warn(
-            "profile_display_name_unstable",
-            message = "The profile title changed between accessibility snapshots; OCR fallback will be considered",
-            attributes = mapOf(
-                "had_previous_name" to !previousName.isNullOrBlank(),
-                "identity_fingerprint_prefix" to UserIdentityFingerprint.logPrefix(currentUserIdentityFingerprint),
-            ),
-        )
-        return null
     }
 
     private suspend fun openPrivateMessage(context: ScreenContext) {
