@@ -44,6 +44,7 @@ class DouyinAccessibilityService : AccessibilityService() {
     private var cachedOcrContextSignature: String? = null
     private var cachedOcrBlocks: List<OcrTextBlock> = emptyList()
     private var cachedOcrAtMillis: Long = 0L
+    private var activeNodeTreeTruncationReason: NodeTreeTruncationReason? = null
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -138,7 +139,9 @@ class DouyinAccessibilityService : AccessibilityService() {
         serviceScope.launch(Dispatchers.Default) {
             inspectionMutex.withLock {
                 try {
-                    val context = inspector.inspect(root)
+                    val inspection = inspector.inspectWithMetadata(root)
+                    reportNodeTreeTruncation(inspection.truncation)
+                    val context = inspection.context
                     val augmentedContext = augmentUnknownPageWithOcr(context)
                     val detection = detector.detect(augmentedContext)
                     // Include OCR in the deduplication key. A node-only UNKNOWN snapshot may be
@@ -181,6 +184,26 @@ class DouyinAccessibilityService : AccessibilityService() {
                 }
             }
         }
+    }
+
+    private fun reportNodeTreeTruncation(truncation: NodeTreeTruncation?) {
+        val currentReason = truncation?.reason
+        if (
+            NodeTreeTruncationWarningPolicy.shouldWarn(
+                previousReason = activeNodeTreeTruncationReason,
+                currentReason = currentReason,
+            )
+        ) {
+            AutomationStore.logger.warn(
+                "node_tree_truncated",
+                message = "Accessibility tree traversal reached a bounded limit; retaining existing safety gates",
+                attributes = mapOf(
+                    "reason" to currentReason?.name,
+                    "captured_node_count" to truncation?.capturedNodeCount,
+                ),
+            )
+        }
+        activeNodeTreeTruncationReason = currentReason
     }
 
     /**

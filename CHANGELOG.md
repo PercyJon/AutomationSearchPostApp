@@ -4,6 +4,30 @@
 
 ---
 
+## [未发布] 2026-08-24 —— M6-A3 节点树截断可见告警
+
+### 修改内容
+
+- [`NodeTreeInspector.kt`](app/src/main/java/com/example/douyinautomation/automation/NodeTreeInspector.kt) 新增带元数据的检查结果：在既有深度、节点数或时间预算停止时保留截断原因和已收集节点数；原 `inspect()` 的 `ScreenContext` 契约、节点顺序和上限不变。
+- [`DouyinAccessibilityService.kt`](app/src/main/java/com/example/douyinautomation/automation/DouyinAccessibilityService.kt) 仅在一次连续截断的首次记录 `node_tree_truncated` 告警；完整快照会重新开启告警资格，避免事件风暴污染诊断缓冲区。
+
+### 已验证项
+
+- 新增 `NodeTreeTraversalBudgetPolicyTest`，覆盖深度/节点数/截止时间的既有停止顺序，以及连续截断去重告警。
+- 自动化验证：`./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` 与 `git diff --check` 均通过。
+- **真机 OnePlus NE2210 / b33aa309**：更新 APK 后无障碍服务为 Bound/Enabled、Crashed 为空，未出现节点读取错误。当前抖音用户页没有达到遍历上限，因而没有生成截断告警；未启动任务、恢复检查点、执行页面动作或触发消息探测。
+
+### 几何与兼容性检查
+
+- 未新增 Android 几何尺寸、固定 px、坐标、点击或手势；既有 400 节点/32 层/500ms 遍历预算不变。
+- 截断元数据只用于诊断，不能放宽页面识别、OCR、节点选择或点击安全门。
+
+### 交接记录
+
+- [`2026-08-24-m6-node-tree-truncation-warning.md`](docs/2026-08-24-m6-node-tree-truncation-warning.md)
+
+---
+
 ## [未发布] 2026-08-24 —— M6-A1 手势时长设备适配
 
 ### 修改内容

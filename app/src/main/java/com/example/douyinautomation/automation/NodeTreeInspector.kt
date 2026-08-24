@@ -16,30 +16,55 @@ class NodeTreeInspector {
         screenSize: ScreenSize? = null,
         packageName: String? = root?.packageName?.toString(),
         capturedAtMillis: Long = System.currentTimeMillis(),
-    ): ScreenContext {
+    ): ScreenContext = inspectWithMetadata(
+        root = root,
+        screenSize = screenSize,
+        packageName = packageName,
+        capturedAtMillis = capturedAtMillis,
+    ).context
+
+    /**
+     * Returns the same immutable context as [inspect], plus bounded-traversal metadata for
+     * diagnostics. The metadata must never be used to relax a page or click safety decision.
+     */
+    fun inspectWithMetadata(
+        root: AccessibilityNodeInfo?,
+        screenSize: ScreenSize? = null,
+        packageName: String? = root?.packageName?.toString(),
+        capturedAtMillis: Long = System.currentTimeMillis(),
+    ): NodeTreeInspection {
         if (root == null) {
-            return ScreenContext(
-                screenSize = screenSize ?: ScreenSize(1, 1),
-                packageName = packageName,
-                capturedAtMillis = capturedAtMillis,
+            return NodeTreeInspection(
+                context = ScreenContext(
+                    screenSize = screenSize ?: ScreenSize(1, 1),
+                    packageName = packageName,
+                    capturedAtMillis = capturedAtMillis,
+                ),
             )
         }
 
         val resolvedScreenSize = screenSize ?: estimateScreenSize(root)
         val snapshots = mutableListOf<NodeSnapshot>()
         val deadlineNanos = System.nanoTime() + MAX_INSPECTION_NANOS
+        val traversal = TraversalState()
         walk(
             node = root,
             path = emptyList(),
             depth = 0,
             destination = snapshots,
             deadlineNanos = deadlineNanos,
+            traversal = traversal,
         )
-        return ScreenContext(
-            screenSize = resolvedScreenSize,
-            packageName = packageName,
-            nodes = snapshots,
-            capturedAtMillis = capturedAtMillis,
+        return NodeTreeInspection(
+            context = ScreenContext(
+                screenSize = resolvedScreenSize,
+                packageName = packageName,
+                nodes = snapshots,
+                capturedAtMillis = capturedAtMillis,
+            ),
+            truncation = traversal.reason?.let { reason ->
+                NodeTreeTruncation(reason = reason, capturedNodeCount = snapshots.size)
+            },
         )
     }
 
@@ -84,22 +109,26 @@ class NodeTreeInspector {
         depth: Int,
         destination: MutableList<NodeSnapshot>,
         deadlineNanos: Long,
+        traversal: TraversalState,
     ) {
         // Douyin can expose hundreds of transient/custom-rendered nodes. A bounded snapshot keeps
         // the accessibility callback responsive; OCR remains the fallback for labels outside the
         // bounded tree. The traversal still includes the shallow navigation nodes first.
-        if (
-            depth > MAX_DEPTH ||
-            destination.size >= MAX_NODES ||
-            System.nanoTime() >= deadlineNanos
-        ) return
+        NodeTreeTraversalBudgetPolicy.stopReason(
+            depth = depth,
+            capturedNodeCount = destination.size,
+            maximumDepth = MAX_DEPTH,
+            maximumNodeCount = MAX_NODES,
+            nowNanos = System.nanoTime(),
+            deadlineNanos = deadlineNanos,
+        )?.let { reason ->
+            traversal.record(reason)
+            return
+        }
         destination += node.toSnapshot(path = path, depth = depth)
         var childIndex = 0
-        while (
-            childIndex < node.childCount &&
-            destination.size < MAX_NODES &&
-            System.nanoTime() < deadlineNanos
-        ) {
+        while (childIndex < node.childCount) {
+            if (traversal.reason != null) return
             // OEM/custom-rendered views can report a childCount that includes a transient null
             // slot.  Breaking here silently discarded all following siblings (in Douyin this
             // can be the entire RecyclerView of user rows), leaving the page detector with only
@@ -111,12 +140,24 @@ class NodeTreeInspector {
                 continue
             }
             try {
+                NodeTreeTraversalBudgetPolicy.stopReason(
+                    depth = depth + 1,
+                    capturedNodeCount = destination.size,
+                    maximumDepth = MAX_DEPTH,
+                    maximumNodeCount = MAX_NODES,
+                    nowNanos = System.nanoTime(),
+                    deadlineNanos = deadlineNanos,
+                )?.let { reason ->
+                    traversal.record(reason)
+                    return
+                }
                 walk(
                     node = child,
                     path = path + childIndex,
                     depth = depth + 1,
                     destination = destination,
                     deadlineNanos = deadlineNanos,
+                    traversal = traversal,
                 )
             } finally {
                 // Child instances are owned by this traversal. The root remains caller-owned.
@@ -167,4 +208,53 @@ class NodeTreeInspector {
         const val MAX_DEPTH = 32
         const val MAX_INSPECTION_NANOS = 500_000_000L
     }
+
+    private class TraversalState {
+        var reason: NodeTreeTruncationReason? = null
+            private set
+
+        fun record(reason: NodeTreeTruncationReason) {
+            if (this.reason == null) this.reason = reason
+        }
+    }
+}
+
+data class NodeTreeInspection(
+    val context: ScreenContext,
+    val truncation: NodeTreeTruncation? = null,
+)
+
+data class NodeTreeTruncation(
+    val reason: NodeTreeTruncationReason,
+    val capturedNodeCount: Int,
+)
+
+enum class NodeTreeTruncationReason {
+    MAXIMUM_DEPTH,
+    MAXIMUM_NODE_COUNT,
+    INSPECTION_DEADLINE,
+}
+
+internal object NodeTreeTraversalBudgetPolicy {
+    fun stopReason(
+        depth: Int,
+        capturedNodeCount: Int,
+        maximumDepth: Int,
+        maximumNodeCount: Int,
+        nowNanos: Long,
+        deadlineNanos: Long,
+    ): NodeTreeTruncationReason? = when {
+        depth > maximumDepth -> NodeTreeTruncationReason.MAXIMUM_DEPTH
+        capturedNodeCount >= maximumNodeCount -> NodeTreeTruncationReason.MAXIMUM_NODE_COUNT
+        nowNanos >= deadlineNanos -> NodeTreeTruncationReason.INSPECTION_DEADLINE
+        else -> null
+    }
+}
+
+/** Reports only the start of a continuous truncation interval, avoiding diagnostic log floods. */
+internal object NodeTreeTruncationWarningPolicy {
+    fun shouldWarn(
+        previousReason: NodeTreeTruncationReason?,
+        currentReason: NodeTreeTruncationReason?,
+    ): Boolean = previousReason == null && currentReason != null
 }
