@@ -294,6 +294,26 @@ object AuthStore {
         forceRefresh: Boolean = false,
     ): SearchPresetCatalog = searchPresetRepository(context).load(forceRefresh)
 
+    /** Remote-first private-message entry rules with private local cache and safe built-in fallback. */
+    fun privateMessageEntryRuleRepository(context: android.content.Context): CachedPrivateMessageEntryRuleRepository {
+        initialize(context)
+        val config = secureStore?.read()
+        val remote = if (config?.isUsable() == true) {
+            AutomationHttpClient(config)
+        } else {
+            PrivateMessageEntryRuleRemoteSource { throw IllegalStateException("后端授权尚未配置") }
+        }
+        return CachedPrivateMessageEntryRuleRepository(
+            remote = remote,
+            cache = SharedPreferencesPrivateMessageEntryRuleCache(context),
+        )
+    }
+
+    suspend fun loadPrivateMessageEntryRuleCatalog(
+        context: android.content.Context,
+        forceRefresh: Boolean = false,
+    ): PrivateMessageEntryRuleCatalog = privateMessageEntryRuleRepository(context).load(forceRefresh)
+
     suspend fun loadRegionCatalog(context: android.content.Context): RegionCatalog {
         initialize(context)
         val config = secureStore?.read()?.takeIf(AuthConfig::isUsable)

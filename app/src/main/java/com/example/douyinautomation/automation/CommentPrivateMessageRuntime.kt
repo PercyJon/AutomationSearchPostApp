@@ -1561,10 +1561,11 @@ class CommentPrivateMessageRuntime(
         val selection = selector.select(context, DouyinSelectors.privateMessageEntry)
         val node = selection.node ?: return selection
         val searchable = (node.searchableText() + selection.reasons).joinToString(" ").lowercase()
-        val unsafe = listOf("客服", "咨询", "购物车", "商品").any(searchable::contains)
-        val semanticMessage = listOf("发私信", "私信", "message", "direct message", "paper", "plane")
-            .any(searchable::contains)
-        return if (unsafe || !semanticMessage) {
+        val verdict = PrivateMessageEntryRuleStore.evaluate(
+            route = PrivateMessageEntryRoute.SELECTOR,
+            searchableText = searchable,
+        )
+        return if (!verdict.isAllowed) {
             selection.copy(
                 node = null,
                 score = 0f,

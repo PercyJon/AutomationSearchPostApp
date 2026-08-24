@@ -175,7 +175,8 @@
   - 2026-08-24：四阶段均已具备纯路由和动作编排边界；共享的页面读取、节点/OCR/几何校验、手势、检查点与任务安全策略继续留在控制器，未复制或重写稳定链路。详见 [`2026-08-24-m7-c2-flow-orchestration-completion.md`](2026-08-24-m7-c2-flow-orchestration-completion.md)。
 - [x] **C3**：名称解析器统一（`DirectMessageDisplayNameResolver` / `enrichCurrentUserDisplayName*` / `confirmProfileNodeName`）为单一 `DisplayNameResolver`，按来源优先级仲裁。
   - 2026-08-24：控制器现只通过 `DisplayNameResolver` 调用页面候选解析、主页二次确认、OCR 门控与来源仲裁；页面级候选/几何规则不变，无障碍候选始终优先于 OCR。详见 [`2026-08-24-m7-c3-display-name-resolver.md`](2026-08-24-m7-c3-display-name-resolver.md)。
-- [ ] **C4**：启发式黑/白名单文案（客服/咨询/购物车等）外置为可远程下发 JSON 配置。
+- [x] **C4**：启发式黑/白名单文案（客服/咨询/购物车等）外置为可远程下发 JSON 配置。
+  - 2026-08-24：B 端、评论与图标兜底共用版本化规则目录；HTTPS JSON 远程优先、私有缓存和内置安全基线回退。远程仅可收紧规则，不能扩大自动点击范围。详见 [`2026-08-24-m7-c4-private-message-entry-rules.md`](2026-08-24-m7-c4-private-message-entry-rules.md)。
 
 **验收**：重构后 `:app:testDebugUnitTest` 全绿；控制器拆分不改变行为（行为等价由既有测试兜底）。
 

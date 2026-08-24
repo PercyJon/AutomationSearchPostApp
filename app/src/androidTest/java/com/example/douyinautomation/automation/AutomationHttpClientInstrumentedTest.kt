@@ -32,6 +32,28 @@ class AutomationHttpClientInstrumentedTest {
         assertTrue(connection.requestedUrl.endsWith("/api/v1/automation/mobile/search-presets"))
     }
 
+    @Test
+    fun privateMessageEntryRulesEnvelopeIsDecodedAndBearerHeaderIsApplied() = runBlocking {
+        val connection = StubConnection(
+            URL("https://api.example.test/api/v1/automation/mobile/private-message-entry-rules"),
+            """
+            {"success":true,"data":{"version":"2026-08-24","updated_at":"2026-08-24 10:00:00","blocked_terms":["客服","咨询","购物车","商城"],"selector_allowed_terms":["发私信","私信"],"icon_allowed_terms":["发私信","私信","im_"]}}
+            """.trimIndent(),
+        )
+        val client = AutomationHttpClient(
+            config = AuthConfig("https://api.example.test", "secret-token", "device"),
+            connectionFactory = { connection },
+        )
+
+        val catalog = client.fetchRules()
+
+        assertEquals("2026-08-24", catalog.version)
+        assertTrue("商城" in catalog.blockedTerms)
+        assertEquals(listOf("发私信", "私信"), catalog.selectorAllowedTerms)
+        assertEquals("Bearer secret-token", connection.requestProperties["Authorization"])
+        assertTrue(connection.requestedUrl.endsWith("/api/v1/automation/mobile/private-message-entry-rules"))
+    }
+
     private class StubConnection(
         url: URL,
         private val responseBody: String,

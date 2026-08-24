@@ -4,6 +4,32 @@
 
 ---
 
+## [未发布] 2026-08-24 —— M7-C4 私信入口安全规则远程配置
+
+### 修改内容
+
+- 将 B 端私信、评论私信和主页纸飞机兜底中重复的私信语义/风险文案判定收敛到 `PrivateMessageEntryRulePolicy`。
+- 新增 HTTPS JSON 规则目录、私有缓存和服务绑定时的异步刷新：`/automation/mobile/private-message-entry-rules`。未配置授权、网络或 JSON 失败时使用缓存或内置安全基线。
+- 远程规则只能新增拒绝词或收缩既有允许词；内置拒绝词无法移除，远程新增允许词不会单独成为新的自动点击依据。
+
+### 已验证项
+
+- 新增规则策略和缓存回退 JVM 测试；既有纸飞机兜底测试通过。
+- 新增 Android HTTP JSON 契约测试并完成 `:app:compileDebugAndroidTestKotlin`。
+- `./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:compileDebugAndroidTestKotlin` 与 `git diff --check` 均通过。
+- **真机 OnePlus NE2210 / b33aa309 / Android 16**：Debug 包可安装并启动到首页，无障碍服务保持禁用、无崩溃；未启动任务、未操作抖音、未输入或发送消息。
+
+### 几何与兼容性检查
+
+- 未新增或修改 Android 几何尺寸、固定 px、坐标或手势时长；无需新增 dp 归一化逻辑。
+- 节点优先、OCR→几何验证→页面确认、头像排除、风险暂停和空白消息安全门保持不变。
+
+### 交接记录
+
+- [`2026-08-24-m7-c4-private-message-entry-rules.md`](docs/2026-08-24-m7-c4-private-message-entry-rules.md)
+
+---
+
 ## [未发布] 2026-08-24 —— M7-C3 统一显示名称解析器
 
 ### 修改内容

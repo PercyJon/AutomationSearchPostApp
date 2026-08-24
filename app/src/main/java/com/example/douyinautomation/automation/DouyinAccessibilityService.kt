@@ -78,6 +78,21 @@ class DouyinAccessibilityService : AccessibilityService() {
         }
         AutomationStore.markServiceConnected()
         logger.info("accessibility_service_connected", attributes = mapOf("target" to TargetAppLauncher.DOUYIN_PACKAGE))
+        serviceScope.launch(Dispatchers.IO) {
+            runCatching { PrivateMessageEntryRuleStore.refresh(this@DouyinAccessibilityService) }
+                .onSuccess { rules ->
+                    logger.info(
+                        "private_message_entry_rules_loaded",
+                        attributes = mapOf("version" to rules.version, "source" to rules.source.name),
+                    )
+                }
+                .onFailure {
+                    logger.warn(
+                        "private_message_entry_rules_load_failed",
+                        message = "Using the already-loaded private-message entry safety rules",
+                    )
+                }
+        }
         scheduleCheckpointResumeAfterRebind()
         ocrInitializationJob?.cancel()
         ocrInitializationJob = serviceScope.launch(Dispatchers.IO) {

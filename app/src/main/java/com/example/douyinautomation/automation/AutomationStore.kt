@@ -183,6 +183,7 @@ object AutomationStore {
     fun initialize(context: Context) {
         applicationContext = context.applicationContext
         AuthStore.initialize(context)
+        PrivateMessageEntryRuleStore.initialize(context)
         synchronized(recordLock) {
             if (recordPreferences == null) {
                 recordPreferences = context.applicationContext.getSharedPreferences(

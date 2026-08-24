@@ -34,7 +34,7 @@ class AutomationHttpClient(
     private val connectionFactory: (URL) -> HttpURLConnection = { url ->
         url.openConnection() as HttpURLConnection
     },
-) : HeartbeatGateway, SearchPresetRemoteSource, AutomationTaskGateway {
+) : HeartbeatGateway, SearchPresetRemoteSource, PrivateMessageEntryRuleRemoteSource, AutomationTaskGateway {
 
     override suspend fun verify(request: HeartbeatRequest): HeartbeatResponse = withContext(Dispatchers.IO) {
         val payload = execute(
@@ -70,6 +70,18 @@ class AutomationHttpClient(
             updatedAtMillis = parseTimestamp(payload.optNullableString("updated_at"))
                 ?: System.currentTimeMillis(),
             source = SearchPresetCatalog.Source.REMOTE,
+        )
+    }
+
+    override suspend fun fetchRules(): PrivateMessageEntryRuleCatalog = withContext(Dispatchers.IO) {
+        val payload = execute("/automation/mobile/private-message-entry-rules", "GET").asObject()
+        PrivateMessageEntryRuleCatalog(
+            version = payload.optString("version", "0"),
+            blockedTerms = payload.optJSONArray("blocked_terms").toStringList(),
+            selectorAllowedTerms = payload.optJSONArray("selector_allowed_terms").toStringList(),
+            iconAllowedTerms = payload.optJSONArray("icon_allowed_terms").toStringList(),
+            updatedAtMillis = parseTimestamp(payload.optNullableString("updated_at")),
+            source = PrivateMessageEntryRuleCatalog.Source.REMOTE,
         )
     }
 

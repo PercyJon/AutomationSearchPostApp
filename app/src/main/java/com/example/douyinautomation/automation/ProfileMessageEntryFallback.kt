@@ -35,9 +35,10 @@ object ProfileMessageEntryFallback {
 
     private fun isPaperPlaneSemantic(node: NodeSnapshot): Boolean {
         val text = node.searchableText().joinToString(" ").lowercase()
-        if (text.contains("客服") || text.contains("咨询") || text.contains("购物")) return false
-        return listOf("发私信", "私信", "message", "direct message", "paper", "plane", "im_")
-            .any { token -> text.contains(token) }
+        return PrivateMessageEntryRuleStore.evaluate(
+            route = PrivateMessageEntryRoute.ICON_FALLBACK,
+            searchableText = text,
+        ).isAllowed
     }
 
     fun normalizedPoint(screenSize: ScreenSize, followBounds: ScreenBounds?): NormalizedPoint {
