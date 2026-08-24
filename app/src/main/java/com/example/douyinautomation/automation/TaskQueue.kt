@@ -64,6 +64,9 @@ data class LocalTaskQueueSession(
 ) {
     init {
         require(tasks.isNotEmpty()) { "A local task queue must contain at least one task" }
+        require(tasks.size <= AutomationExecutionLimits.MAX_TASKS_PER_LOCAL_QUEUE) {
+            "A local task queue cannot contain more than ${AutomationExecutionLimits.MAX_TASKS_PER_LOCAL_QUEUE} tasks"
+        }
         require(activeTaskIndex in tasks.indices) { "Active queue task index is outside the queue" }
         require(tasks.all { LocalTaskQueuePolicy.typeOf(it) == queueType }) {
             "Every local queue task must match its queue type"
@@ -113,6 +116,7 @@ object LocalTaskQueuePolicy {
     }
 
     fun validate(tasks: List<TaskSnapshot>): LocalTaskQueueType? {
+        if (tasks.isEmpty() || tasks.size > AutomationExecutionLimits.MAX_TASKS_PER_LOCAL_QUEUE) return null
         val type = tasks.firstOrNull()?.let(::typeOf) ?: return null
         return type.takeIf { candidate -> tasks.all { typeOf(it) == candidate } }
     }

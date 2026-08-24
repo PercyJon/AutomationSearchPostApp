@@ -431,6 +431,25 @@ class DouyinNavigationController(
         remoteResume: RemoteTaskResume?,
         suspendedBeforeStart: Boolean,
     ) {
+        taskSnapshot?.let { snapshot ->
+            AutomationTaskLimitPolicy.taskValidationError(snapshot)?.let { reason ->
+                AutomationStore.publishFailure(reason)
+                logger.warn("task_start_rejected_limit", message = reason)
+                return
+            }
+            if (
+                TaskStartAuthorizationPolicy.decide(
+                    snapshot = snapshot,
+                    remoteResume = remoteResume,
+                    authorizedRemoteTaskIds = RemoteTaskAuthorizationStore.authorizedTaskIds(service),
+                ) == TaskStartAuthorization.REMOTE_NOT_AUTHORIZED
+            ) {
+                val reason = "远程任务 #${remoteResume?.taskId ?: snapshot.taskId} 未在本机授权任务 ID 清单中"
+                AutomationStore.publishFailure(reason)
+                logger.warn("remote_task_start_rejected_not_authorized", message = reason)
+                return
+            }
+        }
         val commentConfig = taskSnapshot?.commentConfig
             ?.takeIf { taskSnapshot.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE }
         if (taskSnapshot?.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE && commentConfig == null) {
@@ -568,6 +587,7 @@ class DouyinNavigationController(
                 // profile first. Bring the existing Douyin task back to the foreground before
                 // polling; otherwise currentWindowContext() only sees our own form and the
                 // comment runtime times out waiting for a profile that is still behind it.
+                gestures.awaitExternalActionSlot("target_app_launch")
                 when (val result = TargetAppLauncher.launch(service)) {
                     LaunchResult.Started -> {
                         phase = AutomationPhase.WAITING_FOR_PROFILE
@@ -592,6 +612,7 @@ class DouyinNavigationController(
             logger.info("comment_search_entry_using_profile_navigation")
         }
 
+        gestures.awaitExternalActionSlot("target_app_launch")
         when (val result = TargetAppLauncher.launch(service)) {
             LaunchResult.Started -> {
                 // Douyin may show a full-screen promotion immediately after cold start. Give
@@ -619,6 +640,11 @@ class DouyinNavigationController(
     private suspend fun startBatch(tasks: List<TaskSnapshot>) {
         if (taskActive) {
             logger.warn("start_batch_ignored_active")
+            return
+        }
+        if (tasks.size > AutomationExecutionLimits.MAX_TASKS_PER_LOCAL_QUEUE) {
+            AutomationStore.publishFailure("待办队列最多只能执行 ${AutomationExecutionLimits.MAX_TASKS_PER_LOCAL_QUEUE} 个任务")
+            logger.warn("task_batch_rejected", attributes = mapOf("task_count" to tasks.size, "reason" to "queue_limit"))
             return
         }
         val queueType = LocalTaskQueuePolicy.validate(tasks)
@@ -896,6 +922,22 @@ class DouyinNavigationController(
             logger.warn("saved_task_resume_ignored_active")
             return
         }
+        if (
+            TaskStartAuthorizationPolicy.decide(
+                snapshot = checkpoint.snapshot,
+                remoteResume = null,
+                authorizedRemoteTaskIds = RemoteTaskAuthorizationStore.authorizedTaskIds(service),
+            ) == TaskStartAuthorization.REMOTE_NOT_AUTHORIZED
+        ) {
+            AutomationStore.publishFailure("远程任务 #${checkpoint.snapshot.taskId} 未在本机授权任务 ID 清单中")
+            logger.warn("remote_task_resume_rejected_not_authorized")
+            return
+        }
+        AutomationTaskLimitPolicy.taskValidationError(checkpoint.snapshot)?.let { reason ->
+            AutomationStore.publishFailure(reason)
+            logger.warn("saved_task_resume_rejected_limit", message = reason)
+            return
+        }
         AutomationStore.getLocalTaskQueueSession()
             ?.takeIf { session ->
                 session.status == LocalTaskQueueStatus.RUNNING &&
@@ -1000,6 +1042,7 @@ class DouyinNavigationController(
             onScreenObserved(existingContext, existingDetection)
             return
         }
+        gestures.awaitExternalActionSlot("target_app_launch")
         when (val result = TargetAppLauncher.launch(service)) {
             LaunchResult.Started -> {
                 delay(TuningConstants.NavigationLifecycle.INITIAL_SCREEN_SETTLE_DELAY_MS)
@@ -1391,7 +1434,7 @@ class DouyinNavigationController(
                     return
                 }
                 initialBlindBackAttempts++
-                val backSucceeded = service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+                val backSucceeded = gestures.globalBack().succeeded
                 logger.warn(
                     "initial_context_missing_back",
                     message = "No Douyin node tree is available; issuing a bounded BACK to normalize the launch surface",
@@ -1450,7 +1493,7 @@ class DouyinNavigationController(
             // device drops one content-change callback during the transition.
             latestContext = null
             latestOcrContext = null
-            if (!service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)) {
+            if (!gestures.globalBack().succeeded) {
                 pause("无法从抖音当前页面返回到可搜索页面")
                 return
             }
@@ -1952,7 +1995,27 @@ class DouyinNavigationController(
                     skipFilteredUser(rowContext, rowMatch!!)
                     return
                 }
-                if (!isSearchTargetProfileCommentTask()) {
+                val isCommentTask = activeTaskSnapshot?.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE
+                if (!isCommentTask) {
+                    when (
+                        AutomationStore.recordUserTaskStarted(
+                            identityFingerprint = identityFingerprint,
+                            remoteUserKey = identity.key,
+                            displayName = identity.displayName,
+                            messageContent = currentTaskMessageContent(),
+                        )
+                    ) {
+                        DailyUserAdmission.ADMITTED -> Unit
+                        DailyUserAdmission.DAILY_UNIQUE_USER_LIMIT_REACHED -> {
+                            pause("今日已处理 ${AutomationExecutionLimits.MAX_DAILY_UNIQUE_USERS} 名不同用户，任务已暂停，明日可从检查点继续")
+                            return
+                        }
+
+                        DailyUserAdmission.NO_ACTIVE_TASK -> {
+                            failTaskWithoutManualHandoff("任务记录不可用，已停止继续处理用户")
+                            return
+                        }
+                    }
                     processedUserIdentities.add(identity.key)
                     processedUserIdentityRecords += identity
                     processedIdentityFingerprints.add(identityFingerprint)
@@ -1967,14 +2030,7 @@ class DouyinNavigationController(
                 currentUserIdentityFingerprint = identityFingerprint
                 currentUserDisplayName = identity.displayName
                 currentUserDisplayNameSource = identity.source
-                if (activeTaskSnapshot?.taskType != AutomationTaskType.COMMENT_PRIVATE_MESSAGE) {
-                    AutomationStore.recordUserTaskStarted(
-                        identityFingerprint = identityFingerprint,
-                        remoteUserKey = identity.key,
-                        displayName = identity.displayName,
-                        messageContent = currentTaskMessageContent(),
-                    )
-                } else {
+                if (isCommentTask) {
                     // P4-B reads the target profile's comment surface; it does not yet create a
                     // per-comment private-message record. Keep the profile runner's audit slot
                     // empty so an unfinished comment read cannot appear as a sent DM.
@@ -3484,6 +3540,7 @@ class DouyinNavigationController(
 
         var context = currentWindowContext()
         if (context == null || pageDetector.detect(context).kind != PageKind.DIRECT_MESSAGE) {
+            gestures.awaitExternalActionSlot("target_app_launch")
             when (val launch = TargetAppLauncher.launch(service)) {
                 LaunchResult.Started -> {
                     delay(TuningConstants.NavigationFlow.MESSAGE_TARGET_RESTORE_DELAY_MS)
@@ -3742,7 +3799,7 @@ class DouyinNavigationController(
                 resultsContext = currentContext
                 break
             }
-            if (!service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)) {
+            if (!gestures.globalBack().succeeded) {
                 failTaskWithoutManualHandoff("Could not return to user results after the blank-message probe")
                 return
             }
@@ -3919,7 +3976,7 @@ class DouyinNavigationController(
                 openSearch(context!!)
                 return true
             }
-            if (!service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)) {
+            if (!gestures.globalBack().succeeded) {
                 context = null
                 return@repeat
             }
@@ -3987,6 +4044,7 @@ class DouyinNavigationController(
 
         var context = currentWindowContext()
         if (context == null || pageDetector.detect(context).kind != PageKind.DIRECT_MESSAGE) {
+            gestures.awaitExternalActionSlot("target_app_launch")
             when (val launch = TargetAppLauncher.launch(service)) {
                 LaunchResult.Started -> {
                     delay(TuningConstants.NavigationFlow.MESSAGE_TARGET_RESTORE_DELAY_MS)
@@ -4261,7 +4319,7 @@ class DouyinNavigationController(
         currentUserDisplayName = null
         currentUserDisplayNameSource = null
 
-        if (!service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)) {
+        if (!gestures.globalBack().succeeded) {
             failTaskWithoutManualHandoff("Could not leave the unavailable user profile")
             return
         }
@@ -4355,7 +4413,7 @@ class DouyinNavigationController(
                 resultsContext = currentContext
                 break
             }
-            if (!service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)) {
+            if (!gestures.globalBack().succeeded) {
                 failTaskWithoutManualHandoff("Could not return to user results after a message-send failure")
                 return
             }
@@ -4592,10 +4650,8 @@ class DouyinNavigationController(
         val closeButton = LiveRoomSurfaceDetector.findCloseButton(context)
         val outcome = if (closeButton != null) {
             withLiveNode(closeButton) { node -> gestures.click(node, closeButton.bounds) }
-        } else if (service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)) {
-            ActionOutcome.success("global_back")
         } else {
-            ActionOutcome.failure("无法执行返回操作")
+            gestures.globalBack()
         }
         logger.info(
             "live_room_exited",

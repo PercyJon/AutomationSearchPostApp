@@ -141,6 +141,8 @@ object AutomationStore {
     private var lastRecordsOpenAtMillis: Long = 0L
     private var recordPreferences: SharedPreferences? = null
     private var allTaskRecords: List<UserTaskRecord> = emptyList()
+    /** Current-day opaque user reservations; separate from compacted operator-visible records. */
+    private var dailyUserReservations: Map<String, Long> = emptyMap()
     private var taskHistory: List<TaskHistoryEntry> = emptyList()
     private var currentTaskId: String? = null
     private var savedCheckpoint: TaskCheckpoint? = null
@@ -191,6 +193,24 @@ object AutomationStore {
                     Context.MODE_PRIVATE,
                 )
                 allTaskRecords = decodeRecords(recordPreferences?.getString(TASK_RECORDS_KEY, null))
+                val now = System.currentTimeMillis()
+                val persistedReservations = decodeDailyUserReservations(
+                    recordPreferences?.getString(DAILY_USER_RESERVATIONS_KEY, null),
+                )
+                val recordsFromToday = allTaskRecords
+                    .asSequence()
+                    .filter { it.startedAtMillis >= DailyUserLimitPolicy.startOfLocalDayMillis(now) }
+                    .mapNotNull { record ->
+                        record.identityFingerprint
+                            ?.takeIf(String::isNotBlank)
+                            ?.let { fingerprint -> fingerprint to record.startedAtMillis }
+                    }
+                    .toMap()
+                dailyUserReservations = DailyUserLimitPolicy.retainCurrentDay(
+                    reservations = persistedReservations + recordsFromToday,
+                    nowMillis = now,
+                )
+                persistDailyUserReservationsLocked()
                 taskHistory = decodeTaskHistory(recordPreferences?.getString(TASK_HISTORY_KEY, null))
                 savedCheckpoint = decodeCheckpoint(recordPreferences?.getString(TASK_CHECKPOINT_KEY, null))
                 localTaskQueueSession = decodeLocalTaskQueueSession(
@@ -731,34 +751,74 @@ object AutomationStore {
         remoteUserKey: String? = null,
         displayName: String? = null,
         messageContent: String? = null,
-    ) {
-        val taskId = synchronized(recordLock) { currentTaskId } ?: return
-        synchronized(recordLock) {
-            remoteUserKey?.takeIf(String::isNotBlank)?.let { remoteUserKeys[identityFingerprint] = it }
-            displayName?.takeIf(String::isNotBlank)?.let { remoteDisplayNames[identityFingerprint] = it }
+    ): DailyUserAdmission {
+        val now = System.currentTimeMillis()
+        val taskId = synchronized(recordLock) {
+            val activeTaskId = currentTaskId ?: return@synchronized null
+            val currentDayReservations = DailyUserLimitPolicy.retainCurrentDay(
+                reservations = dailyUserReservations,
+                nowMillis = now,
+            )
+            when (
+                DailyUserLimitPolicy.admit(
+                    reservations = currentDayReservations,
+                    fingerprint = identityFingerprint,
+                    nowMillis = now,
+                )
+            ) {
+                DailyUserAdmission.DAILY_UNIQUE_USER_LIMIT_REACHED -> {
+                    dailyUserReservations = currentDayReservations
+                    persistDailyUserReservationsLocked()
+                    return@synchronized Pair(activeTaskId, DailyUserAdmission.DAILY_UNIQUE_USER_LIMIT_REACHED)
+                }
+
+                DailyUserAdmission.NO_ACTIVE_TASK -> {
+                    return@synchronized Pair(activeTaskId, DailyUserAdmission.NO_ACTIVE_TASK)
+                }
+
+                DailyUserAdmission.ADMITTED -> {
+                    dailyUserReservations = if (identityFingerprint in currentDayReservations) {
+                        currentDayReservations
+                    } else {
+                        currentDayReservations + (identityFingerprint to now)
+                    }
+                    persistDailyUserReservationsLocked()
+                    remoteUserKey?.takeIf(String::isNotBlank)?.let { remoteUserKeys[identityFingerprint] = it }
+                    displayName?.takeIf(String::isNotBlank)?.let { remoteDisplayNames[identityFingerprint] = it }
+                    Pair(activeTaskId, DailyUserAdmission.ADMITTED)
+                }
+            }
+        } ?: return DailyUserAdmission.NO_ACTIVE_TASK
+        if (taskId.second != DailyUserAdmission.ADMITTED) {
+            logger.warn(
+                "task_user_start_rejected_daily_limit",
+                attributes = mapOf("task_id_hash" to taskId.first.hashCode()),
+            )
+            return taskId.second
         }
         logger.info(
             "task_user_started",
             attributes = mapOf(
-                "task_id_hash" to taskId.hashCode(),
+                "task_id_hash" to taskId.first.hashCode(),
                 "identity_fingerprint_prefix" to UserIdentityFingerprint.logPrefix(identityFingerprint),
             ),
         )
         appendTaskRecord(
             UserTaskRecord(
                 recordId = UUID.randomUUID().toString(),
-                taskId = taskId,
+                taskId = taskId.first,
                 identityHash = null,
                 identityFingerprint = identityFingerprint,
                 displayName = displayName,
                 userKey = remoteUserKey,
                 messageContent = messageContent,
                 outcome = UserTaskRecord.Outcome.IN_PROGRESS,
-                startedAtMillis = System.currentTimeMillis(),
+                startedAtMillis = now,
                 page = page,
             ),
         )
         enqueueRemoteRecord(identityFingerprint, UserTaskRecord.Outcome.IN_PROGRESS, null, page)
+        return DailyUserAdmission.ADMITTED
     }
 
     /**
@@ -1016,6 +1076,20 @@ object AutomationStore {
         recordPreferences?.edit()?.putString(
             TASK_RECORDS_KEY,
             JSONArray(allTaskRecords.map { it.toJson() }).toString(),
+        )?.apply()
+    }
+
+    private fun persistDailyUserReservationsLocked() {
+        recordPreferences?.edit()?.putString(
+            DAILY_USER_RESERVATIONS_KEY,
+            JSONArray(
+                dailyUserReservations.map { (fingerprint, reservedAt) ->
+                    JSONObject().apply {
+                        put("fingerprint", fingerprint)
+                        put("reserved_at", reservedAt)
+                    }
+                },
+            ).toString(),
         )?.apply()
     }
 
@@ -1401,6 +1475,21 @@ object AutomationStore {
         }.getOrDefault(emptyList())
     }
 
+    private fun decodeDailyUserReservations(raw: String?): Map<String, Long> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return runCatching {
+            val values = JSONArray(raw)
+            buildMap {
+                for (index in 0 until values.length()) {
+                    val item = values.getJSONObject(index)
+                    val fingerprint = item.optString("fingerprint").trim()
+                    val reservedAt = item.optLong("reserved_at", -1L)
+                    if (fingerprint.isNotEmpty() && reservedAt > 0L) put(fingerprint, reservedAt)
+                }
+            }
+        }.getOrDefault(emptyMap())
+    }
+
     private fun JSONObject.optStringOrNull(key: String): String? =
         if (isNull(key)) null else optString(key).takeIf(String::isNotBlank)
 
@@ -1636,6 +1725,7 @@ object AutomationStore {
     private const val MAX_DISPLAY_NAME_LENGTH = 128
     private const val TASK_RECORDS_PREFERENCES = "automation_task_records"
     private const val TASK_RECORDS_KEY = "records"
+    private const val DAILY_USER_RESERVATIONS_KEY = "daily_user_reservations"
     private const val TASK_HISTORY_KEY = "history"
     private const val TASK_CHECKPOINT_KEY = "checkpoint"
     private const val LOCAL_TASK_QUEUE_SESSION_KEY = "local_task_queue_session"

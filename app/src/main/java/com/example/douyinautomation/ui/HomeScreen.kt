@@ -101,6 +101,7 @@ import androidx.compose.ui.unit.Dp
 import com.example.douyinautomation.BuildConfig
 import com.example.douyinautomation.CommentRegressionPreset
 import com.example.douyinautomation.automation.AutomationCommand
+import com.example.douyinautomation.automation.AutomationExecutionLimits
 import com.example.douyinautomation.automation.AutomationPhase
 import com.example.douyinautomation.automation.AutomationStore
 import com.example.douyinautomation.automation.AuthConfig
@@ -117,6 +118,7 @@ import com.example.douyinautomation.automation.QueryComposer
 import com.example.douyinautomation.automation.RemoteTask
 import com.example.douyinautomation.automation.RemoteTaskResume
 import com.example.douyinautomation.automation.RemoteTaskResumePolicy
+import com.example.douyinautomation.automation.RemoteTaskAuthorizationStore
 import com.example.douyinautomation.automation.RemoteTaskVisibilityStore
 import com.example.douyinautomation.automation.RegionCatalog
 import com.example.douyinautomation.automation.BlockKeywordCatalog
@@ -130,6 +132,7 @@ import com.example.douyinautomation.automation.TaskDraft
 import com.example.douyinautomation.automation.TaskExecutionMode
 import com.example.douyinautomation.automation.TaskHistoryEntry
 import com.example.douyinautomation.automation.TaskRunStatus
+import com.example.douyinautomation.automation.TaskUserLimitInputPolicy
 import com.example.douyinautomation.automation.UserTaskRecord
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -491,7 +494,7 @@ private fun TaskDashboard(
             keyword = savedDraft.customKeywords.firstOrNull().orEmpty()
             region = savedDraft.region.orEmpty()
             blockedKeywords = savedDraft.blockedKeywords.joinToString(",")
-            maxUsers = savedDraft.maxUsers.toString()
+            maxUsers = TaskUserLimitInputPolicy.valueForPersistedDraft(savedDraft.maxUsers).toString()
             selectedPresetIds = savedDraft.presetIds.toSet()
         }
         draftHydrated = true
@@ -663,6 +666,11 @@ private fun TaskDashboard(
                     onRefresh = { remoteRefreshNonce += 1 },
                     onStart = { remoteTask ->
                         scope.launch {
+                            if (!RemoteTaskAuthorizationStore.isAuthorized(context, remoteTask.id)) {
+                                remoteRefreshMessage = "远程任务 #${remoteTask.id} 未在本机授权任务 ID 清单中"
+                                AutomationStore.publishRemoteSyncError(remoteRefreshMessage.orEmpty())
+                                return@launch
+                            }
                             remoteStartingTaskId = remoteTask.id
                             val session = runCatching {
                                 withContext(Dispatchers.IO) {
@@ -835,7 +843,7 @@ private fun TaskDashboard(
                 SectionHeader("执行限制")
                 CompactOutlinedTextField(
                     value = maxUsers,
-                    onValueChange = { maxUsers = it.filter(Char::isDigit) },
+                    onValueChange = { value -> maxUsers = TaskUserLimitInputPolicy.sanitizeInput(value) },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(54.dp),
@@ -1616,7 +1624,10 @@ private fun RemoteTask.toTaskSnapshot(): com.example.douyinautomation.automation
         region = QueryComposer.normalize(selectedRegion),
         composedQueries = listOf(composedQuery),
         normalizedBlockedKeywords = blockedKeywords,
-        maxUsers = maxUsers.takeIf { it > 0 } ?: TaskDraft.DEFAULT_MAX_USERS,
+        maxUsers = maxUsers
+            .takeIf { it > 0 }
+            ?.coerceAtMost(AutomationExecutionLimits.MAX_USERS_PER_TASK)
+            ?: TaskDraft.DEFAULT_MAX_USERS,
         messageTemplate = message.takeIf { it.isNotBlank() },
         // Never turn a server task into an automatic real-message send in this milestone.
         executionMode = TaskExecutionMode.SAFE_BLANK_PROBE,
@@ -2663,6 +2674,8 @@ private fun SettingsPage(
     var loginMessage by rememberSaveable { mutableStateOf<String?>(null) }
     var loggedInAccount by rememberSaveable { mutableStateOf(existingConfig?.accountName) }
     var configMessage by rememberSaveable { mutableStateOf<String?>(null) }
+    var authorizedRemoteTaskIds by rememberSaveable { mutableStateOf(RemoteTaskAuthorizationStore.loadRaw(context)) }
+    var remoteAuthorizationMessage by rememberSaveable { mutableStateOf<String?>(null) }
     Column(
         modifier = Modifier
             .padding(padding)
@@ -2863,28 +2876,59 @@ private fun SettingsPage(
             }
         }
         SettingsSectionCard(title = "远程任务", icon = Icons.Default.Cloud) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
                 ) {
-                    Text("显示远程任务", fontWeight = FontWeight.Medium)
-                    Text(
-                        "默认关闭。开启后，任务页才会显示并刷新后台下发的任务；手机本地新建任务不受影响。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text("显示远程任务", fontWeight = FontWeight.Medium)
+                        Text(
+                            "默认关闭。开启后，任务页才会显示并刷新后台下发的任务；手机本地新建任务不受影响。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = showRemoteTasks,
+                        onCheckedChange = onShowRemoteTasksChange,
                     )
                 }
-                Switch(
-                    checked = showRemoteTasks,
-                    onCheckedChange = onShowRemoteTasksChange,
+                HorizontalDivider()
+                Text("远程授权任务 ID", fontWeight = FontWeight.Medium)
+                Text(
+                    "仅清单中的远程任务可以领取、启动或从检查点恢复。本机创建的任务始终视为已授权。可使用中英文逗号、空格或换行分隔。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                CompactOutlinedTextField(
+                    value = authorizedRemoteTaskIds,
+                    onValueChange = { authorizedRemoteTaskIds = it },
+                    modifier = Modifier.fillMaxWidth().height(54.dp),
+                    textStyle = MaterialTheme.typography.bodyLarge,
+                    label = "例如 101,102",
+                    singleLine = true,
+                )
+                OutlinedButton(
+                    onClick = {
+                        val saved = RemoteTaskAuthorizationStore.save(context, authorizedRemoteTaskIds)
+                        authorizedRemoteTaskIds = saved.sorted().joinToString(",")
+                        remoteAuthorizationMessage = "已保存 ${saved.size} 个远程授权任务 ID"
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("保存远程任务授权清单")
+                }
+                remoteAuthorizationMessage?.let { message ->
+                    Text(message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                }
             }
         }
         SettingsSectionCard(title = "开发者选项", icon = Icons.Default.Tune) {

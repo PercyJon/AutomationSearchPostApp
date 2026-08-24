@@ -17,6 +17,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 class GestureEngine(
     private val service: AccessibilityService,
     private val logger: DiagnosticLogger,
+    private val actionPacer: AutomationActionPacer = AutomationActionPacer(),
 ) {
     // AccessibilityService is a non-visual Context. Query the default display through
     // DisplayManager instead of Context.display, which some OEMs reject for a service Context.
@@ -39,6 +40,7 @@ class GestureEngine(
     }
 
     suspend fun click(node: AccessibilityNodeInfo, fallbackBounds: ScreenBounds): ActionOutcome {
+        awaitExternalActionSlot("node_click")
         if (node.isEnabled && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
             return ActionOutcome.success("node_click")
         }
@@ -47,10 +49,11 @@ class GestureEngine(
         return tapBounds(fallbackBounds)
     }
 
-    fun setText(node: AccessibilityNodeInfo, value: String): ActionOutcome {
+    suspend fun setText(node: AccessibilityNodeInfo, value: String): ActionOutcome {
         if (!node.isEnabled || !node.isEditable) {
             return ActionOutcome.failure("Target is not an enabled editable node")
         }
+        awaitExternalActionSlot("node_set_text")
 
         val arguments = Bundle().apply {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value)
@@ -62,8 +65,10 @@ class GestureEngine(
         }
     }
 
-    fun submitText(node: AccessibilityNodeInfo): ActionOutcome =
-        if (
+    suspend fun submitText(node: AccessibilityNodeInfo): ActionOutcome {
+        if (!node.isEnabled) return ActionOutcome.failure("ACTION_IME_ENTER was rejected")
+        awaitExternalActionSlot("ime_enter")
+        return if (
             node.isEnabled && node.performAction(
                 AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id,
             )
@@ -72,18 +77,23 @@ class GestureEngine(
         } else {
             ActionOutcome.failure("ACTION_IME_ENTER was rejected")
         }
+    }
 
-    fun scrollForward(node: AccessibilityNodeInfo): ActionOutcome =
-        if (node.isEnabled && node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)) {
+    suspend fun scrollForward(node: AccessibilityNodeInfo): ActionOutcome {
+        if (!node.isEnabled) return ActionOutcome.failure("ACTION_SCROLL_FORWARD was rejected")
+        awaitExternalActionSlot("node_scroll_forward")
+        return if (node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)) {
             ActionOutcome.success("node_scroll_forward")
         } else {
             ActionOutcome.failure("ACTION_SCROLL_FORWARD was rejected")
         }
+    }
 
     suspend fun tapBounds(bounds: ScreenBounds): ActionOutcome {
         if (bounds.width <= 0 || bounds.height <= 0) {
             return ActionOutcome.failure("Target bounds are empty")
         }
+        awaitExternalActionSlot("bounds_tap")
         return dispatchTap(bounds.centerX, bounds.centerY)
     }
 
@@ -91,6 +101,7 @@ class GestureEngine(
     suspend fun tapNormalized(x: Float, y: Float): ActionOutcome {
         if (x !in 0f..1f || y !in 0f..1f) return ActionOutcome.failure("Normalized point is out of range")
         val metrics = service.resources.displayMetrics
+        awaitExternalActionSlot("normalized_tap")
         return dispatchTap(x * metrics.widthPixels, y * metrics.heightPixels)
     }
 
@@ -109,12 +120,31 @@ class GestureEngine(
             return ActionOutcome.failure("Normalized swipe point is out of range")
         }
         val metrics = service.resources.displayMetrics
+        awaitExternalActionSlot("normalized_swipe")
         return dispatchSwipe(
             startX = startX * metrics.widthPixels,
             startY = startY * metrics.heightPixels,
             endX = endX * metrics.widthPixels,
             endY = endY * metrics.heightPixels,
             durationMs = durationMs ?: timingProfile.defaultSwipeDurationMs,
+        )
+    }
+
+    suspend fun globalBack(): ActionOutcome {
+        awaitExternalActionSlot("global_back")
+        return if (service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)) {
+            ActionOutcome.success("global_back")
+        } else {
+            ActionOutcome.failure("无法执行返回操作")
+        }
+    }
+
+    /** Used for a verified non-gesture effect such as bringing the target app to foreground. */
+    suspend fun awaitExternalActionSlot(action: String) {
+        val waitedMillis = actionPacer.awaitTurn()
+        logger.info(
+            "automation_action_slot_acquired",
+            attributes = mapOf("action" to action, "wait_ms" to waitedMillis),
         )
     }
 

@@ -65,15 +65,19 @@ data class CommentPrivateMessageConfig(
 ) {
     fun normalizedKeywords(): List<String> = CommentKeywordMatcher.normalizeKeywords(matchKeywords)
 
-    fun validationErrors(): List<String> = buildList {
-        if (entryMode == CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE && targetUser.isNullOrBlank()) {
-            add("搜索用户入口需要填写目标用户")
-        }
-        if (maxVideos !in 1..MAX_VIDEOS) {
-            add("视频数量上限必须在 1-$MAX_VIDEOS 之间")
-        }
-        if (maxUsersPerVideo !in 1..MAX_USERS_PER_VIDEO) {
-            add("每个视频的用户数量上限必须在 1-$MAX_USERS_PER_VIDEO 之间")
+    fun validationErrors(): List<String> {
+        val config = this
+        return buildList {
+            if (config.entryMode == CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE && config.targetUser.isNullOrBlank()) {
+                add("搜索用户入口需要填写目标用户")
+            }
+            if (config.maxVideos !in 1..MAX_VIDEOS) {
+                add("视频数量上限必须在 1-$MAX_VIDEOS 之间")
+            }
+            if (config.maxUsersPerVideo !in 1..MAX_USERS_PER_VIDEO) {
+                add("每个视频的用户数量上限必须在 1-$MAX_USERS_PER_VIDEO 之间")
+            }
+            AutomationTaskLimitPolicy.commentValidationError(config)?.let(::add)
         }
     }
 

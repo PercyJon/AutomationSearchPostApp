@@ -312,10 +312,8 @@ class CommentPrivateMessageRuntime(
                 val closeButton = LiveRoomSurfaceDetector.findCloseButton(context)
                 val outcome = if (closeButton != null) {
                     clickSnapshot(closeButton, "live_room_close")
-                } else if (service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)) {
-                    ActionOutcome.success("global_back")
                 } else {
-                    ActionOutcome.failure("无法执行返回操作")
+                    gestures.globalBack()
                 }
                 logger.info(
                     "live_room_exited",
@@ -369,7 +367,7 @@ class CommentPrivateMessageRuntime(
                     terminal(CommentRuntimeTerminal.Outcome.COMPLETED, decision.reason)
                     return
                 }
-                val backedOut = service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+                val backedOut = gestures.globalBack().succeeded
                 if (!backedOut) {
                     terminal(CommentRuntimeTerminal.Outcome.FAILED, "跳过无作品或私密账号时无法返回用户列表")
                     return
@@ -409,7 +407,7 @@ class CommentPrivateMessageRuntime(
                         skipPinnedVideos = config?.skipPinnedVideos == true,
                     ).worksSortLatestTarget != null
                 } == true
-                if (popupStillVisible && !service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)) {
+                if (popupStillVisible && !gestures.globalBack().succeeded) {
                     terminal(CommentRuntimeTerminal.Outcome.FAILED, "作品排序菜单无法关闭")
                     return
                 }
@@ -1122,7 +1120,7 @@ class CommentPrivateMessageRuntime(
 
         timeoutJob?.cancel()
         if (closeCommentSheet) {
-            val closed = service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+            val closed = gestures.globalBack().succeeded
             if (!closed) {
                 terminal(CommentRuntimeTerminal.Outcome.FAILED, "关闭当前视频评论区失败，无法继续下一个视频")
                 return
@@ -1187,13 +1185,29 @@ class CommentPrivateMessageRuntime(
         val displayName = candidate.authorText?.trim()?.takeIf(String::isNotBlank)
             ?: candidate.identityKey.removePrefix("comment-user:").ifBlank { "评论用户" }
         val messageContent = "空消息模拟（空格）"
-        AutomationStore.recordUserTaskStarted(
-            identityFingerprint = identityFingerprint,
-            page = PageKind.UNKNOWN,
-            remoteUserKey = candidate.identityKey,
-            displayName = displayName,
-            messageContent = messageContent,
-        )
+        when (
+            AutomationStore.recordUserTaskStarted(
+                identityFingerprint = identityFingerprint,
+                page = PageKind.UNKNOWN,
+                remoteUserKey = candidate.identityKey,
+                displayName = displayName,
+                messageContent = messageContent,
+            )
+        ) {
+            DailyUserAdmission.ADMITTED -> Unit
+            DailyUserAdmission.DAILY_UNIQUE_USER_LIMIT_REACHED -> {
+                terminal(
+                    CommentRuntimeTerminal.Outcome.PAUSED,
+                    "今日已处理 ${AutomationExecutionLimits.MAX_DAILY_UNIQUE_USERS} 名不同用户，任务已暂停，明日可从检查点继续",
+                )
+                return false
+            }
+
+            DailyUserAdmission.NO_ACTIVE_TASK -> {
+                terminal(CommentRuntimeTerminal.Outcome.FAILED, "任务记录不可用，已停止继续处理评论用户")
+                return false
+            }
+        }
         logger.info(
             "comment_candidate_processing_started",
             attributes = mapOf(
@@ -1913,7 +1927,7 @@ class CommentPrivateMessageRuntime(
                 confirmedReturnCommentSurface = null
                 confirmedReturnCommentSurfaceBackActions = -1
                 returnCommentSurfaceBackActions = nextBackActionCount
-                if (!service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)) {
+                if (!gestures.globalBack().succeeded) {
                     returnCommentSurfaceBackActions -= 1
                     break
                 }

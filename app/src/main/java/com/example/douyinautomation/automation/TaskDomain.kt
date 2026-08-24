@@ -120,8 +120,8 @@ data class TaskDraft(
     }
 
     companion object {
-        const val DEFAULT_MAX_USERS = 20
-        const val MAX_USERS = 500
+        const val DEFAULT_MAX_USERS = AutomationExecutionLimits.DEFAULT_MAX_USERS_PER_TASK
+        const val MAX_USERS = AutomationExecutionLimits.MAX_USERS_PER_TASK
     }
 }
 
