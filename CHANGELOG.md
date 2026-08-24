@@ -4,6 +4,34 @@
 
 ---
 
+## [未发布] 2026-08-24 —— 评论搜索恢复与悬浮窗真机回归
+
+### 修改内容
+
+- 修复“评论私信 → 搜索指定用户”在用户标签切换帧中读取到隐藏 `ViewPager` 子树时过早失败的问题；仅在该过渡态执行有界稳定等待，之后仍需结构验证或两次一致的 OCR/几何验证才可打开源主页。
+- 修复暂停恢复的初始流程在已验证搜索结果输入框存在时，仍强制回到首页并可能超时的问题；现在会覆盖并重新提交冻结的搜索词。
+- 修复评论任务将单个源主页错误持久化为通用已处理用户、导致恢复后跳过该主页的问题；评论候选仍使用原有独立去重账本。
+
+### 已验证项
+
+- 新增 `UserResultsViewportTransitionDetectorTest`；`./gradlew :app:testDebugUnitTest :app:assembleDebug` 通过。
+- **真机 OnePlus NE2210 / b33aa309 / Android 16**：以“室内设计师”、2 视频、每视频 5 人、搜索指定用户、空白消息安全探测模式，验证用户结果→源主页→视频→评论面板；悬浮窗暂停、恢复、停止均可用。恢复后同一源主页再次经 OCR/几何验证进入，未被错误判为重复。
+- 未发送真实消息；最终停止时仅已进入评论候选的私信入口，未输入或提交消息，也未运行空消息安全探测。
+
+### 几何与兼容性检查
+
+- 未新增固定 px、点击坐标、Android 尺寸或手势时长。过渡态检测只使用无障碍节点可见性和已有页面验证；新增延时为版本化导航等待配置，非设备几何。
+- 节点优先、OCR→几何验证→页面确认、头像排除、风险暂停和空白消息安全门保持不变。
+
+### 交接记录
+
+- [`2026-08-24-comment-search-row-settle-repair.md`](docs/2026-08-24-comment-search-row-settle-repair.md)
+- [`2026-08-24-comment-resume-search-recovery-repair.md`](docs/2026-08-24-comment-resume-search-recovery-repair.md)
+- [`2026-08-24-comment-resume-source-identity-repair.md`](docs/2026-08-24-comment-resume-source-identity-repair.md)
+- [`2026-08-24-pause-resume-progress-repair.md`](docs/2026-08-24-pause-resume-progress-repair.md)
+
+---
+
 ## [未发布] 2026-08-24 —— 评论私信流程等待优化
 
 ### 修改内容

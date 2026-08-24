@@ -1431,7 +1431,11 @@ class DouyinNavigationController(
                     return
                 }
                 PageKind.SEARCH_RESULTS -> {
-                    if (!requireHome && selector.select(current, DouyinSelectors.searchInput).node != null) {
+                    // A verified editable search field is already an initial-flow reset point:
+                    // overwriting and resubmitting the frozen query cannot reuse a prior user,
+                    // profile, video, or comment. Do not spend the remaining BACK budget merely
+                    // to reach HOME when this safer semantic path is available.
+                    if (selector.select(current, DouyinSelectors.searchInput).node != null) {
                         reuseSearchResultsQueryField(current, "initial_surface_recovery")
                         return
                     }
@@ -1475,9 +1479,7 @@ class DouyinNavigationController(
                     enterKeyword(finalContext)
                     return
                 }
-                PageKind.SEARCH_RESULTS -> if (!requireHome &&
-                    selector.select(finalContext, DouyinSelectors.searchInput).node != null
-                ) {
+                PageKind.SEARCH_RESULTS -> if (selector.select(finalContext, DouyinSelectors.searchInput).node != null) {
                     reuseSearchResultsQueryField(finalContext, "initial_surface_recovery_final_probe")
                     return
                 }
@@ -1830,6 +1832,29 @@ class DouyinNavigationController(
             )
             if (rowMatch != null) break
         }
+        // A selected User tab can briefly expose a visible ViewPager whose child result tree is
+        // entirely hidden. That is a transition observation, not evidence that the first card is
+        // absent. Wait only for that state to settle, then reuse the same structural verifier.
+        if (rowMatch == null && useFastP0RowFallback && UserResultsViewportTransitionDetector.isSettling(rowContext)) {
+            for (attempt in 1..TuningConstants.NavigationFlow.P0_USER_RESULTS_VIEWPORT_SETTLE_ATTEMPTS) {
+                delay(TuningConstants.NavigationFlow.P0_USER_RESULTS_VIEWPORT_SETTLE_INTERVAL_MS)
+                val refreshed = currentWindowContext() ?: continue
+                val refreshedDetection = pageDetector.detect(refreshed)
+                if (refreshedDetection.kind != PageKind.USER_RESULTS) break
+                rowContext = refreshed
+                rowMatch = StructuralUserRowDetector.find(refreshed)
+                logger.info(
+                    "p0_user_results_viewport_settle",
+                    attributes = mapOf(
+                        "attempt" to attempt,
+                        "still_settling" to UserResultsViewportTransitionDetector.isSettling(refreshed),
+                        "anchor_count" to StructuralUserRowDetector.anchorCount(refreshed),
+                        "matched" to (rowMatch != null),
+                    ),
+                )
+                if (rowMatch != null || !UserResultsViewportTransitionDetector.isSettling(refreshed)) break
+            }
+        }
         // Some current Douyin builds leave the User tab visually selected but expose an
         // off-screen ViewPager subtree to accessibility. Every search-target comment task is
         // allowed one OCR-assisted geometry fallback here; it verifies the same first card twice
@@ -1927,10 +1952,18 @@ class DouyinNavigationController(
                     skipFilteredUser(rowContext, rowMatch!!)
                     return
                 }
-                processedUserIdentities.add(identity.key)
-                processedUserIdentityRecords += identity
-                processedIdentityFingerprints.add(identityFingerprint)
-                persistTaskCheckpoint()
+                if (!isSearchTargetProfileCommentTask()) {
+                    processedUserIdentities.add(identity.key)
+                    processedUserIdentityRecords += identity
+                    processedIdentityFingerprints.add(identityFingerprint)
+                    persistTaskCheckpoint()
+                } else {
+                    // This identity is the single source profile for a comment task, not a
+                    // private-message candidate. Its comment-candidate ledger is persisted by
+                    // the comment runtime; retaining it here would make a safe initial restart
+                    // skip the only source profile and try a different search result.
+                    logger.info("comment_source_profile_identity_not_persisted")
+                }
                 currentUserIdentityFingerprint = identityFingerprint
                 currentUserDisplayName = identity.displayName
                 currentUserDisplayNameSource = identity.source

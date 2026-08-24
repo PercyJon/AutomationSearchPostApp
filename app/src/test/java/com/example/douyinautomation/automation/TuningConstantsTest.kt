@@ -60,6 +60,8 @@ class TuningConstantsTest {
         assertEquals(18, flow.EMPTY_MESSAGE_PROBE_ATTEMPTS)
         assertEquals(1, flow.MAX_TIMEOUT_RECOVERY_ATTEMPTS)
         assertEquals(30, flow.SYSTEM_OVERLAY_WAIT_ATTEMPTS)
+        assertEquals(3, flow.P0_USER_RESULTS_VIEWPORT_SETTLE_ATTEMPTS)
+        assertEquals(350L, flow.P0_USER_RESULTS_VIEWPORT_SETTLE_INTERVAL_MS)
         assertEquals(0.76f, flow.USER_PAGE_SWIPE_START_Y)
         assertEquals(0.38f, flow.USER_PAGE_SWIPE_END_Y)
         assertEquals(0.05f, flow.USER_ROW_CONTENT_TOP_RATIO)
