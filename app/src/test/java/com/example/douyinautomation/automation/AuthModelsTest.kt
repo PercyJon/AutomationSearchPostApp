@@ -14,7 +14,7 @@ class AuthModelsTest {
 
     @Test
     fun `accepted heartbeat schedules the next check`() {
-        val config = AuthConfig("https://api.example.test", "token", "device")
+        val config = AuthConfig("https://api.example.test", "token", DeviceIdentity.hash("device"))
         val state = HeartbeatPolicy.evaluate(
             config = config,
             response = HeartbeatResponse(true, "ok", nextCheckAfterMillis = 10L),
@@ -27,8 +27,10 @@ class AuthModelsTest {
 
     @Test
     fun `invalid endpoint is never considered usable`() {
-        assertTrue(!AuthConfig("http://api.example.test", "token", "device").isUsable())
-        assertTrue(!AuthConfig("https://api.example.test", "", "device").isUsable())
+        val deviceIdHash = DeviceIdentity.hash("device")
+        assertTrue(!AuthConfig("http://api.example.test", "token", deviceIdHash).isUsable())
+        assertTrue(!AuthConfig("https://api.example.test", "", deviceIdHash).isUsable())
+        assertTrue(!AuthConfig("https://api.example.test", "token", "not-a-device-hash").isUsable())
     }
 
     @Test
@@ -39,5 +41,6 @@ class AuthModelsTest {
         assertEquals(first, second)
         assertEquals(64, first.length)
         assertTrue(first != "android-id-123")
+        assertTrue(DeviceIdentity.isSha256Hash(first))
     }
 }

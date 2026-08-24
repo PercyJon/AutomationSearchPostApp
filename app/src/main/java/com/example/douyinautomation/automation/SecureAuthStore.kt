@@ -23,7 +23,7 @@ class SecureAuthStore(
         val plaintext = JSONObject().apply {
             put("endpoint", config.endpoint)
             put("license_token", config.licenseToken)
-            put("device_id", config.deviceId)
+            put("device_id_hash", config.deviceIdHash)
             config.accountName?.let { put("account_name", it) }
             config.accountUsername?.let { put("account_username", it) }
         }.toString().toByteArray(StandardCharsets.UTF_8)
@@ -37,25 +37,44 @@ class SecureAuthStore(
         preferences.edit().putString(CONFIG_KEY, payload).commit()
     }.getOrDefault(false)
 
-    fun read(): AuthConfig? = runCatching {
-        val payload = preferences.getString(CONFIG_KEY, null) ?: return null
-        val parts = payload.split(':', limit = 2)
-        if (parts.size != 2) return null
-        val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(
-            Cipher.DECRYPT_MODE,
-            getOrCreateKey(),
-            GCMParameterSpec(GCM_TAG_LENGTH_BITS, decode(parts[0])),
-        )
-        val json = JSONObject(String(cipher.doFinal(decode(parts[1])), StandardCharsets.UTF_8))
-        AuthConfig(
-            endpoint = json.getString("endpoint"),
-            licenseToken = json.getString("license_token"),
-            deviceId = json.getString("device_id"),
-            accountName = json.optString("account_name").takeIf(String::isNotBlank),
-            accountUsername = json.optString("account_username").takeIf(String::isNotBlank),
-        ).takeIf(AuthConfig::isUsable)
-    }.getOrNull()
+    fun read(): AuthConfig? {
+        val decoded = runCatching {
+            val payload = preferences.getString(CONFIG_KEY, null) ?: return null
+            val parts = payload.split(':', limit = 2)
+            if (parts.size != 2) return null
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(
+                Cipher.DECRYPT_MODE,
+                getOrCreateKey(),
+                GCMParameterSpec(GCM_TAG_LENGTH_BITS, decode(parts[0])),
+            )
+            val json = JSONObject(String(cipher.doFinal(decode(parts[1])), StandardCharsets.UTF_8))
+            val storedHash = json.optString("device_id_hash")
+            val deviceIdHash = when {
+                DeviceIdentity.isSha256Hash(storedHash) -> storedHash
+                json.optString("device_id").isNotBlank() -> {
+                    // Legacy payloads encrypted the raw Android ID.  Convert it once and overwrite
+                    // the payload below so future reads never deserialize the raw identifier.
+                    DeviceIdentity.hash(json.getString("device_id"))
+                }
+                else -> return null
+            }
+            val config = AuthConfig(
+                endpoint = json.getString("endpoint"),
+                licenseToken = json.getString("license_token"),
+                deviceIdHash = deviceIdHash,
+                accountName = json.optString("account_name").takeIf(String::isNotBlank),
+                accountUsername = json.optString("account_username").takeIf(String::isNotBlank),
+            ).takeIf(AuthConfig::isUsable) ?: return null
+            DecodedConfig(
+                config = config,
+                requiresHashMigration = !DeviceIdentity.isSha256Hash(storedHash),
+            )
+        }.getOrNull() ?: return null
+
+        if (decoded.requiresHashMigration) save(decoded.config)
+        return decoded.config
+    }
 
     fun clear() {
         preferences.edit().remove(CONFIG_KEY).apply()
@@ -78,6 +97,11 @@ class SecureAuthStore(
 
     private fun encode(value: ByteArray): String = Base64.encodeToString(value, Base64.NO_WRAP)
     private fun decode(value: String): ByteArray = Base64.decode(value, Base64.NO_WRAP)
+
+    private data class DecodedConfig(
+        val config: AuthConfig,
+        val requiresHashMigration: Boolean,
+    )
 
     private companion object {
         const val ANDROID_KEYSTORE = "AndroidKeyStore"

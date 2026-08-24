@@ -241,7 +241,7 @@ class AutomationHttpClient(
                 config = AuthConfig(
                     endpoint = endpoint,
                     licenseToken = "",
-                    deviceId = deviceIdHash,
+                    deviceIdHash = deviceIdHash,
                 ),
                 connectTimeoutMillis = connectTimeoutMillis,
                 readTimeoutMillis = readTimeoutMillis,

@@ -105,7 +105,6 @@ import com.example.douyinautomation.automation.AutomationActionIntervalSettingsS
 import com.example.douyinautomation.automation.AutomationExecutionLimits
 import com.example.douyinautomation.automation.AutomationPhase
 import com.example.douyinautomation.automation.AutomationStore
-import com.example.douyinautomation.automation.AuthConfig
 import com.example.douyinautomation.automation.AuthStore
 import com.example.douyinautomation.automation.AutomationTaskType
 import com.example.douyinautomation.automation.CommentPrivateMessageConfig
@@ -143,7 +142,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import com.example.douyinautomation.ui.theme.AutomationBlue
 import com.example.douyinautomation.ui.theme.AutomationBlueDark
 import com.example.douyinautomation.ui.theme.AutomationBlueLight
@@ -2675,22 +2673,7 @@ private fun SettingsPage(
     val context = androidx.compose.ui.platform.LocalContext.current
     var overlayAllowed by remember { mutableStateOf(FloatingOverlayService.canDrawOverlays(context)) }
     val licenseState by AuthStore.uiState.collectAsState()
-    val scope = rememberCoroutineScope()
-    val existingConfig = remember { AuthStore.currentConfig() }
-    val defaultDeviceId = remember {
-        Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID).orEmpty()
-    }
-    var endpoint by rememberSaveable { mutableStateOf(existingConfig?.endpoint.orEmpty()) }
-    var licenseToken by rememberSaveable { mutableStateOf(existingConfig?.licenseToken.orEmpty()) }
-    var deviceId by rememberSaveable { mutableStateOf(existingConfig?.deviceId ?: defaultDeviceId) }
-    var username by rememberSaveable {
-        mutableStateOf(existingConfig?.accountUsername ?: existingConfig?.accountName.orEmpty())
-    }
-    var password by rememberSaveable { mutableStateOf("") }
-    var loginBusy by remember { mutableStateOf(false) }
-    var loginMessage by rememberSaveable { mutableStateOf<String?>(null) }
-    var loggedInAccount by rememberSaveable { mutableStateOf(existingConfig?.accountName) }
-    var configMessage by rememberSaveable { mutableStateOf<String?>(null) }
+    val authConfig by AuthStore.session.collectAsState()
     var authorizedRemoteTaskIds by rememberSaveable { mutableStateOf(RemoteTaskAuthorizationStore.loadRaw(context)) }
     var remoteAuthorizationMessage by rememberSaveable { mutableStateOf<String?>(null) }
     var actionIntervalMillis by rememberSaveable {
@@ -2711,145 +2694,38 @@ private fun SettingsPage(
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("授权状态", fontWeight = FontWeight.Medium)
-                    StatusBadge(licenseStatusLabel(licenseState.status), if (licenseState.status == LicenseStatus.VERIFIED) StatusTone.SUCCESS else StatusTone.WARNING)
+                    StatusBadge(
+                        licenseStatusLabel(licenseState.status),
+                        when (licenseState.status) {
+                            LicenseStatus.VERIFIED -> StatusTone.SUCCESS
+                            LicenseStatus.REJECTED -> StatusTone.ERROR
+                            else -> StatusTone.WARNING
+                        },
+                    )
                 }
                 Text(
                     licenseState.message,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                loggedInAccount?.takeIf(String::isNotBlank)?.let { account ->
+                (
+                    authConfig?.accountName?.takeIf(String::isNotBlank)
+                        ?: authConfig?.accountUsername?.takeIf(String::isNotBlank)
+                )?.let { account ->
                     Text(
                         "当前登录账号：$account",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary,
                     )
                 }
-                CompactOutlinedTextField(
-                    value = endpoint,
-                    onValueChange = { endpoint = it },
-                    modifier = Modifier.fillMaxWidth().height(54.dp),
-                    textStyle = MaterialTheme.typography.bodyLarge,
-                    label = "后端地址（HTTPS）",
-                    placeholder = "例如 https://api.example.com",
-                    singleLine = true,
-                )
                 Text(
-                    "使用后台账号登录后，系统会为本设备换取移动端授权；密码不会保存，管理端 JWT 也不会写入设备。",
+                    "密码不会保存；本机仅使用 Android Keystore 加密保存设备绑定后的移动端授权和设备哈希。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                CompactOutlinedTextField(
-                    value = username,
-                    onValueChange = { username = it },
-                    modifier = Modifier.fillMaxWidth().height(54.dp),
-                    textStyle = MaterialTheme.typography.bodyLarge,
-                    label = "后台用户名",
-                    singleLine = true,
-                )
-                CompactOutlinedTextField(
-                    value = password,
-                    onValueChange = { password = it },
-                    modifier = Modifier.fillMaxWidth().height(54.dp),
-                    textStyle = MaterialTheme.typography.bodyLarge,
-                    label = "后台密码",
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                )
-                Button(
-                    enabled = !loginBusy,
-                    onClick = {
-                        scope.launch {
-                            loginBusy = true
-                            loginMessage = null
-                            runCatching {
-                                withContext(Dispatchers.IO) {
-                                    AuthStore.login(
-                                        context = context,
-                                        endpoint = endpoint,
-                                        username = username,
-                                        password = password,
-                                    )
-                                }
-                            }.onSuccess { result ->
-                                loggedInAccount = result.accountName ?: result.accountUsername ?: username.trim()
-                                password = ""
-                                loginMessage = "登录成功，已获得本设备授权；现在可以刷新远程任务"
-                            }.onFailure { error ->
-                                loginMessage = "登录失败：${error.message ?: "请检查地址、账号或密码"}"
-                            }
-                            loginBusy = false
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(if (loginBusy) "登录中…" else "账号登录并获取任务")
-                }
-                loginMessage?.let { message ->
-                    Text(
-                        message,
-                        color = if (message.startsWith("登录成功")) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.error
-                        },
-                    )
-                }
-                HorizontalDivider()
-                Text(
-                    "兼容方式：也可以手动粘贴移动端授权 Token。Token 不是后台登录 access_token，两者长度不同是正常的。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                CompactOutlinedTextField(
-                    value = licenseToken,
-                    onValueChange = { licenseToken = it },
-                    modifier = Modifier.fillMaxWidth().height(54.dp),
-                    textStyle = MaterialTheme.typography.bodyLarge,
-                    label = "授权 Token",
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                )
-                CompactOutlinedTextField(
-                    value = deviceId,
-                    onValueChange = { deviceId = it },
-                    modifier = Modifier.fillMaxWidth().height(54.dp),
-                    textStyle = MaterialTheme.typography.bodyLarge,
-                    label = "设备标识（默认 Android ID）",
-                    singleLine = true,
-                )
-                Button(
-                    onClick = {
-                        val saved = AuthStore.saveConfig(
-                            context,
-                            AuthConfig(
-                                endpoint = endpoint.trim().trimEnd('/'),
-                                licenseToken = licenseToken.trim(),
-                                deviceId = deviceId.trim(),
-                                accountName = loggedInAccount,
-                                accountUsername = username.trim().takeIf(String::isNotBlank),
-                            ),
-                        )
-                        configMessage = if (saved) {
-                            "授权配置已加密保存"
-                        } else {
-                            "配置无效：后端地址必须使用 HTTPS，且三项均不能为空"
-                        }
-                        if (saved) AuthStore.verifyNow()
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("保存并验证") }
-                configMessage?.let {
-                    Text(it, color = if (it.startsWith("授权")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
-                }
                 OutlinedButton(onClick = { AuthStore.verifyNow() }) {
                     Text("立即验证 heartbeat")
                 }
-                Text(
-                    "账号登录后 Token 使用 Android Keystore 加密保存；请求仅携带移动端 Bearer 授权，不会写入 Logcat。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
         }
         SettingsSectionCard(title = "自动化服务", icon = Icons.Default.Accessibility) {

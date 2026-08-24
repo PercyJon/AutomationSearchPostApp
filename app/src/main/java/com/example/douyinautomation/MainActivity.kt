@@ -14,7 +14,7 @@ import com.example.douyinautomation.automation.AuthStore
 import com.example.douyinautomation.automation.CommentKeywordMatchMode
 import com.example.douyinautomation.automation.TaskDraft
 import com.example.douyinautomation.automation.TaskExecutionMode
-import com.example.douyinautomation.ui.AppHomeScreen
+import com.example.douyinautomation.ui.AutomationAppSessionGate
 import com.example.douyinautomation.ui.theme.AutomationTheme
 
 /**
@@ -60,7 +60,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             AutomationTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    AppHomeScreen(
+                    AutomationAppSessionGate(
                         initialKeyword = intent.getStringExtra(EXTRA_PREFILL_KEYWORD).orEmpty(),
                         initialSection = if (openRecordsTab) "RECORDS" else null,
                         initialCommentTask = openCommentP0,

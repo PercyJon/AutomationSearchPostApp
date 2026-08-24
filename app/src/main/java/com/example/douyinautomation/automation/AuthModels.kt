@@ -50,13 +50,14 @@ data class HeartbeatResponse(
 data class AuthConfig(
     val endpoint: String,
     val licenseToken: String,
-    val deviceId: String,
+    /** SHA-256 digest of the Android ID; the raw identifier must never be persisted or sent. */
+    val deviceIdHash: String,
     val accountName: String? = null,
     val accountUsername: String? = null,
 ) {
     fun isUsable(): Boolean = endpoint.startsWith("https://") &&
         licenseToken.isNotBlank() &&
-        deviceId.isNotBlank()
+        DeviceIdentity.isSha256Hash(deviceIdHash)
 }
 
 data class MobileLoginResult(
@@ -78,6 +79,10 @@ object DeviceIdentity {
         .getInstance("SHA-256")
         .digest(value.toByteArray(Charsets.UTF_8))
         .joinToString("") { byte -> "%02x".format(byte) }
+
+    fun isSha256Hash(value: String): Boolean = SHA_256_HEX.matches(value)
+
+    private val SHA_256_HEX = Regex("[0-9a-f]{64}")
 }
 
 fun interface HeartbeatGateway {
@@ -149,7 +154,7 @@ class HeartbeatCoordinator(
                 HeartbeatRequest(
                     // The backend requires a stable, non-reversible digest (minimum 16 chars).
                     // Do not send the device identifier itself over the wire.
-                    deviceIdHash = DeviceIdentity.hash(config.deviceId),
+                    deviceIdHash = config.deviceIdHash,
                     appVersion = appVersion,
                 ),
             )
@@ -185,10 +190,17 @@ class HeartbeatCoordinator(
 }
 
 object AuthStore {
+    /** Allows the backend request transaction that issued a new license to commit before heartbeat. */
+    private const val MOBILE_LOGIN_HEARTBEAT_SETTLE_MILLIS = 1_000L
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var secureStore: SecureAuthStore? = null
     private var coordinator: HeartbeatCoordinator? = null
+    private val _session = MutableStateFlow<AuthConfig?>(null)
     private val _uiState = MutableStateFlow(LicenseUiState())
+
+    /** The current encrypted mobile-license session; no password or raw device ID is retained. */
+    val session: StateFlow<AuthConfig?> = _session.asStateFlow()
 
     val uiState: StateFlow<LicenseUiState> = _uiState.asStateFlow()
 
@@ -196,10 +208,11 @@ object AuthStore {
         if (secureStore != null) return
         val store = SecureAuthStore(context.applicationContext)
         secureStore = store
+        _session.value = store.read()
         coordinator = HeartbeatCoordinator(
-            configProvider = { store.read() },
+            configProvider = { _session.value },
             gatewayProvider = {
-                store.read()
+                _session.value
                     ?.takeIf(AuthConfig::isUsable)
                     ?.let(::AutomationHttpClient)
                     ?: UnconfiguredHeartbeatGateway
@@ -219,7 +232,9 @@ object AuthStore {
     /** Saves a validated endpoint/token/device tuple in Android Keystore-backed storage. */
     fun saveConfig(context: android.content.Context, config: AuthConfig): Boolean {
         initialize(context)
-        return secureStore?.save(config) == true
+        val saved = secureStore?.save(config) == true
+        if (saved) _session.value = config
+        return saved
     }
 
     /**
@@ -242,23 +257,31 @@ object AuthStore {
             Settings.Secure.ANDROID_ID,
         ).orEmpty()
         require(deviceId.isNotBlank()) { "无法读取设备标识" }
+        val deviceIdHash = DeviceIdentity.hash(deviceId)
         val response = AutomationHttpClient.login(
             endpoint = normalizedEndpoint,
             username = username.trim(),
             password = password,
-            deviceIdHash = DeviceIdentity.hash(deviceId),
+            deviceIdHash = deviceIdHash,
         )
         val accountName = response.accountName
         val accountUsername = response.accountUsername ?: username.trim()
         val config = AuthConfig(
             endpoint = normalizedEndpoint,
             licenseToken = response.licenseToken,
-            deviceId = deviceId,
+            deviceIdHash = deviceIdHash,
             accountName = accountName,
             accountUsername = accountUsername,
         )
         check(secureStore?.save(config) == true) { "登录信息保存失败" }
-        coordinator?.verifyNow()
+        _session.value = config
+        // The backend commits the newly issued license as its request transaction closes. An
+        // immediate heartbeat can arrive before that commit and be falsely rejected once; wait
+        // for the commit boundary instead of exposing a transient "authorization invalid" state.
+        scope.launch {
+            delay(MOBILE_LOGIN_HEARTBEAT_SETTLE_MILLIS)
+            coordinator?.verifyNow()
+        }
         return MobileLoginResult(
             accountName = accountName,
             accountUsername = accountUsername,
@@ -269,10 +292,11 @@ object AuthStore {
     fun clearConfig(context: android.content.Context) {
         initialize(context)
         secureStore?.clear()
+        _session.value = null
         verifyNow()
     }
 
-    fun currentConfig(): AuthConfig? = secureStore?.read()
+    fun currentConfig(): AuthConfig? = _session.value
 
     /** Remote-first catalog with the existing 24-hour cache and built-in fallback. */
     fun searchPresetRepository(context: android.content.Context): SearchPresetRepository {

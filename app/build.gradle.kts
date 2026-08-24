@@ -4,6 +4,12 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val automationApiEndpoint = providers.gradleProperty("automationApiEndpoint")
+    .orNull
+    .orEmpty()
+    .replace("\\", "\\\\")
+    .replace("\"", "\\\"")
+
 android {
     namespace = "com.example.douyinautomation"
     compileSdk = 35
@@ -15,6 +21,9 @@ android {
         versionCode = 14
         versionName = "0.3.4-mobile-login"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // A deployment-specific HTTPS endpoint is injected at build time.  Keep it out of source
+        // and out of the normal login UI so operators only ever enter account/password.
+        buildConfigField("String", "AUTOMATION_API_ENDPOINT", "\"$automationApiEndpoint\"")
     }
 
     buildFeatures {

@@ -20,7 +20,7 @@ class AutomationHttpClientInstrumentedTest {
             """.trimIndent(),
         )
         val client = AutomationHttpClient(
-            config = AuthConfig("https://api.example.test", "secret-token", "device"),
+            config = AuthConfig("https://api.example.test", "secret-token", DeviceIdentity.hash("device")),
             connectionFactory = { connection },
         )
 
@@ -41,7 +41,7 @@ class AutomationHttpClientInstrumentedTest {
             """.trimIndent(),
         )
         val client = AutomationHttpClient(
-            config = AuthConfig("https://api.example.test", "secret-token", "device"),
+            config = AuthConfig("https://api.example.test", "secret-token", DeviceIdentity.hash("device")),
             connectionFactory = { connection },
         )
 
