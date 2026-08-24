@@ -165,7 +165,7 @@ class CommentPrivateMessageRuntime(
         // Search-target mode still traverses the existing launch/search/user-tab flow before the
         // runtime receives a profile observation. Give that bounded entry route a longer guard;
         // once the profile/video/comment actions begin, each step returns to the short watchdog.
-        armTimeout("等待用户主页", timeoutMs = INITIAL_ENTRY_TIMEOUT_MS)
+        armTimeout("等待用户主页", timeoutMs = TuningConstants.CommentRuntime.INITIAL_ENTRY_TIMEOUT_MS)
         logger.info(
             "comment_runtime_started",
             attributes = mapOf(
@@ -304,7 +304,7 @@ class CommentPrivateMessageRuntime(
         )
         when (decision.action) {
             CommentEntryAction.EXIT_LIVE_ROOM -> {
-                if (liveRoomExitCount >= MAX_LIVE_ROOM_EXITS) {
+                if (liveRoomExitCount >= TuningConstants.CommentRuntime.MAX_LIVE_ROOM_EXITS) {
                     terminal(CommentRuntimeTerminal.Outcome.FAILED, "连续进入直播间且无法安全退出")
                     return
                 }
@@ -329,7 +329,7 @@ class CommentPrivateMessageRuntime(
                 return
             }
             CommentEntryAction.SWIPE_LIVE_ROOM -> {
-                if (liveRoomSwipeCount >= MAX_LIVE_ROOM_SWIPES) {
+                if (liveRoomSwipeCount >= TuningConstants.CommentRuntime.MAX_LIVE_ROOM_SWIPES) {
                     terminal(CommentRuntimeTerminal.Outcome.FAILED, "连续遇到直播内容，已达到安全划走上限")
                     return
                 }
@@ -341,7 +341,7 @@ class CommentPrivateMessageRuntime(
                     startY = 0.84f,
                     endX = 0.86f,
                     endY = 0.22f,
-                    durationMs = LIVE_ROOM_SWIPE_DURATION_MS,
+                    durationMs = TuningConstants.CommentRuntime.LIVE_ROOM_SWIPE_DURATION_MS,
                 )
                 logger.info(
                     "live_room_swiped",
@@ -374,7 +374,7 @@ class CommentPrivateMessageRuntime(
                     terminal(CommentRuntimeTerminal.Outcome.FAILED, "跳过无作品或私密账号时无法返回用户列表")
                     return
                 }
-                delay(RETURN_TO_COMMENT_DELAY_MS)
+                delay(TuningConstants.CommentRuntime.RETURN_TO_COMMENT_DELAY_MS)
                 terminal(CommentRuntimeTerminal.Outcome.SKIPPED_PROFILE, decision.reason)
                 return
             }
@@ -402,7 +402,7 @@ class CommentPrivateMessageRuntime(
                 // On some builds “最新” is already selected. The row reports a successful
                 // accessibility click but the transient popup stays focused; re-sample it and
                 // close only that popup, never the underlying profile.
-                delay(WORKS_SORT_SETTLE_MS)
+                delay(TuningConstants.CommentRuntime.WORKS_SORT_SETTLE_MS)
                 val popupStillVisible = currentContext()?.let { latestContext ->
                     CommentEntrySignalDetector.observe(
                         latestContext,
@@ -428,7 +428,7 @@ class CommentPrivateMessageRuntime(
                 // A custom-rendered video surface can expose its safe right-side comment rail
                 // only after its first media/layout pass. Keep the wait bounded, but give that
                 // real transition longer than an ordinary button click.
-                armTimeout("等待视频页面", timeoutMs = VIDEO_PAGE_TIMEOUT_MS)
+                armTimeout("等待视频页面", timeoutMs = TuningConstants.CommentRuntime.VIDEO_PAGE_TIMEOUT_MS)
                 scheduleFirstVideoTransitionProbe()
                 return
             }
@@ -481,7 +481,7 @@ class CommentPrivateMessageRuntime(
                 val end = CommentPanelEndDetector.detect(context)
                 if (end.reached) {
                     advanceAfterVideo("评论区已读取到底部：${end.marker.orEmpty()}")
-                } else if (staleScrollCount >= MAX_STALE_SCROLLS) {
+                } else if (staleScrollCount >= TuningConstants.CommentRuntime.MAX_STALE_SCROLLS) {
                     advanceAfterVideo("评论区连续滚动后内容未更新")
                 } else {
                     staleScrollCount += 1
@@ -546,10 +546,10 @@ class CommentPrivateMessageRuntime(
     private fun scheduleFirstVideoTransitionProbe() {
         firstVideoTransitionProbeJob?.cancel()
         firstVideoTransitionProbeJob = scope.launch {
-            repeat(FIRST_VIDEO_TRANSITION_PROBE_ATTEMPTS) { attempt ->
+            repeat(TuningConstants.CommentRuntime.FIRST_VIDEO_TRANSITION_PROBE_ATTEMPTS) { attempt ->
                 delay(
-                    if (attempt == 0) FIRST_VIDEO_TRANSITION_INITIAL_DELAY_MS
-                    else FIRST_VIDEO_TRANSITION_PROBE_INTERVAL_MS,
+                    if (attempt == 0) TuningConstants.CommentRuntime.FIRST_VIDEO_TRANSITION_INITIAL_DELAY_MS
+                    else TuningConstants.CommentRuntime.FIRST_VIDEO_TRANSITION_PROBE_INTERVAL_MS,
                 )
                 if (!running || stateMachine.stage != CommentEntryStage.WAITING_FOR_VIDEO) {
                     return@launch
@@ -572,7 +572,7 @@ class CommentPrivateMessageRuntime(
                     onObserved(context, pageDetector.detect(context))
                     return@launch
                 }
-                if (attempt == FIRST_VIDEO_TRANSITION_PROBE_ATTEMPTS - 1 &&
+                if (attempt == TuningConstants.CommentRuntime.FIRST_VIDEO_TRANSITION_PROBE_ATTEMPTS - 1 &&
                     observation.page == PageKind.USER_PROFILE &&
                     observation.firstVideoTarget != null
                 ) {
@@ -584,7 +584,7 @@ class CommentPrivateMessageRuntime(
                     if (!retry.succeeded) {
                         terminal(CommentRuntimeTerminal.Outcome.FAILED, "首个视频点击后仍停留主页且重试失败：${retry.reason.orEmpty()}")
                     } else {
-                        armTimeout("等待视频页面", timeoutMs = VIDEO_PAGE_TIMEOUT_MS)
+                        armTimeout("等待视频页面", timeoutMs = TuningConstants.CommentRuntime.VIDEO_PAGE_TIMEOUT_MS)
                     }
                 }
             }
@@ -603,13 +603,13 @@ class CommentPrivateMessageRuntime(
             var hiddenEntryObservations = 0
             var controlsRevealAttempted = false
             var ocrProbeCount = 0
-            repeat(NEXT_VIDEO_TRANSITION_PROBE_ATTEMPTS) { attempt ->
+            repeat(TuningConstants.CommentRuntime.NEXT_VIDEO_TRANSITION_PROBE_ATTEMPTS) { attempt ->
                 val settleRemaining = (nextVideoSettleUntilMs - SystemClock.uptimeMillis()).coerceAtLeast(0L)
                 delay(
                     if (attempt == 0) {
-                        settleRemaining + NEXT_VIDEO_TRANSITION_INITIAL_GRACE_MS
+                        settleRemaining + TuningConstants.CommentRuntime.NEXT_VIDEO_TRANSITION_INITIAL_GRACE_MS
                     } else {
-                        NEXT_VIDEO_TRANSITION_PROBE_INTERVAL_MS
+                        TuningConstants.CommentRuntime.NEXT_VIDEO_TRANSITION_PROBE_INTERVAL_MS
                     },
                 )
                 if (!running || stateMachine.stage != CommentEntryStage.WAITING_FOR_VIDEO) {
@@ -627,7 +627,7 @@ class CommentPrivateMessageRuntime(
                 // after a genuine video was observed without a safe entry, then re-run the same
                 // strict detector against the enriched snapshot.
                 if (observation.hasVideoSurface && !observation.hasCommentEntry &&
-                    ocrProbeCount < NEXT_VIDEO_OCR_PROBE_LIMIT
+                    ocrProbeCount < TuningConstants.CommentRuntime.NEXT_VIDEO_OCR_PROBE_LIMIT
                 ) {
                     ocrProbeCount += 1
                     context = enrichWithOcr(context)
@@ -681,14 +681,14 @@ class CommentPrivateMessageRuntime(
                                 "comment_video_controls_reveal",
                                 attributes = mapOf("success" to reveal.succeeded, "route" to reveal.route),
                             )
-                            delay(VIDEO_CONTROLS_REVEAL_SETTLE_MS)
+                            delay(TuningConstants.CommentRuntime.VIDEO_CONTROLS_REVEAL_SETTLE_MS)
                         }
                     }
                     // A genuine video that still does not expose a safe comment entry after
                     // the one neutral reveal is not actionable. Treat it like the documented
                     // no-comment case and move forward; opening arbitrary invisible controls
                     // would be riskier than skipping this video.
-                    if (hiddenEntryObservations >= NEXT_VIDEO_HIDDEN_ENTRY_LIMIT) {
+                    if (hiddenEntryObservations >= TuningConstants.CommentRuntime.NEXT_VIDEO_HIDDEN_ENTRY_LIMIT) {
                         logger.info(
                             "comment_next_video_skipped_no_safe_entry",
                             attributes = mapOf("video_index" to videoIndex, "observations" to hiddenEntryObservations),
@@ -713,12 +713,12 @@ class CommentPrivateMessageRuntime(
      */
     private fun scheduleProfileSurfaceProbe() {
         if (profileSurfaceProbeJob?.isActive == true) return
-        armTimeout("等待用户主页内容稳定", timeoutMs = PROFILE_CONTENT_TIMEOUT_MS)
+        armTimeout("等待用户主页内容稳定", timeoutMs = TuningConstants.CommentRuntime.PROFILE_CONTENT_TIMEOUT_MS)
         profileSurfaceProbeJob = scope.launch {
-            repeat(PROFILE_SURFACE_PROBE_ATTEMPTS) { attempt ->
+            repeat(TuningConstants.CommentRuntime.PROFILE_SURFACE_PROBE_ATTEMPTS) { attempt ->
                 delay(
-                    if (attempt == 0) PROFILE_SURFACE_PROBE_INITIAL_DELAY_MS
-                    else PROFILE_SURFACE_PROBE_INTERVAL_MS,
+                    if (attempt == 0) TuningConstants.CommentRuntime.PROFILE_SURFACE_PROBE_INITIAL_DELAY_MS
+                    else TuningConstants.CommentRuntime.PROFILE_SURFACE_PROBE_INTERVAL_MS,
                 )
                 if (!running || stateMachine.stage != CommentEntryStage.WAITING_FOR_PROFILE) {
                     return@launch
@@ -767,10 +767,10 @@ class CommentPrivateMessageRuntime(
         commentPanelProbeJob?.cancel()
         commentPanelProbeJob = scope.launch {
             var coordinateRetryDecided = false
-            repeat(COMMENT_PANEL_PROBE_ATTEMPTS) { attempt ->
+            repeat(TuningConstants.CommentRuntime.COMMENT_PANEL_PROBE_ATTEMPTS) { attempt ->
                 delay(
-                    if (attempt == 0) COMMENT_PANEL_PROBE_INITIAL_DELAY_MS
-                    else COMMENT_PANEL_PROBE_INTERVAL_MS,
+                    if (attempt == 0) TuningConstants.CommentRuntime.COMMENT_PANEL_PROBE_INITIAL_DELAY_MS
+                    else TuningConstants.CommentRuntime.COMMENT_PANEL_PROBE_INTERVAL_MS,
                 )
                 if (!running || stateMachine.stage != CommentEntryStage.WAITING_FOR_COMMENTS) {
                     return@launch
@@ -795,7 +795,7 @@ class CommentPrivateMessageRuntime(
                 // freshly resolved, safety-checked right-rail node.  Reusing the recovery policy
                 // keeps this out of the comment sheet's “评论 / AI解析” tabs, location rows,
                 // reaction controls, and comment content.
-                if (!coordinateRetryDecided && attempt + 1 == COMMENT_PANEL_NODE_BOUNDS_RETRY_ATTEMPT) {
+                if (!coordinateRetryDecided && attempt + 1 == TuningConstants.CommentRuntime.COMMENT_PANEL_NODE_BOUNDS_RETRY_ATTEMPT) {
                     coordinateRetryDecided = true
                     val currentTarget = CommentEntrySignalDetector.observe(
                         context,
@@ -936,16 +936,16 @@ class CommentPrivateMessageRuntime(
         // Re-read the same top viewport a few times, then skip this video rather than silently
         // moving past its first commenter.
         if (scrollCount == 0 && processedCandidateKeys.isEmpty() && newCandidates.isEmpty()) {
-            if (initialCandidateReadRetryCount < INITIAL_COMMENT_CANDIDATE_READ_RETRIES) {
+            if (initialCandidateReadRetryCount < TuningConstants.CommentRuntime.INITIAL_COMMENT_CANDIDATE_READ_RETRIES) {
                 initialCandidateReadRetryCount += 1
                 logger.info(
                     "comment_initial_viewport_waiting",
                     attributes = mapOf(
                         "attempt" to initialCandidateReadRetryCount,
-                        "max_attempts" to INITIAL_COMMENT_CANDIDATE_READ_RETRIES,
+                        "max_attempts" to TuningConstants.CommentRuntime.INITIAL_COMMENT_CANDIDATE_READ_RETRIES,
                     ),
                 )
-                delay(INITIAL_COMMENT_CANDIDATE_READ_RETRY_DELAY_MS)
+                delay(TuningConstants.CommentRuntime.INITIAL_COMMENT_CANDIDATE_READ_RETRY_DELAY_MS)
                 val fresh = currentContext()
                 if (fresh != null && CommentSurfaceDetector.detect(fresh).isCommentSurface) {
                     processCommentViewport(fresh)
@@ -1034,12 +1034,12 @@ class CommentPrivateMessageRuntime(
             emptyScrollCount = 0
         } else if (scrollCount > 0) {
             emptyScrollCount += 1
-            if (emptyScrollCount >= MAX_EMPTY_SCROLLS) {
+            if (emptyScrollCount >= TuningConstants.CommentRuntime.MAX_EMPTY_SCROLLS) {
                 advanceAfterVideo("评论区连续滚动后无新增评论用户")
                 return
             }
         }
-        if (scrollCount >= MAX_COMMENT_SCROLLS) {
+        if (scrollCount >= TuningConstants.CommentRuntime.MAX_COMMENT_SCROLLS) {
             terminal(CommentRuntimeTerminal.Outcome.FAILED, "评论区连续滚动后仍未出现到底提示")
             return
         }
@@ -1059,8 +1059,8 @@ class CommentPrivateMessageRuntime(
         // window directly (bounded) and treat either the end footer or consecutive zero-new-
         // candidate viewports as end-of-list, so the 5/10/20 regression always terminates cleanly.
         var emptyPolls = 0
-        while (running && emptyPolls < POST_SCROLL_POLL_ATTEMPTS) {
-            delay(POST_SCROLL_POLL_INTERVAL_MS)
+        while (running && emptyPolls < TuningConstants.CommentRuntime.POST_SCROLL_POLL_ATTEMPTS) {
+            delay(TuningConstants.CommentRuntime.POST_SCROLL_POLL_INTERVAL_MS)
             val fresh = currentContext()
             if (fresh == null) break
             val end = CommentPanelEndDetector.detect(fresh)
@@ -1091,7 +1091,7 @@ class CommentPrivateMessageRuntime(
             )
         }
         if (!running) return
-        if (emptyPolls >= POST_SCROLL_POLL_ATTEMPTS) {
+        if (emptyPolls >= TuningConstants.CommentRuntime.POST_SCROLL_POLL_ATTEMPTS) {
             advanceAfterVideo("评论区连续滚动后无新增评论用户")
             return
         }
@@ -1132,8 +1132,8 @@ class CommentPrivateMessageRuntime(
         // so the merge consumer cannot drain the old panel's candidates into the next video.
         stateMachine.prepareNextVideo()
         pendingViewportContext = null
-        nextVideoSettleUntilMs = SystemClock.uptimeMillis() + NEXT_VIDEO_SETTLE_MS
-        if (closeCommentSheet) delay(RETURN_TO_COMMENT_DELAY_MS)
+        nextVideoSettleUntilMs = SystemClock.uptimeMillis() + TuningConstants.CommentRuntime.NEXT_VIDEO_SETTLE_MS
+        if (closeCommentSheet) delay(TuningConstants.CommentRuntime.RETURN_TO_COMMENT_DELAY_MS)
         nextVideoSurfaceSignatureBeforeSwipe = currentContext()?.let(::videoSurfaceFingerprint)
 
         videoIndex = completedVideo
@@ -1153,7 +1153,7 @@ class CommentPrivateMessageRuntime(
             startY = 0.84f,
             endX = 0.50f,
             endY = 0.28f,
-            durationMs = NEXT_VIDEO_SWIPE_DURATION_MS,
+            durationMs = TuningConstants.CommentRuntime.NEXT_VIDEO_SWIPE_DURATION_MS,
         )
         logger.info(
             "comment_next_video_swiped",
@@ -1168,7 +1168,7 @@ class CommentPrivateMessageRuntime(
             terminal(CommentRuntimeTerminal.Outcome.FAILED, "切换下一个视频失败：${swipe.reason.orEmpty()}")
             return
         }
-        armTimeout("等待下一个视频", timeoutMs = VIDEO_PAGE_TIMEOUT_MS)
+        armTimeout("等待下一个视频", timeoutMs = TuningConstants.CommentRuntime.VIDEO_PAGE_TIMEOUT_MS)
         scheduleNextVideoTransitionProbe()
     }
 
@@ -1208,9 +1208,9 @@ class CommentPrivateMessageRuntime(
         val profileObservationGeneration = observedContextGeneration.get()
         var click: ActionOutcome = ActionOutcome.failure("评论头像节点不可重新定位，拒绝点击名称或其他控件")
         var avatarAttempt = 0
-        while (avatarAttempt < AVATAR_RESOLVE_RETRIES && !click.succeeded) {
+        while (avatarAttempt < TuningConstants.CommentRuntime.AVATAR_RESOLVE_RETRIES && !click.succeeded) {
             if (avatarAttempt > 0) {
-                delay(AVATAR_RESOLVE_RETRY_DELAY_MS)
+                delay(TuningConstants.CommentRuntime.AVATAR_RESOLVE_RETRY_DELAY_MS)
                 logger.info(
                     "comment_avatar_resolve_retry",
                     attributes = mapOf("attempt" to avatarAttempt, "last_reason" to click.reason.orEmpty()),
@@ -1251,7 +1251,7 @@ class CommentPrivateMessageRuntime(
                 message = "头像点击未确认跳转且评论面板仍在，使用同一头像进行一次受限重试",
                 attributes = mapOf("first_result" to profile.kind.name, "row_top" to candidateTop(candidate)),
             )
-            delay(AVATAR_PROFILE_RETRY_DELAY_MS)
+            delay(TuningConstants.CommentRuntime.AVATAR_PROFILE_RETRY_DELAY_MS)
             val retryObservationGeneration = observedContextGeneration.get()
             val retryClick = clickCommentCandidate(currentContext() ?: retryContext, candidate)
             if (retryClick.succeeded) {
@@ -1431,10 +1431,10 @@ class CommentPrivateMessageRuntime(
         var lastReason = "主页私信入口尚未稳定"
         var entryActionSubmitted = false
 
-        repeat(COMMENT_PRIVATE_MESSAGE_ENTRY_ATTEMPTS) { zeroBasedAttempt ->
+        repeat(TuningConstants.CommentRuntime.PRIVATE_MESSAGE_ENTRY_ATTEMPTS) { zeroBasedAttempt ->
             val attempt = zeroBasedAttempt + 1
             if (zeroBasedAttempt > 0) {
-                delay(COMMENT_PRIVATE_MESSAGE_ENTRY_RETRY_DELAY_MS)
+                delay(TuningConstants.CommentRuntime.PRIVATE_MESSAGE_ENTRY_RETRY_DELAY_MS)
             }
 
             val liveContext = currentContext() ?: lastContext
@@ -1485,7 +1485,7 @@ class CommentPrivateMessageRuntime(
                         "selector_reason_count" to selection.reasons.size,
                     ),
                 )
-                if (attempt == COMMENT_PRIVATE_MESSAGE_ENTRY_ATTEMPTS) {
+                if (attempt == TuningConstants.CommentRuntime.PRIVATE_MESSAGE_ENTRY_ATTEMPTS) {
                     saveNodeDiagnostic(liveContext, "comment_private_message_entry_unavailable")
                 }
                 return@repeat
@@ -1519,7 +1519,7 @@ class CommentPrivateMessageRuntime(
                     PageKind.PRIVATE_MESSAGE_RESTRICTED,
                 ),
                 description = "等待评论用户私信页",
-                timeoutMs = COMMENT_PRIVATE_MESSAGE_ENTRY_POSTCONDITION_TIMEOUT_MS,
+                timeoutMs = TuningConstants.CommentRuntime.PRIVATE_MESSAGE_ENTRY_POSTCONDITION_TIMEOUT_MS,
                 afterObservedGeneration = directMessageObservationGeneration,
             )
             lastContext = observed.context ?: lastContext
@@ -1577,15 +1577,15 @@ class CommentPrivateMessageRuntime(
     private suspend fun awaitPage(
         expected: Set<PageKind>,
         description: String,
-        timeoutMs: Long = CANDIDATE_STEP_TIMEOUT_MS,
+        timeoutMs: Long = TuningConstants.CommentRuntime.CANDIDATE_STEP_TIMEOUT_MS,
         afterObservedGeneration: Long? = null,
     ): ObservedPage {
-        val attempts = (timeoutMs / PAGE_POLL_INTERVAL_MS).toInt().coerceAtLeast(1)
+        val attempts = (timeoutMs / TuningConstants.CommentRuntime.PAGE_POLL_INTERVAL_MS).toInt().coerceAtLeast(1)
         var lastKind = PageKind.UNKNOWN
         var lastContext: ScreenContext? = null
         var consumedObservedGeneration = afterObservedGeneration ?: Long.MIN_VALUE
         repeat(attempts) { attempt ->
-            if (attempt > 0) delay(PAGE_POLL_INTERVAL_MS)
+            if (attempt > 0) delay(TuningConstants.CommentRuntime.PAGE_POLL_INTERVAL_MS)
             val observedGeneration = observedContextGeneration.get()
             val observedContext = latestObservedContext?.takeIf {
                 observedGeneration > consumedObservedGeneration
@@ -1616,7 +1616,7 @@ class CommentPrivateMessageRuntime(
         if (!setText.succeeded) {
             return ObservedPage(PageKind.MESSAGE_SEND_FAILED, context, "无法在私信输入框放置空格探测")
         }
-        delay(BLANK_PROBE_SETTLE_MS)
+        delay(TuningConstants.CommentRuntime.BLANK_PROBE_SETTLE_MS)
         val refreshed = currentContext() ?: context
         val send = selector.select(refreshed, DouyinSelectors.messageSendAction).node
         // Start collecting the native rejection *before* the submit gesture. On some Douyin
@@ -1641,11 +1641,11 @@ class CommentPrivateMessageRuntime(
             logger.info("comment_blank_probe_submitted")
             // Douyin delivers the “不能发送空白消息” notice as a transient
             // TYPE_NOTIFICATION_STATE_CHANGED event that never appears in the node tree.
-            val attempts = (BLANK_PROBE_TIMEOUT_MS / PAGE_POLL_INTERVAL_MS).toInt().coerceAtLeast(1)
+            val attempts = (TuningConstants.CommentRuntime.BLANK_PROBE_TIMEOUT_MS / TuningConstants.CommentRuntime.PAGE_POLL_INTERVAL_MS).toInt().coerceAtLeast(1)
             var lastKind = PageKind.UNKNOWN
             var lastContext: ScreenContext? = null
             repeat(attempts) { attempt ->
-                if (attempt > 0) delay(PAGE_POLL_INTERVAL_MS)
+                if (attempt > 0) delay(TuningConstants.CommentRuntime.PAGE_POLL_INTERVAL_MS)
                 if (blankRejectionObserved) {
                     return ObservedPage(PageKind.MESSAGE_EMPTY_REJECTED, lastContext, null)
                 }
@@ -1776,7 +1776,7 @@ class CommentPrivateMessageRuntime(
     /** Writes a privacy-scoped node dump into the private diagnostics directory, never to logcat. */
     private fun saveNodeDiagnostic(context: ScreenContext, tag: String) {
         val safeTag = tag.replace(Regex("[^a-zA-Z0-9_-]+"), "_").take(32).ifBlank { "blank_probe" }
-        val directory = File(service.filesDir, BLANK_PROBE_NODE_DUMP_DIRECTORY)
+        val directory = File(service.filesDir, TuningConstants.CommentRuntime.BLANK_PROBE_NODE_DUMP_DIRECTORY)
         if (!directory.exists() && !directory.mkdirs()) {
             logger.error("blank_probe_node_dump_failed", message = "Could not create private node-dump directory")
             return
@@ -1800,7 +1800,7 @@ class CommentPrivateMessageRuntime(
         try {
             var ocrRecoveryAttempted = false
             var requiredBackActions: Int? = null
-            for (attempt in 0..MAX_RETURN_TO_COMMENT_BACKS) {
+            for (attempt in 0..TuningConstants.CommentRuntime.MAX_RETURN_TO_COMMENT_BACKS) {
                 var context = currentContext()
                 if (context != null) {
                     var detection = pageDetector.detect(context)
@@ -1906,7 +1906,7 @@ class CommentPrivateMessageRuntime(
                         break
                     }
                 }
-                if (attempt == MAX_RETURN_TO_COMMENT_BACKS) break
+                if (attempt == TuningConstants.CommentRuntime.MAX_RETURN_TO_COMMENT_BACKS) break
                 val nextBackActionCount = returnCommentSurfaceBackActions + 1
                 confirmedReturnCommentSurface = null
                 confirmedReturnCommentSurfaceBackActions = -1
@@ -1919,7 +1919,7 @@ class CommentPrivateMessageRuntime(
                     "comment_return_back_dispatched",
                     attributes = mapOf("attempt" to attempt, "back_actions" to nextBackActionCount),
                 )
-                delay(RETURN_TO_COMMENT_DELAY_MS)
+                delay(TuningConstants.CommentRuntime.RETURN_TO_COMMENT_DELAY_MS)
             }
             terminal(CommentRuntimeTerminal.Outcome.FAILED, "无法在限定次数内返回评论区")
             return false
@@ -1930,8 +1930,8 @@ class CommentPrivateMessageRuntime(
     }
 
     private suspend fun awaitCommentSurface(minimumBackActions: Int): Boolean {
-        repeat(COMMENT_SURFACE_POLL_ATTEMPTS) { attempt ->
-            if (attempt > 0) delay(PAGE_POLL_INTERVAL_MS)
+        repeat(TuningConstants.CommentRuntime.COMMENT_SURFACE_POLL_ATTEMPTS) { attempt ->
+            if (attempt > 0) delay(TuningConstants.CommentRuntime.PAGE_POLL_INTERVAL_MS)
             if (hasConfirmedReturnCommentSurface(minimumBackActions)) return true
             val context = currentContext() ?: return@repeat
             if (CommentSurfaceDetector.detect(context).isCommentSurface) return true
@@ -2280,7 +2280,7 @@ class CommentPrivateMessageRuntime(
         }
         .maxByOrNull { it.bounds.width * it.bounds.height }
 
-    private fun armTimeout(description: String, timeoutMs: Long = STEP_TIMEOUT_MS) {
+    private fun armTimeout(description: String, timeoutMs: Long = TuningConstants.CommentRuntime.STEP_TIMEOUT_MS) {
         timeoutJob?.cancel()
         val generation = timeoutGeneration.incrementAndGet()
         timeoutJob = scope.launch {
@@ -2313,71 +2313,4 @@ class CommentPrivateMessageRuntime(
         onTerminal(CommentRuntimeTerminal(outcome, reason))
     }
 
-    private companion object {
-        const val STEP_TIMEOUT_MS = 12_000L
-        const val VIDEO_PAGE_TIMEOUT_MS = 18_000L
-        const val INITIAL_ENTRY_TIMEOUT_MS = 60_000L
-        const val CANDIDATE_STEP_TIMEOUT_MS = 12_000L
-        const val BLANK_PROBE_TIMEOUT_MS = 8_000L
-        const val PAGE_POLL_INTERVAL_MS = 350L
-        const val BLANK_PROBE_SETTLE_MS = 250L
-        /**
-         * Profile shells and their compact paper-plane action are rendered independently.  Four
-         * fresh tree reads cover that short mounting window without turning the route into an
-         * unbounded wait.  Once a semantic action is clicked, keep the normal direct-message
-         * postcondition long enough for Douyin's chat transition animation to finish.
-         */
-        const val COMMENT_PRIVATE_MESSAGE_ENTRY_ATTEMPTS = 4
-        const val COMMENT_PRIVATE_MESSAGE_ENTRY_RETRY_DELAY_MS = 500L
-        const val COMMENT_PRIVATE_MESSAGE_ENTRY_POSTCONDITION_TIMEOUT_MS = 3_200L
-        const val RETURN_TO_COMMENT_DELAY_MS = 450L
-        const val WORKS_SORT_SETTLE_MS = 140L
-        const val FIRST_VIDEO_TRANSITION_PROBE_ATTEMPTS = 3
-        const val FIRST_VIDEO_TRANSITION_INITIAL_DELAY_MS = 450L
-        const val FIRST_VIDEO_TRANSITION_PROBE_INTERVAL_MS = 550L
-        const val NEXT_VIDEO_TRANSITION_PROBE_ATTEMPTS = 24
-        const val NEXT_VIDEO_TRANSITION_INITIAL_GRACE_MS = 180L
-        const val NEXT_VIDEO_TRANSITION_PROBE_INTERVAL_MS = 500L
-        // Each negative observation can include a full-screen OCR capture. Two strict OCR
-        // samples are enough to prove that the malformed rail is still not safely actionable;
-        // skip then rather than allowing the next-video watchdog to race a third/fourth probe.
-        const val NEXT_VIDEO_HIDDEN_ENTRY_LIMIT = 2
-        const val NEXT_VIDEO_OCR_PROBE_LIMIT = 2
-        const val VIDEO_CONTROLS_REVEAL_SETTLE_MS = 450L
-        const val PROFILE_CONTENT_TIMEOUT_MS = 12_000L
-        const val PROFILE_SURFACE_PROBE_ATTEMPTS = 20
-        const val PROFILE_SURFACE_PROBE_INITIAL_DELAY_MS = 250L
-        const val PROFILE_SURFACE_PROBE_INTERVAL_MS = 500L
-        const val COMMENT_PANEL_PROBE_ATTEMPTS = 6
-        const val COMMENT_PANEL_PROBE_INITIAL_DELAY_MS = 350L
-        const val COMMENT_PANEL_PROBE_INTERVAL_MS = 500L
-        /** One-based probe count before the single safety-checked coordinate retry. */
-        const val COMMENT_PANEL_NODE_BOUNDS_RETRY_ATTEMPT = 3
-        /** Let the just-opened top comment viewport populate before considering any pagination. */
-        const val INITIAL_COMMENT_CANDIDATE_READ_RETRIES = 3
-        const val INITIAL_COMMENT_CANDIDATE_READ_RETRY_DELAY_MS = 450L
-        const val MAX_RETURN_TO_COMMENT_BACKS = 3
-        const val COMMENT_SURFACE_POLL_ATTEMPTS = 8
-        /** Bounded regression scope; never scroll an unbounded long comment list. */
-        const val MAX_COMMENT_SCROLLS = 20
-        /** Consecutive unchanged-fingerprint scrolls tolerated before treating the list as ended. */
-        const val MAX_STALE_SCROLLS = 2
-        /** Consecutive zero-new-candidate scrolls tolerated before treating the list as ended. */
-        const val MAX_EMPTY_SCROLLS = 3
-        /** Direct window polls issued after a scroll before falling back to the event watchdog. */
-        const val POST_SCROLL_POLL_ATTEMPTS = 3
-        const val POST_SCROLL_POLL_INTERVAL_MS = 600L
-        /** Bounded retries for re-resolving a comment-row avatar that briefly left the tree. */
-        const val AVATAR_RESOLVE_RETRIES = 8
-        const val AVATAR_RESOLVE_RETRY_DELAY_MS = 400L
-        /** One post-click retry only when the same verified comment panel is still present. */
-        const val AVATAR_PROFILE_RETRY_DELAY_MS = 450L
-        const val MAX_LIVE_ROOM_EXITS = 3
-        const val MAX_LIVE_ROOM_SWIPES = 3
-        const val LIVE_ROOM_SWIPE_DURATION_MS = 460L
-        const val NEXT_VIDEO_SWIPE_DURATION_MS = 520L
-        /** Ignore post-swipe observations while the previous panel closes and the new video settles. */
-        const val NEXT_VIDEO_SETTLE_MS = 1_600L
-        const val BLANK_PROBE_NODE_DUMP_DIRECTORY = "diagnostics/nodes"
-    }
 }

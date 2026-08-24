@@ -170,7 +170,7 @@
 ### M7 —— 代码结构重构与可维护性（横切）
 
 - [ ] **C1**：魔法常量收敛到统一 `TuningConstants` 配置层（集中命名、注释、版本化）。
-  - 进度：2026-08-24 已完成导航生命周期参数首轮迁移；其余模块仍待按小步验证迁移。
+  - 进度：2026-08-24 已完成导航生命周期与评论运行时参数迁移；其余模块仍待按小步验证迁移。
 - [ ] **C2**：`DouyinNavigationController.kt`（4575 行）按阶段拆分：`SearchFlow` / `UserSelectionFlow` / `PrivateMessageFlow` / `RecoveryFlow`。
 - [ ] **C3**：名称解析器统一（`DirectMessageDisplayNameResolver` / `enrichCurrentUserDisplayName*` / `confirmProfileNodeName`）为单一 `DisplayNameResolver`，按来源优先级仲裁。
 - [ ] **C4**：启发式黑/白名单文案（客服/咨询/购物车等）外置为可远程下发 JSON 配置。

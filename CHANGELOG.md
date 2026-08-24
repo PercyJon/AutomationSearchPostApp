@@ -4,6 +4,30 @@
 
 ---
 
+## [未发布] 2026-08-24 —— M7-C1b 评论运行时调参收敛
+
+### 修改内容
+
+- [`TuningConstants.kt`](app/src/main/java/com/example/douyinautomation/automation/TuningConstants.kt) 新增版本 `2` 的 `CommentRuntime` 分组，集中评论私信运行时的时序、重试、滚动/直播停止上限、空白探测预算及私有诊断目录。
+- [`CommentPrivateMessageRuntime.kt`](app/src/main/java/com/example/douyinautomation/automation/CommentPrivateMessageRuntime.kt) 只改为读取该配置；所有原始值、循环条件、延时、页面判定与安全停止分支保持不变。
+
+### 已验证项
+
+- `TuningConstantsTest` 扩展关键评论安全预算覆盖。
+- 自动化验证：`./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` 与 `git diff --check` 均通过。
+- **真机 OnePlus NE2210 / b33aa309**：更新后服务 Bound/Enabled、Crashed 为空；停止态没有任务、恢复、页面动作、空白探测或消息发送。
+
+### 几何与兼容性检查
+
+- 未新增 Android 几何尺寸、固定 px、坐标、手势或远程调参入口；无需新增 dp 归一化逻辑。
+- 评论节点/OCR/几何/页面确认和空白消息安全闭环保持不变。
+
+### 交接记录
+
+- [`2026-08-24-m7-c1-comment-runtime-tuning.md`](docs/2026-08-24-m7-c1-comment-runtime-tuning.md)
+
+---
+
 ## [未发布] 2026-08-24 —— M7-C1a 导航生命周期调参收敛
 
 ### 修改内容
