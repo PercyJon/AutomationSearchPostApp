@@ -593,9 +593,9 @@ class DouyinNavigationController(
                 // window before the first page observation and search action.
                 logger.info(
                     "initial_screen_settle_started",
-                    attributes = mapOf("wait_ms" to INITIAL_SCREEN_SETTLE_DELAY_MS),
+                    attributes = mapOf("wait_ms" to TuningConstants.NavigationLifecycle.INITIAL_SCREEN_SETTLE_DELAY_MS),
                 )
-                delay(INITIAL_SCREEN_SETTLE_DELAY_MS)
+                delay(TuningConstants.NavigationLifecycle.INITIAL_SCREEN_SETTLE_DELAY_MS)
                 logger.info("initial_screen_settle_completed")
                 await(
                     nextPhase = AutomationPhase.WAITING_FOR_HOME,
@@ -995,7 +995,7 @@ class DouyinNavigationController(
         }
         when (val result = TargetAppLauncher.launch(service)) {
             LaunchResult.Started -> {
-                delay(INITIAL_SCREEN_SETTLE_DELAY_MS)
+                delay(TuningConstants.NavigationLifecycle.INITIAL_SCREEN_SETTLE_DELAY_MS)
                 scheduleInitialObservation()
             }
             is LaunchResult.Failed -> pause("无法恢复抖音任务：${result.reason}")
@@ -3219,7 +3219,7 @@ class DouyinNavigationController(
             lastOcrPageSignature = signature
             ocrPageStableObservations = 1
         }
-        if (ocrPageStableObservations < OCR_PAGE_STABLE_OBSERVATIONS) {
+        if (ocrPageStableObservations < TuningConstants.NavigationLifecycle.OCR_PAGE_STABLE_OBSERVATIONS) {
             logger.info(
                 "ocr_page_waiting_stable",
                 message = "Waiting for a second matching OCR-backed page observation before acting",
@@ -4657,9 +4657,9 @@ class DouyinNavigationController(
                 // Cold-start ads, restored video pages, and the first ML Kit model load can all
                 // consume more than one normal action interval. Give only the launch surface a
                 // longer bounded window; user-row/profile/message steps retain the short guard.
-                AutomationPhase.WAITING_FOR_HOME -> STARTUP_STEP_TIMEOUT_MS
+                AutomationPhase.WAITING_FOR_HOME -> TuningConstants.NavigationLifecycle.STARTUP_STEP_TIMEOUT_MS
                 AutomationPhase.WAITING_FOR_DIRECT_MESSAGE -> MESSAGE_ENTRY_TIMEOUT_MS
-                else -> STEP_TIMEOUT_MS
+                else -> TuningConstants.NavigationLifecycle.STEP_TIMEOUT_MS
             }
             delay(timeoutMs)
             mutex.withLock {
@@ -4978,15 +4978,7 @@ class DouyinNavigationController(
     }
 
     private companion object {
-        const val STEP_TIMEOUT_MS = 12_000L
-        const val STARTUP_STEP_TIMEOUT_MS = 30_000L
         const val NODE_DUMP_DIRECTORY = "diagnostics/nodes"
-        const val INITIAL_OBSERVATION_ATTEMPTS = 24
-        const val INITIAL_OBSERVATION_INTERVAL_MS = 350L
-        const val INITIAL_OCR_RETRY_EVERY_OBSERVATIONS = 2
-        const val INITIAL_OCR_MAX_ATTEMPTS = 6
-        const val OCR_PAGE_STABLE_OBSERVATIONS = 2
-        const val INITIAL_SCREEN_SETTLE_DELAY_MS = 5_000L
         /** Callback snapshots older than this cannot prove the currently launched target page. */
         const val INITIAL_CONTEXT_MAX_AGE_MS = 4_000L
         const val CURRENT_PROFILE_ENTRY_SETTLE_DELAY_MS = 700L
@@ -5118,8 +5110,8 @@ class DouyinNavigationController(
         initialObservationJob = scope.launch {
             var lastReadyKind: PageKind? = null
             var readyObservations = 0
-            repeat(INITIAL_OBSERVATION_ATTEMPTS) { observationAttempt ->
-                delay(INITIAL_OBSERVATION_INTERVAL_MS)
+            repeat(TuningConstants.NavigationLifecycle.INITIAL_OBSERVATION_ATTEMPTS) { observationAttempt ->
+                delay(TuningConstants.NavigationLifecycle.INITIAL_OBSERVATION_INTERVAL_MS)
                 if (!taskActive || phase != AutomationPhase.WAITING_FOR_HOME) return@launch
 
                 // A current-root lookup can be transiently shadowed by the optional progress
@@ -5222,8 +5214,8 @@ class DouyinNavigationController(
         // profile/video: bounded Back navigation until HOME/search.  Screenshot OCR cannot
         // improve that decision and needlessly adds seconds to every regression start.
         if (isCommentPrivateMessageTask()) return context
-        if (observationAttempt % INITIAL_OCR_RETRY_EVERY_OBSERVATIONS != 0) return context
-        if (initialOcrAttempts >= INITIAL_OCR_MAX_ATTEMPTS) return context
+        if (observationAttempt % TuningConstants.NavigationLifecycle.INITIAL_OCR_RETRY_EVERY_OBSERVATIONS != 0) return context
+        if (initialOcrAttempts >= TuningConstants.NavigationLifecycle.INITIAL_OCR_MAX_ATTEMPTS) return context
         val engine = ocr ?: return context
         initialOcrAttempts++
         logger.info(
