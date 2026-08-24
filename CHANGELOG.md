@@ -4,6 +4,30 @@
 
 ---
 
+## [未发布] 2026-08-24 —— M7-C2f 搜索阶段动作编排拆分
+
+### 修改内容
+
+- 新增 [`SearchFlow.kt`](app/src/main/java/com/example/douyinautomation/automation/SearchFlow.kt)，将搜索路由的打开搜索、恢复、输入、复用结果、用户标签与候选选择分派移出页面观察主干。
+- 控制器仍独占实际搜索、恢复、关键词输入、用户标签/候选选择及节点/OCR/几何/手势安全链路。
+
+### 已验证项
+
+- 新增 `SearchFlowTest`，覆盖六种既有搜索动作及无关页面不消费。
+- 自动化验证：`./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` 与 `git diff --check` 均通过。
+- **真机 OnePlus NE2210 / b33aa309**：安装更新后服务 Bound/Enabled、Crashed 为空；停止态没有任务、恢复、页面动作、空白探测或消息发送。
+
+### 几何与兼容性检查
+
+- 未新增 Android 几何尺寸、固定 px、坐标或手势；无需新增 dp 归一化逻辑。
+- 搜索和候选选择的节点优先、OCR 辅助、几何校验和页面确认顺序保持不变。
+
+### 交接记录
+
+- [`2026-08-24-m7-c2-search-flow-orchestration.md`](docs/2026-08-24-m7-c2-search-flow-orchestration.md)
+
+---
+
 ## [未发布] 2026-08-24 —— M7-C2e 私信阶段动作编排拆分
 
 ### 修改内容

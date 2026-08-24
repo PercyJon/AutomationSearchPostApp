@@ -88,6 +88,15 @@ class DouyinNavigationController(
             pause("A verification or risk screen appeared during the blank-message probe; manual handoff required")
         },
     )
+    /** Search-stage action dispatch; concrete search effects remain controller-owned callbacks. */
+    private val searchFlow = SearchFlow(
+        openSearch = ::openSearch,
+        recoverInitialSurface = { context -> recoverInitialSurface(context, requireHome = true) },
+        enterKeyword = ::enterKeyword,
+        reuseResultsQuery = { context -> reuseSearchResultsQueryField(context, "search_entry_wait") },
+        selectUserTab = ::selectUserTab,
+        selectVisibleUser = { context -> selectVisibleUser(context) },
+    )
     private var phase = AutomationPhase.IDLE
     @Volatile private var taskActive = false
     private var keyword: String? = null
@@ -354,33 +363,7 @@ class DouyinNavigationController(
             if (phase == AutomationPhase.WAITING_FOR_PROFILE) return
         }
 
-        when (SearchFlowRouter.route(phase, detection.kind)) {
-            SearchFlowRoute.OPEN_SEARCH -> {
-                openSearch(context)
-                return
-            }
-            SearchFlowRoute.RECOVER_INITIAL_SURFACE -> {
-                recoverInitialSurface(context, requireHome = true)
-                return
-            }
-            SearchFlowRoute.ENTER_KEYWORD -> {
-                enterKeyword(context)
-                return
-            }
-            SearchFlowRoute.REUSE_RESULTS_QUERY -> {
-                reuseSearchResultsQueryField(context, "search_entry_wait")
-                return
-            }
-            SearchFlowRoute.SELECT_USER_TAB -> {
-                selectUserTab(context)
-                return
-            }
-            SearchFlowRoute.SELECT_VISIBLE_USER -> {
-                selectVisibleUser(context)
-                return
-            }
-            null -> Unit
-        }
+        if (searchFlow.onPageObserved(phase, context, detection.kind)) return
 
         if (privateMessageFlow.onPageObserved(phase, detection.kind)) return
 
