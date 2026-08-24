@@ -8,7 +8,7 @@ package com.example.douyinautomation.automation
  * move here without changing their defaults before any future configuration mechanism is added.
  */
 object TuningConstants {
-    const val VERSION = 2
+    const val VERSION = 4
 
     /** Startup polling and phase watchdog values used by [DouyinNavigationController]. */
     object NavigationLifecycle {
@@ -91,5 +91,117 @@ object TuningConstants {
         const val NEXT_VIDEO_SWIPE_DURATION_MS = 520L
         const val NEXT_VIDEO_SETTLE_MS = 1_600L
         const val BLANK_PROBE_NODE_DUMP_DIRECTORY = "diagnostics/nodes"
+    }
+
+    /** Bounded navigation, recovery and normalized-gesture values used by the controller. */
+    object NavigationFlow {
+        const val NODE_DUMP_DIRECTORY = "diagnostics/nodes"
+        const val INITIAL_CONTEXT_MAX_AGE_MS = 4_000L
+        const val CURRENT_PROFILE_ENTRY_SETTLE_DELAY_MS = 700L
+        const val CURRENT_PROFILE_OBSERVATION_ATTEMPTS = 120
+        const val CURRENT_PROFILE_OBSERVATION_INTERVAL_MS = 500L
+        const val CURRENT_PROFILE_RESUME_SETTLE_DELAY_MS = 150L
+        const val CURRENT_PROFILE_RESUME_CONTEXT_ATTEMPTS = 6
+        const val CURRENT_PROFILE_RESUME_CONTEXT_INTERVAL_MS = 250L
+        const val CURRENT_PROFILE_CONTEXT_MAX_AGE_MS = 4_000L
+        const val NEXT_TASK_SETTLE_DELAY_MS = 900L
+        const val INITIAL_READY_STABLE_OBSERVATIONS = 2
+        val INITIAL_READY_PAGE_KINDS = setOf(
+            PageKind.HOME,
+            PageKind.SEARCH_ENTRY,
+            PageKind.SEARCH_RESULTS,
+            PageKind.USER_RESULTS,
+        )
+
+        const val KEYWORD_POSTCONDITION_DELAY_MS = 280L
+        const val MAX_NODE_SCROLL_ATTEMPTS = 2
+        const val USER_RESULTS_POSTCONDITION_ATTEMPTS = 8
+        const val USER_RESULTS_POSTCONDITION_INTERVAL_MS = 500L
+        const val USER_ROW_POSTCONDITION_ATTEMPTS = 8
+        const val USER_ROW_POSTCONDITION_INTERVAL_MS = 350L
+        const val P0_USER_ROW_POSTCONDITION_ATTEMPTS = 2
+        const val P0_USER_ROW_POSTCONDITION_INTERVAL_MS = 120L
+        const val IDENTITY_RETRY_ATTEMPTS = 3
+        const val IDENTITY_RETRY_INTERVAL_MS = 450L
+
+        /** Two exception-only OCR samples must settle before P0 geometry fallback. */
+        const val P0_FIRST_USER_OCR_STABILITY_DELAY_MS = 350L
+        const val VIEWPORT_ANCHOR_PROBE_ATTEMPTS = 8
+        const val VIEWPORT_ANCHOR_PROBE_INTERVAL_MS = 650L
+        const val VIEWPORT_IDENTITY_STABLE_OBSERVATIONS = 2
+        const val REMOTE_RESUME_EXTRA_SWIPES = 8
+        const val MAX_REMOTE_RESUME_SWIPES = 30
+        const val MAX_VISIBLE_USER_ROWS = 20
+
+        const val MESSAGE_ENTRY_POSTCONDITION_DELAY_MS = 900L
+        const val PRIVATE_MESSAGE_ENTRY_ATTEMPTS = 3
+        const val PRIVATE_MESSAGE_ENTRY_RETRY_INTERVAL_MS = 450L
+        const val PRIVATE_MESSAGE_ENTRY_POSTCONDITION_ATTEMPTS = 7
+        const val PRIVATE_MESSAGE_ENTRY_POSTCONDITION_INITIAL_DELAY_MS = 500L
+        const val PRIVATE_MESSAGE_ENTRY_POSTCONDITION_INTERVAL_MS = 450L
+        const val PRIVATE_MESSAGE_ENTRY_OCR_PROBE_ATTEMPT = 2
+        const val USER_PROFILE_BACK_DELAY_MS = 700L
+        const val MAX_BACK_ACTIONS_TO_SEARCH_ENTRY = 3
+        const val MAX_INITIAL_HOME_BACK_ACTIONS = 5
+        const val MAX_INITIAL_BLIND_BACK_ACTIONS = 4
+        const val PROFILE_POSTCONDITION_ATTEMPTS = 16
+        const val PROFILE_POSTCONDITION_INITIAL_DELAY_MS = 180L
+        const val PROFILE_POSTCONDITION_INTERVAL_MS = 250L
+        const val PROFILE_NAME_CONFIRM_ATTEMPTS = 2
+        const val PROFILE_NAME_CONFIRM_INTERVAL_MS = 110L
+        const val USER_NEXT_RESULT_DELAY_MS = 700L
+        const val USER_NEXT_RESULT_POSTCONDITION_ATTEMPTS = 36
+        const val USER_NEXT_RESULT_POSTCONDITION_INTERVAL_MS = 400L
+        const val MAX_BACK_ACTIONS_FROM_MESSAGE_FAILURE = 2
+
+        const val MESSAGE_ENTRY_TIMEOUT_MS = 12_000L
+        const val MAX_MESSAGE_LENGTH = 500
+        const val MESSAGE_TARGET_RESTORE_DELAY_MS = 700L
+        const val MESSAGE_INPUT_SETTLE_DELAY_MS = 250L
+        const val MESSAGE_INPUT_ATTEMPTS = 3
+        const val MESSAGE_ACTION_ATTEMPTS = 3
+        const val MESSAGE_INPUT_RETRY_INTERVAL_MS = 350L
+        const val MESSAGE_RESULT_ATTEMPTS = 8
+        const val MESSAGE_RESULT_INTERVAL_MS = 600L
+
+        /** Bounded empty-message rejection observation; never a real-message delivery loop. */
+        const val EMPTY_MESSAGE_PROBE_ATTEMPTS = 18
+        const val EMPTY_MESSAGE_PROBE_INITIAL_DELAY_MS = 120L
+        const val EMPTY_MESSAGE_PROBE_INTERVAL_MS = 350L
+        const val EMPTY_MESSAGE_OCR_EVERY_ATTEMPTS = 4
+        const val MAX_TIMEOUT_RECOVERY_ATTEMPTS = 1
+        const val SEARCH_ENTRY_POSTCONDITION_ATTEMPTS = 8
+        const val SEARCH_ENTRY_POSTCONDITION_INTERVAL_MS = 350L
+        const val SEARCH_SUBMIT_POSTCONDITION_ATTEMPTS = 12
+        const val SEARCH_SUBMIT_POSTCONDITION_DELAY_MS = 450L
+        const val SEARCH_SUBMIT_POSTCONDITION_INTERVAL_MS = 500L
+        const val SEARCH_SUBMIT_CONTEXT_MAX_AGE_MS = 8_000L
+        const val SYSTEM_OVERLAY_WAIT_ATTEMPTS = 30
+        const val SYSTEM_OVERLAY_WAIT_INTERVAL_MS = 350L
+
+        /** Existing normalized gesture coordinates; they are ratios, not absolute pixels. */
+        const val USER_PAGE_SWIPE_START_Y = 0.76f
+        const val USER_PAGE_SWIPE_END_Y = 0.38f
+        const val USER_PAGE_SWIPE_DURATION_MS = 480L
+        const val LIVE_ROOM_SWIPE_DURATION_MS = 460L
+        const val USER_RESULTS_TOP_RATIO = 0.14f
+        const val USER_ROW_CONTENT_LEFT_RATIO = 0.24f
+        const val USER_ROW_CONTENT_TOP_RATIO = 0.12f
+        const val USER_ROW_CONTENT_BOTTOM_RATIO = 0.58f
+        const val USER_ROW_SAFE_TAP_RIGHT_RATIO = 0.70f
+
+        const val SEARCH_SUBMIT_LEFT_RATIO = 0.68f
+        const val SEARCH_SUBMIT_TOP_RATIO = 0f
+        const val SEARCH_SUBMIT_RIGHT_RATIO = 1f
+        const val SEARCH_SUBMIT_BOTTOM_RATIO = 0.30f
+        const val SEARCH_SUBMIT_MINIMUM_SCORE = 0.30f
+    }
+
+    /** OCR probe throttling and saved-checkpoint rebind timing used by the accessibility service. */
+    object AccessibilityLifecycle {
+        const val OCR_PROBE_INTERVAL_MS = 1_500L
+        const val OCR_CACHE_TTL_MS = 4_000L
+        const val REBIND_RESUME_DELAY_MS = 700L
+        const val REBIND_RESUME_THROTTLE_MS = 15_000L
     }
 }

@@ -234,11 +234,11 @@ class DouyinAccessibilityService : AccessibilityService() {
                         .append(node.text.orEmpty()).append('|').append(node.contentDescription.orEmpty()).append(';')
                 }
         }.hashCode().toString()
-        if (contextSignature == cachedOcrContextSignature && now - cachedOcrAtMillis < OCR_CACHE_TTL_MS) {
+        if (contextSignature == cachedOcrContextSignature && now - cachedOcrAtMillis < TuningConstants.AccessibilityLifecycle.OCR_CACHE_TTL_MS) {
             return if (cachedOcrBlocks.isEmpty()) context else context.copy(ocrBlocks = cachedOcrBlocks)
         }
         val previous = lastOcrProbeAtMillis.get()
-        if (now - previous < OCR_PROBE_INTERVAL_MS ||
+        if (now - previous < TuningConstants.AccessibilityLifecycle.OCR_PROBE_INTERVAL_MS ||
             !lastOcrProbeAtMillis.compareAndSet(previous, now) ||
             !ocrProbeInFlight.compareAndSet(false, true)
         ) {
@@ -350,7 +350,7 @@ class DouyinAccessibilityService : AccessibilityService() {
         val checkpoint = AutomationStore.getCheckpointForServiceRebind() ?: return
         val now = SystemClock.uptimeMillis()
         if (checkpoint.taskId == lastRebindResumeTaskId &&
-            now - lastRebindResumeAtMillis < REBIND_RESUME_THROTTLE_MS
+            now - lastRebindResumeAtMillis < TuningConstants.AccessibilityLifecycle.REBIND_RESUME_THROTTLE_MS
         ) {
             AutomationStore.logger.info(
                 "service_rebind_resume_throttled",
@@ -362,7 +362,7 @@ class DouyinAccessibilityService : AccessibilityService() {
         lastRebindResumeAtMillis = now
         rebindResumeJob?.cancel()
         rebindResumeJob = serviceScope.launch {
-            kotlinx.coroutines.delay(REBIND_RESUME_DELAY_MS)
+            kotlinx.coroutines.delay(TuningConstants.AccessibilityLifecycle.REBIND_RESUME_DELAY_MS)
             if (!::controller.isInitialized) return@launch
             val stillRunning = AutomationStore.getCheckpointForServiceRebind()
             if (stillRunning?.taskId != checkpoint.taskId) return@launch
@@ -375,10 +375,6 @@ class DouyinAccessibilityService : AccessibilityService() {
     }
 
     private companion object {
-        const val OCR_PROBE_INTERVAL_MS = 1_500L
-        const val OCR_CACHE_TTL_MS = 4_000L
-        const val REBIND_RESUME_DELAY_MS = 700L
-        const val REBIND_RESUME_THROTTLE_MS = 15_000L
         var lastRebindResumeTaskId: String? = null
         var lastRebindResumeAtMillis: Long = 0L
     }

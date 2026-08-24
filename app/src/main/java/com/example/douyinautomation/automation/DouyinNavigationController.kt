@@ -479,8 +479,8 @@ class DouyinNavigationController(
             ?.let { key -> UserResultIdentityMatcher.remoteAnchorIdentity(key, remoteResume.progress.lastUserName) }
         remoteResumeTargetPageNumber = remoteResume?.progress?.lastPageNumber?.coerceAtLeast(1)
         remoteResumeMaxSwipes = (remoteResumeTargetPageNumber ?: 1)
-            .plus(REMOTE_RESUME_EXTRA_SWIPES)
-            .coerceAtMost(MAX_REMOTE_RESUME_SWIPES)
+            .plus(TuningConstants.NavigationFlow.REMOTE_RESUME_EXTRA_SWIPES)
+            .coerceAtMost(TuningConstants.NavigationFlow.MAX_REMOTE_RESUME_SWIPES)
         queryTransitionHandled = false
         pendingStartMessage = startMessage.trim()
         pendingSafetyProbe = safetyProbe
@@ -567,7 +567,7 @@ class DouyinNavigationController(
                         phase = AutomationPhase.WAITING_FOR_PROFILE
                         AutomationStore.publishPhase(phase)
                         logger.info("comment_current_profile_entry_waiting")
-                        delay(CURRENT_PROFILE_ENTRY_SETTLE_DELAY_MS)
+                        delay(TuningConstants.NavigationFlow.CURRENT_PROFILE_ENTRY_SETTLE_DELAY_MS)
                         scheduleCurrentProfileCommentObservation()
                         return
                     }
@@ -660,7 +660,7 @@ class DouyinNavigationController(
         val next = queuedTaskSnapshots.poll() ?: return false
         val queueId = localTaskQueueSession?.queueId
         scope.launch {
-            delay(NEXT_TASK_SETTLE_DELAY_MS)
+            delay(TuningConstants.NavigationFlow.NEXT_TASK_SETTLE_DELAY_MS)
             mutex.withLock {
                 if (queueId != null && localTaskQueueSession?.queueId != queueId) {
                     logger.info("task_batch_next_cancelled", attributes = mapOf("reason" to "queue_replaced"))
@@ -775,8 +775,8 @@ class DouyinNavigationController(
             // our own activity) and then leave the runtime waiting until its watchdog expires.
             // Keep polling for the whole bounded entry timeout; this is still a fixed, low-rate
             // diagnostic loop and does not scroll or click anything by itself.
-            repeat(CURRENT_PROFILE_OBSERVATION_ATTEMPTS) { attempt ->
-                delay(CURRENT_PROFILE_OBSERVATION_INTERVAL_MS)
+            repeat(TuningConstants.NavigationFlow.CURRENT_PROFILE_OBSERVATION_ATTEMPTS) { attempt ->
+                delay(TuningConstants.NavigationFlow.CURRENT_PROFILE_OBSERVATION_INTERVAL_MS)
                 // After a verified profile/video has been handed to the isolated runtime, that
                 // runtime owns its own event and post-condition loops. Continuing this entry
                 // poll would take needless full-screen OCR samples while it is opening comments
@@ -826,10 +826,10 @@ class DouyinNavigationController(
         val live = currentWindowContext()
         val enriched = latestOcrContext
             ?.takeIf { it.packageName == TargetAppLauncher.DOUYIN_PACKAGE }
-            ?.takeIf { System.currentTimeMillis() - it.capturedAtMillis <= CURRENT_PROFILE_CONTEXT_MAX_AGE_MS }
+            ?.takeIf { System.currentTimeMillis() - it.capturedAtMillis <= TuningConstants.NavigationFlow.CURRENT_PROFILE_CONTEXT_MAX_AGE_MS }
         val latest = latestContext
             ?.takeIf { it.packageName == TargetAppLauncher.DOUYIN_PACKAGE }
-            ?.takeIf { System.currentTimeMillis() - it.capturedAtMillis <= CURRENT_PROFILE_CONTEXT_MAX_AGE_MS }
+            ?.takeIf { System.currentTimeMillis() - it.capturedAtMillis <= TuningConstants.NavigationFlow.CURRENT_PROFILE_CONTEXT_MAX_AGE_MS }
         val liveDetection = live?.let(pageDetector::detect)
         val enrichedDetection = enriched?.let(pageDetector::detect)
         val latestDetection = latest?.let(pageDetector::detect)
@@ -977,7 +977,7 @@ class DouyinNavigationController(
         if (resumesCurrentProfileCommentTask) {
             phase = AutomationPhase.WAITING_FOR_PROFILE
             AutomationStore.publishPhase(phase)
-            delay(CURRENT_PROFILE_ENTRY_SETTLE_DELAY_MS)
+            delay(TuningConstants.NavigationFlow.CURRENT_PROFILE_ENTRY_SETTLE_DELAY_MS)
             scheduleCurrentProfileCommentObservation()
             return
         }
@@ -1210,12 +1210,12 @@ class DouyinNavigationController(
      */
     private suspend fun resolveCurrentProfileCommentEntryForResume(): Pair<ScreenContext, PageDetection>? {
         val commentConfig = activeTaskSnapshot?.commentConfig ?: return null
-        repeat(CURRENT_PROFILE_RESUME_CONTEXT_ATTEMPTS) { attempt ->
+        repeat(TuningConstants.NavigationFlow.CURRENT_PROFILE_RESUME_CONTEXT_ATTEMPTS) { attempt ->
             delay(
                 if (attempt == 0) {
-                    CURRENT_PROFILE_RESUME_SETTLE_DELAY_MS
+                    TuningConstants.NavigationFlow.CURRENT_PROFILE_RESUME_SETTLE_DELAY_MS
                 } else {
-                    CURRENT_PROFILE_RESUME_CONTEXT_INTERVAL_MS
+                    TuningConstants.NavigationFlow.CURRENT_PROFILE_RESUME_CONTEXT_INTERVAL_MS
                 },
             )
             val context = currentProfileObservationContext()
@@ -1298,8 +1298,8 @@ class DouyinNavigationController(
         // In that ordering the state machine has not entered WAITING_FOR_SEARCH_ENTRY yet, so the
         // event is intentionally ignored and no later event may arrive. Poll the live tree briefly
         // after the action and advance from the verified post-condition instead of timing out.
-        for (attempt in 1..SEARCH_ENTRY_POSTCONDITION_ATTEMPTS) {
-            delay(if (attempt == 1) 250L else SEARCH_ENTRY_POSTCONDITION_INTERVAL_MS)
+        for (attempt in 1..TuningConstants.NavigationFlow.SEARCH_ENTRY_POSTCONDITION_ATTEMPTS) {
+            delay(if (attempt == 1) 250L else TuningConstants.NavigationFlow.SEARCH_ENTRY_POSTCONDITION_INTERVAL_MS)
             val postSearchContext = currentWindowContext() ?: continue
             val postSearchDetection = pageDetector.detect(postSearchContext)
             logger.info(
@@ -1371,7 +1371,7 @@ class DouyinNavigationController(
         requireHome: Boolean = false,
     ) {
         var context: ScreenContext? = initialContext
-        repeat(MAX_INITIAL_HOME_BACK_ACTIONS) { attempt ->
+        repeat(TuningConstants.NavigationFlow.MAX_INITIAL_HOME_BACK_ACTIONS) { attempt ->
             val current = context ?: currentWindowContext() ?: recentInitialTargetContext()
             if (current == null) {
                 // Accessibility callbacks can be absent for a short period when a restored
@@ -1379,7 +1379,7 @@ class DouyinNavigationController(
                 // still safe here because the task was launched immediately before this loop;
                 // it lets the app return to its home surface instead of waiting for an event
                 // that may never arrive.
-                if (initialBlindBackAttempts >= MAX_INITIAL_BLIND_BACK_ACTIONS) {
+                if (initialBlindBackAttempts >= TuningConstants.NavigationFlow.MAX_INITIAL_BLIND_BACK_ACTIONS) {
                     failTaskWithoutManualHandoff("无法读取抖音页面，已尝试返回首页但无障碍服务未提供页面树")
                     return
                 }
@@ -1393,11 +1393,11 @@ class DouyinNavigationController(
                         "succeeded" to backSucceeded,
                     ),
                 )
-                if (!backSucceeded && initialBlindBackAttempts >= MAX_INITIAL_BLIND_BACK_ACTIONS) {
+                if (!backSucceeded && initialBlindBackAttempts >= TuningConstants.NavigationFlow.MAX_INITIAL_BLIND_BACK_ACTIONS) {
                     failTaskWithoutManualHandoff("无法读取抖音页面，已尝试返回首页但无障碍服务未提供页面树")
                     return
                 }
-                delay(USER_PROFILE_BACK_DELAY_MS)
+                delay(TuningConstants.NavigationFlow.USER_PROFILE_BACK_DELAY_MS)
                 context = currentWindowContext() ?: recentInitialTargetContext()
                 return@repeat
             }
@@ -1443,7 +1443,7 @@ class DouyinNavigationController(
                 pause("无法从抖音当前页面返回到可搜索页面")
                 return
             }
-            delay(USER_PROFILE_BACK_DELAY_MS)
+            delay(TuningConstants.NavigationFlow.USER_PROFILE_BACK_DELAY_MS)
             context = currentWindowContext() ?: recentInitialTargetContext()
         }
         // The final bounded BACK can be the action that leaves a focused search field and
@@ -1667,8 +1667,8 @@ class DouyinNavigationController(
         // page while the new tab is animating. Poll briefly for a verified USER_RESULTS
         // post-condition so the run does not wait until the step timeout. This does not bypass
         // verification or click a result blindly.
-        for (attempt in 1..USER_RESULTS_POSTCONDITION_ATTEMPTS) {
-            delay(if (attempt == 1) 450L else USER_RESULTS_POSTCONDITION_INTERVAL_MS)
+        for (attempt in 1..TuningConstants.NavigationFlow.USER_RESULTS_POSTCONDITION_ATTEMPTS) {
+            delay(if (attempt == 1) 450L else TuningConstants.NavigationFlow.USER_RESULTS_POSTCONDITION_INTERVAL_MS)
             val postTabContext = currentWindowContext() ?: continue
             val postTabDetection = pageDetector.detect(postTabContext)
             logger.info(
@@ -1783,17 +1783,17 @@ class DouyinNavigationController(
         // task types keep the longer bounded retry window.
         val useFastP0RowFallback = minimumAnchorTop == null && isSearchTargetProfileCommentTask()
         val rowProbeAttempts = if (useFastP0RowFallback) {
-            P0_USER_ROW_POSTCONDITION_ATTEMPTS
+            TuningConstants.NavigationFlow.P0_USER_ROW_POSTCONDITION_ATTEMPTS
         } else {
-            USER_ROW_POSTCONDITION_ATTEMPTS
+            TuningConstants.NavigationFlow.USER_ROW_POSTCONDITION_ATTEMPTS
         }
         for (attempt in 1..rowProbeAttempts) {
             if (attempt > 1) {
                 delay(
                     if (useFastP0RowFallback) {
-                        P0_USER_ROW_POSTCONDITION_INTERVAL_MS
+                        TuningConstants.NavigationFlow.P0_USER_ROW_POSTCONDITION_INTERVAL_MS
                     } else {
-                        USER_ROW_POSTCONDITION_INTERVAL_MS
+                        TuningConstants.NavigationFlow.USER_ROW_POSTCONDITION_INTERVAL_MS
                     },
                 )
             }
@@ -1838,9 +1838,9 @@ class DouyinNavigationController(
             // A custom-rendered row may be captured between two RecyclerView frames. Never tap a
             // row without a stable identity: retry the live snapshot/OCR briefly, then hand off
             // instead of risking a duplicate blank-message probe for an unknown account.
-            repeat(IDENTITY_RETRY_ATTEMPTS - 1) { retry ->
+            repeat(TuningConstants.NavigationFlow.IDENTITY_RETRY_ATTEMPTS - 1) { retry ->
                 if (identity != null) return@repeat
-                delay(IDENTITY_RETRY_INTERVAL_MS)
+                delay(TuningConstants.NavigationFlow.IDENTITY_RETRY_INTERVAL_MS)
                 val refreshed = currentWindowContext() ?: return@repeat
                 val refreshedMatch = StructuralUserRowDetector.findAfter(
                     refreshed,
@@ -2225,7 +2225,7 @@ class DouyinNavigationController(
         )
         if (first == null) return null
 
-        delay(P0_FIRST_USER_OCR_STABILITY_DELAY_MS)
+        delay(TuningConstants.NavigationFlow.P0_FIRST_USER_OCR_STABILITY_DELAY_MS)
         val refreshedBase = currentWindowContext() ?: return null
         if (pageDetector.detect(refreshedBase).kind != PageKind.USER_RESULTS) {
             logger.warn(
@@ -2280,8 +2280,8 @@ class DouyinNavigationController(
         if (commentRuntime.isRunning) return
         profilePostconditionJob?.cancel()
         profilePostconditionJob = scope.launch {
-            repeat(PROFILE_POSTCONDITION_ATTEMPTS) { attempt ->
-                delay(if (attempt == 0) PROFILE_POSTCONDITION_INITIAL_DELAY_MS else PROFILE_POSTCONDITION_INTERVAL_MS)
+            repeat(TuningConstants.NavigationFlow.PROFILE_POSTCONDITION_ATTEMPTS) { attempt ->
+                delay(if (attempt == 0) TuningConstants.NavigationFlow.PROFILE_POSTCONDITION_INITIAL_DELAY_MS else TuningConstants.NavigationFlow.PROFILE_POSTCONDITION_INTERVAL_MS)
                 var handedOff = false
                 mutex.withLock {
                     if (!taskActive || phase != AutomationPhase.WAITING_FOR_PROFILE) return@withLock
@@ -2493,7 +2493,7 @@ class DouyinNavigationController(
         repeat(maxSwipes + 1) { attempt ->
             context = currentWindowContext() ?: context
             if (pageDetector.detect(context).kind != PageKind.USER_RESULTS) {
-                delay(USER_ROW_POSTCONDITION_INTERVAL_MS)
+                delay(TuningConstants.NavigationFlow.USER_ROW_POSTCONDITION_INTERVAL_MS)
                 return@repeat
             }
             val rows = visibleStructuralUserRows(context)
@@ -2540,7 +2540,7 @@ class DouyinNavigationController(
                         message = "The visible rows do not yet have complete identities; waiting before paging",
                         attributes = mapOf("attempt" to attempt + 1),
                     )
-                    delay(USER_ROW_POSTCONDITION_INTERVAL_MS)
+                    delay(TuningConstants.NavigationFlow.USER_ROW_POSTCONDITION_INTERVAL_MS)
                     return@repeat
                 }
                 if (anchorIndex >= 0 && identities.all { it != null }) {
@@ -2598,7 +2598,7 @@ class DouyinNavigationController(
                     message = "The result rows are still loading; no resume swipe is issued",
                     attributes = mapOf("attempt" to attempt + 1),
                 )
-                delay(USER_ROW_POSTCONDITION_INTERVAL_MS)
+                delay(TuningConstants.NavigationFlow.USER_ROW_POSTCONDITION_INTERVAL_MS)
                 return@repeat
             }
 
@@ -2639,8 +2639,8 @@ class DouyinNavigationController(
         var stableIdentityObservations = 0
         var lastResolvedAnchor: UserResultsAnchorObservation? = null
         var remoteCheckpointSubmitted = false
-        repeat(VIEWPORT_ANCHOR_PROBE_ATTEMPTS) { attempt ->
-            if (attempt > 0) delay(VIEWPORT_ANCHOR_PROBE_INTERVAL_MS)
+        repeat(TuningConstants.NavigationFlow.VIEWPORT_ANCHOR_PROBE_ATTEMPTS) { attempt ->
+            if (attempt > 0) delay(TuningConstants.NavigationFlow.VIEWPORT_ANCHOR_PROBE_INTERVAL_MS)
             context = currentWindowContext() ?: context
             if (pageDetector.detect(context).kind != PageKind.USER_RESULTS) return@repeat
 
@@ -2677,7 +2677,7 @@ class DouyinNavigationController(
                 stableIdentityObservations = 1
             }
             val completeIdentitiesStable = identities.all { it != null } &&
-                stableIdentityObservations >= VIEWPORT_IDENTITY_STABLE_OBSERVATIONS
+                stableIdentityObservations >= TuningConstants.NavigationFlow.VIEWPORT_IDENTITY_STABLE_OBSERVATIONS
             if (completeIdentitiesStable && !remoteCheckpointSubmitted) {
                 val visibleKeys = identities.mapNotNull { it?.key }
                 val fingerprint = (identitySignature + visibleKeys.joinToString("|")).hashCode().toString(16)
@@ -2721,7 +2721,7 @@ class DouyinNavigationController(
             val resolvedAnchorStable = UserResultsAnchorContinuationPolicy.canContinue(
                 observation = lastResolvedAnchor,
                 stableViewportObservations = stableIdentityObservations,
-                requiredObservations = VIEWPORT_IDENTITY_STABLE_OBSERVATIONS,
+                requiredObservations = TuningConstants.NavigationFlow.VIEWPORT_IDENTITY_STABLE_OBSERVATIONS,
             )
             logger.info(
                 "user_result_anchor_probe",
@@ -2832,15 +2832,15 @@ class DouyinNavigationController(
         logger.warn(
             "user_result_anchor_timeout",
             message = "The next viewport did not expose a stable continuation anchor; no row was opened",
-            attributes = mapOf("tag" to tag, "attempts" to VIEWPORT_ANCHOR_PROBE_ATTEMPTS),
+            attributes = mapOf("tag" to tag, "attempts" to TuningConstants.NavigationFlow.VIEWPORT_ANCHOR_PROBE_ATTEMPTS),
         )
         failTaskWithoutManualHandoff("The next result page did not expose a stable continuation anchor before timeout")
     }
 
     private fun visibleStructuralUserRows(context: ScreenContext): List<StructuralUserRowMatch> {
         val rows = ArrayList<StructuralUserRowMatch>()
-        var minimumAnchorTop = (context.screenSize.height * USER_RESULTS_TOP_RATIO).toFloat() - 1f
-        repeat(MAX_VISIBLE_USER_ROWS) {
+        var minimumAnchorTop = (context.screenSize.height * TuningConstants.NavigationFlow.USER_RESULTS_TOP_RATIO).toFloat() - 1f
+        repeat(TuningConstants.NavigationFlow.MAX_VISIBLE_USER_ROWS) {
             val match = StructuralUserRowDetector.findAfter(context, minimumAnchorTop) ?: return@repeat
             rows += match
             minimumAnchorTop = match.anchor.bounds.bottom.toFloat()
@@ -2872,19 +2872,19 @@ class DouyinNavigationController(
         // normalized to the row/display, so this remains usable across common screen sizes.
         val safeLeft = max(
             row.bounds.left,
-            row.bounds.left + (rowWidth * USER_ROW_CONTENT_LEFT_RATIO).toInt(),
+            row.bounds.left + (rowWidth * TuningConstants.NavigationFlow.USER_ROW_CONTENT_LEFT_RATIO).toInt(),
         ).coerceIn(0, screenWidth - 1)
         val safeRight = min(
             row.bounds.right,
-            (screenWidth * USER_ROW_SAFE_TAP_RIGHT_RATIO).toInt(),
+            (screenWidth * TuningConstants.NavigationFlow.USER_ROW_SAFE_TAP_RIGHT_RATIO).toInt(),
         ).coerceIn(safeLeft + 1, screenWidth)
         val safeTop = max(
             row.bounds.top,
-            row.bounds.top + (rowHeight * USER_ROW_CONTENT_TOP_RATIO).toInt(),
+            row.bounds.top + (rowHeight * TuningConstants.NavigationFlow.USER_ROW_CONTENT_TOP_RATIO).toInt(),
         ).coerceIn(0, screenHeight - 1)
         val safeBottom = min(
             row.bounds.bottom,
-            row.bounds.top + (rowHeight * USER_ROW_CONTENT_BOTTOM_RATIO).toInt(),
+            row.bounds.top + (rowHeight * TuningConstants.NavigationFlow.USER_ROW_CONTENT_BOTTOM_RATIO).toInt(),
         ).coerceIn(safeTop + 1, screenHeight)
         val safeBounds = ScreenBounds(
             left = safeLeft,
@@ -3032,8 +3032,8 @@ class DouyinNavigationController(
         previousName: String?,
     ): String? {
         var candidate = firstCandidate
-        repeat(PROFILE_NAME_CONFIRM_ATTEMPTS - 1) {
-            delay(PROFILE_NAME_CONFIRM_INTERVAL_MS)
+        repeat(TuningConstants.NavigationFlow.PROFILE_NAME_CONFIRM_ATTEMPTS - 1) {
+            delay(TuningConstants.NavigationFlow.PROFILE_NAME_CONFIRM_INTERVAL_MS)
             // A second inspection must come from a fresh root; reusing the initial snapshot
             // would make the confirmation meaningless during a transient profile animation.
             val liveContext = currentWindowContext() ?: return null
@@ -3060,7 +3060,7 @@ class DouyinNavigationController(
         phase = AutomationPhase.OPENING_MESSAGE_ENTRY
         AutomationStore.publishPhase(phase)
         var outcome = ActionOutcome.failure("No private-message entry route was available")
-        for (attempt in 1..PRIVATE_MESSAGE_ENTRY_ATTEMPTS) {
+        for (attempt in 1..TuningConstants.NavigationFlow.PRIVATE_MESSAGE_ENTRY_ATTEMPTS) {
             val liveContext = currentWindowContext() ?: context
             val semanticSelection = selectSafePrivateMessageEntry(liveContext)
             val semanticOutcome = if (semanticSelection.node == null) {
@@ -3136,7 +3136,7 @@ class DouyinNavigationController(
                 message = "Private-message entry action was not accepted; refreshing the profile before retrying",
                 attributes = mapOf("attempt" to attempt, "reason" to outcome.reason),
             )
-            if (attempt < PRIVATE_MESSAGE_ENTRY_ATTEMPTS) delay(PRIVATE_MESSAGE_ENTRY_RETRY_INTERVAL_MS)
+            if (attempt < TuningConstants.NavigationFlow.PRIVATE_MESSAGE_ENTRY_ATTEMPTS) delay(TuningConstants.NavigationFlow.PRIVATE_MESSAGE_ENTRY_RETRY_INTERVAL_MS)
         }
         if (!outcome.succeeded) {
             val currentDetection = currentWindowContext()?.let(pageDetector::detect)
@@ -3156,7 +3156,7 @@ class DouyinNavigationController(
         logger.warn(
             "private_message_entry_exhausted",
             message = "The private-message entry did not reach a verified conversation after bounded retries",
-            attributes = mapOf("attempts" to PRIVATE_MESSAGE_ENTRY_ATTEMPTS),
+            attributes = mapOf("attempts" to TuningConstants.NavigationFlow.PRIVATE_MESSAGE_ENTRY_ATTEMPTS),
         )
     }
 
@@ -3240,12 +3240,12 @@ class DouyinNavigationController(
         actionAttempt: Int,
     ): PageKind {
         var lastKind = PageKind.UNKNOWN
-        repeat(PRIVATE_MESSAGE_ENTRY_POSTCONDITION_ATTEMPTS) { probeAttempt ->
+        repeat(TuningConstants.NavigationFlow.PRIVATE_MESSAGE_ENTRY_POSTCONDITION_ATTEMPTS) { probeAttempt ->
             delay(
                 if (probeAttempt == 0) {
-                    PRIVATE_MESSAGE_ENTRY_POSTCONDITION_INITIAL_DELAY_MS
+                    TuningConstants.NavigationFlow.PRIVATE_MESSAGE_ENTRY_POSTCONDITION_INITIAL_DELAY_MS
                 } else {
-                    PRIVATE_MESSAGE_ENTRY_POSTCONDITION_INTERVAL_MS
+                    TuningConstants.NavigationFlow.PRIVATE_MESSAGE_ENTRY_POSTCONDITION_INTERVAL_MS
                 },
             )
             var context = currentWindowContext() ?: initialContext
@@ -3264,7 +3264,7 @@ class DouyinNavigationController(
             // The most common missing signal is the bottom composer. Let the service's
             // throttled OCR path enrich the next accessibility snapshot; use an explicit sample
             // here as a final bounded fallback so a real chat is not backed out of prematurely.
-            if (probeAttempt == PRIVATE_MESSAGE_ENTRY_OCR_PROBE_ATTEMPT && ocr != null) {
+            if (probeAttempt == TuningConstants.NavigationFlow.PRIVATE_MESSAGE_ENTRY_OCR_PROBE_ATTEMPT && ocr != null) {
                 context = captureContextWithOcr(context, "private_message_entry_probe") ?: context
                 detection = pageDetector.detect(context)
                 if (detection.kind != PageKind.UNKNOWN) lastKind = detection.kind
@@ -3341,10 +3341,10 @@ class DouyinNavigationController(
      * emits no follow-up accessibility event.
      */
     private suspend fun searchResultsContextAfterSubmit(route: String): ScreenContext? {
-        repeat(SEARCH_SUBMIT_POSTCONDITION_ATTEMPTS) { attempt ->
+        repeat(TuningConstants.NavigationFlow.SEARCH_SUBMIT_POSTCONDITION_ATTEMPTS) { attempt ->
             delay(
-                if (attempt == 0) SEARCH_SUBMIT_POSTCONDITION_DELAY_MS
-                else SEARCH_SUBMIT_POSTCONDITION_INTERVAL_MS,
+                if (attempt == 0) TuningConstants.NavigationFlow.SEARCH_SUBMIT_POSTCONDITION_DELAY_MS
+                else TuningConstants.NavigationFlow.SEARCH_SUBMIT_POSTCONDITION_INTERVAL_MS,
             )
             // A non-focusable floating window or an OEM transition can make
             // rootInActiveWindow temporarily return our overlay (or null) even though the
@@ -3355,7 +3355,7 @@ class DouyinNavigationController(
             val liveContext = currentWindowContext()
             val recentContext = latestContext
                 ?.takeIf { it.packageName == TargetAppLauncher.DOUYIN_PACKAGE }
-                ?.takeIf { System.currentTimeMillis() - it.capturedAtMillis <= SEARCH_SUBMIT_CONTEXT_MAX_AGE_MS }
+                ?.takeIf { System.currentTimeMillis() - it.capturedAtMillis <= TuningConstants.NavigationFlow.SEARCH_SUBMIT_CONTEXT_MAX_AGE_MS }
             val candidates = listOfNotNull(liveContext, recentContext)
                 .distinctBy { it.capturedAtMillis to it.nodes.size }
             if (candidates.isEmpty()) return@repeat
@@ -3408,7 +3408,7 @@ class DouyinNavigationController(
         if (context == null || pageDetector.detect(context).kind != PageKind.DIRECT_MESSAGE) {
             when (val launch = TargetAppLauncher.launch(service)) {
                 LaunchResult.Started -> {
-                    delay(MESSAGE_TARGET_RESTORE_DELAY_MS)
+                    delay(TuningConstants.NavigationFlow.MESSAGE_TARGET_RESTORE_DELAY_MS)
                     context = currentWindowContext()
                 }
                 is LaunchResult.Failed -> {
@@ -3431,9 +3431,9 @@ class DouyinNavigationController(
 
         var inputPlaced = false
         var inputFailure = "Could not find the private-message input for the safety probe"
-        repeat(MESSAGE_INPUT_ATTEMPTS) { attempt ->
+        repeat(TuningConstants.NavigationFlow.MESSAGE_INPUT_ATTEMPTS) { attempt ->
             if (inputPlaced) return@repeat
-            if (attempt > 0) delay(MESSAGE_INPUT_RETRY_INTERVAL_MS)
+            if (attempt > 0) delay(TuningConstants.NavigationFlow.MESSAGE_INPUT_RETRY_INTERVAL_MS)
             val liveContext = currentWindowContext() ?: directContext
             val input = selector.select(liveContext, DouyinSelectors.messageInput).node
             if (input == null) {
@@ -3464,12 +3464,12 @@ class DouyinNavigationController(
             return
         }
 
-        delay(MESSAGE_INPUT_SETTLE_DELAY_MS)
+        delay(TuningConstants.NavigationFlow.MESSAGE_INPUT_SETTLE_DELAY_MS)
         val refreshedContext = currentWindowContext() ?: directContext
         var sendButtonOutcome = ActionOutcome.failure("No usable message send action")
-        repeat(MESSAGE_ACTION_ATTEMPTS) { attempt ->
+        repeat(TuningConstants.NavigationFlow.MESSAGE_ACTION_ATTEMPTS) { attempt ->
             if (sendButtonOutcome.succeeded) return@repeat
-            if (attempt > 0) delay(MESSAGE_INPUT_RETRY_INTERVAL_MS)
+            if (attempt > 0) delay(TuningConstants.NavigationFlow.MESSAGE_INPUT_RETRY_INTERVAL_MS)
             sendButtonOutcome = clickSelector(
                 currentWindowContext() ?: refreshedContext,
                 DouyinSelectors.messageSendAction,
@@ -3533,15 +3533,15 @@ class DouyinNavigationController(
     private fun scheduleEmptyMessageProbeResultCheck() {
         messageResultJob?.cancel()
         messageResultJob = scope.launch {
-            repeat(EMPTY_MESSAGE_PROBE_ATTEMPTS) { attempt ->
-                delay(if (attempt == 0) EMPTY_MESSAGE_PROBE_INITIAL_DELAY_MS else EMPTY_MESSAGE_PROBE_INTERVAL_MS)
+            repeat(TuningConstants.NavigationFlow.EMPTY_MESSAGE_PROBE_ATTEMPTS) { attempt ->
+                delay(if (attempt == 0) TuningConstants.NavigationFlow.EMPTY_MESSAGE_PROBE_INITIAL_DELAY_MS else TuningConstants.NavigationFlow.EMPTY_MESSAGE_PROBE_INTERVAL_MS)
                 mutex.withLock {
                     if (!taskActive || phase != AutomationPhase.WAITING_FOR_EMPTY_MESSAGE_RESULT) return@withLock
                     // Node inspection catches a toast exposed as text. On custom-rendered chat
                     // surfaces, take a bounded OCR probe at roughly 1.4s intervals as well. The
                     // screenshot helper rate-limits the actual capture, preventing a tight loop
                     // from flooding the device while still covering a short-lived toast.
-                    val context = if (attempt % EMPTY_MESSAGE_OCR_EVERY_ATTEMPTS == 0) {
+                    val context = if (attempt % TuningConstants.NavigationFlow.EMPTY_MESSAGE_OCR_EVERY_ATTEMPTS == 0) {
                         captureEmptyMessageProbeContext() ?: currentWindowContext()
                     } else {
                         currentWindowContext()
@@ -3652,7 +3652,7 @@ class DouyinNavigationController(
         messageEntryPostconditionJob = null
 
         var resultsContext: ScreenContext? = null
-        for (attempt in 0 until MAX_BACK_ACTIONS_FROM_MESSAGE_FAILURE) {
+        for (attempt in 0 until TuningConstants.NavigationFlow.MAX_BACK_ACTIONS_FROM_MESSAGE_FAILURE) {
             val currentContext = currentWindowContext()
             if (currentContext != null && pageDetector.detect(currentContext).kind == PageKind.USER_RESULTS) {
                 resultsContext = currentContext
@@ -3662,7 +3662,7 @@ class DouyinNavigationController(
                 failTaskWithoutManualHandoff("Could not return to user results after the blank-message probe")
                 return
             }
-            delay(USER_PROFILE_BACK_DELAY_MS)
+            delay(TuningConstants.NavigationFlow.USER_PROFILE_BACK_DELAY_MS)
         }
         resultsContext = resultsContext ?: currentWindowContext()
         if (resultsContext == null || pageDetector.detect(resultsContext!!).kind != PageKind.USER_RESULTS) {
@@ -3721,8 +3721,8 @@ class DouyinNavigationController(
         val beforeSwipe = userResultsSignatureBeforeSwipe
         var lastStableSignature: String? = null
         var stableObservations = 0
-        repeat(USER_NEXT_RESULT_POSTCONDITION_ATTEMPTS) { attempt ->
-            delay(if (attempt == 0) USER_NEXT_RESULT_DELAY_MS else USER_NEXT_RESULT_POSTCONDITION_INTERVAL_MS)
+        repeat(TuningConstants.NavigationFlow.USER_NEXT_RESULT_POSTCONDITION_ATTEMPTS) { attempt ->
+            delay(if (attempt == 0) TuningConstants.NavigationFlow.USER_NEXT_RESULT_DELAY_MS else TuningConstants.NavigationFlow.USER_NEXT_RESULT_POSTCONDITION_INTERVAL_MS)
             val context = currentWindowContext()
             if (context == null) {
                 logger.info(
@@ -3776,7 +3776,7 @@ class DouyinNavigationController(
         logger.warn(
             "user_result_next_timeout",
             message = "The next user-result viewport was not available before the bounded wait expired",
-            attributes = mapOf("tag" to tag, "attempts" to USER_NEXT_RESULT_POSTCONDITION_ATTEMPTS),
+            attributes = mapOf("tag" to tag, "attempts" to TuningConstants.NavigationFlow.USER_NEXT_RESULT_POSTCONDITION_ATTEMPTS),
         )
         userResultsSignatureBeforeSwipe = null
         if (advanceToNextQueryIfAvailable(tag)) return null
@@ -3829,7 +3829,7 @@ class DouyinNavigationController(
         )
 
         var context = currentWindowContext()
-        repeat(MAX_BACK_ACTIONS_TO_SEARCH_ENTRY) { attempt ->
+        repeat(TuningConstants.NavigationFlow.MAX_BACK_ACTIONS_TO_SEARCH_ENTRY) { attempt ->
             if (context != null && pageDetector.detect(context!!).kind == PageKind.SEARCH_ENTRY) return@repeat
             if (context != null && pageDetector.detect(context!!).kind == PageKind.HOME) {
                 openSearch(context!!)
@@ -3839,7 +3839,7 @@ class DouyinNavigationController(
                 context = null
                 return@repeat
             }
-            delay(USER_PROFILE_BACK_DELAY_MS)
+            delay(TuningConstants.NavigationFlow.USER_PROFILE_BACK_DELAY_MS)
             context = currentWindowContext()
             logger.info(
                 "task_query_search_entry_back_probe",
@@ -3886,7 +3886,7 @@ class DouyinNavigationController(
             logger.warn("message_send_rejected", message = "The operator did not provide a message")
             return
         }
-        if (message.length > MAX_MESSAGE_LENGTH) {
+        if (message.length > TuningConstants.NavigationFlow.MAX_MESSAGE_LENGTH) {
             AutomationStore.publishFailure("Message is too long for the one-message POC")
             logger.warn("message_send_rejected", message = "The operator message exceeded the safe length limit")
             return
@@ -3905,7 +3905,7 @@ class DouyinNavigationController(
         if (context == null || pageDetector.detect(context).kind != PageKind.DIRECT_MESSAGE) {
             when (val launch = TargetAppLauncher.launch(service)) {
                 LaunchResult.Started -> {
-                    delay(MESSAGE_TARGET_RESTORE_DELAY_MS)
+                    delay(TuningConstants.NavigationFlow.MESSAGE_TARGET_RESTORE_DELAY_MS)
                     context = currentWindowContext()
                 }
                 is LaunchResult.Failed -> {
@@ -3928,9 +3928,9 @@ class DouyinNavigationController(
 
         var inputPlaced = false
         var inputFailure = "Could not find the private-message input"
-        repeat(MESSAGE_INPUT_ATTEMPTS) { attempt ->
+        repeat(TuningConstants.NavigationFlow.MESSAGE_INPUT_ATTEMPTS) { attempt ->
             if (inputPlaced) return@repeat
-            if (attempt > 0) delay(MESSAGE_INPUT_RETRY_INTERVAL_MS)
+            if (attempt > 0) delay(TuningConstants.NavigationFlow.MESSAGE_INPUT_RETRY_INTERVAL_MS)
             val liveContext = currentWindowContext() ?: directContext
             val input = selector.select(liveContext, DouyinSelectors.messageInput).node
             if (input == null) {
@@ -3954,12 +3954,12 @@ class DouyinNavigationController(
             return
         }
 
-        delay(MESSAGE_INPUT_SETTLE_DELAY_MS)
+        delay(TuningConstants.NavigationFlow.MESSAGE_INPUT_SETTLE_DELAY_MS)
         val refreshedContext = currentWindowContext() ?: directContext
         var sendButtonOutcome = ActionOutcome.failure("No usable message send action")
-        repeat(MESSAGE_ACTION_ATTEMPTS) { attempt ->
+        repeat(TuningConstants.NavigationFlow.MESSAGE_ACTION_ATTEMPTS) { attempt ->
             if (sendButtonOutcome.succeeded) return@repeat
-            if (attempt > 0) delay(MESSAGE_INPUT_RETRY_INTERVAL_MS)
+            if (attempt > 0) delay(TuningConstants.NavigationFlow.MESSAGE_INPUT_RETRY_INTERVAL_MS)
             sendButtonOutcome = clickSelector(
                 currentWindowContext() ?: refreshedContext,
                 DouyinSelectors.messageSendAction,
@@ -4084,8 +4084,8 @@ class DouyinNavigationController(
     private fun scheduleMessageResultCheck(expectedMessage: String) {
         messageResultJob?.cancel()
         messageResultJob = scope.launch {
-            repeat(MESSAGE_RESULT_ATTEMPTS) { attempt ->
-                delay(MESSAGE_RESULT_INTERVAL_MS)
+            repeat(TuningConstants.NavigationFlow.MESSAGE_RESULT_ATTEMPTS) { attempt ->
+                delay(TuningConstants.NavigationFlow.MESSAGE_RESULT_INTERVAL_MS)
                 mutex.withLock {
                     if (!taskActive || phase != AutomationPhase.WAITING_FOR_MESSAGE_RESULT) return@withLock
                     val context = currentWindowContext() ?: return@withLock
@@ -4124,7 +4124,7 @@ class DouyinNavigationController(
     private fun scheduleMessageEntryPostconditionCheck() {
         if (messageEntryPostconditionJob?.isActive == true) return
         messageEntryPostconditionJob = scope.launch {
-            delay(MESSAGE_ENTRY_POSTCONDITION_DELAY_MS)
+            delay(TuningConstants.NavigationFlow.MESSAGE_ENTRY_POSTCONDITION_DELAY_MS)
             mutex.withLock {
                 if (!taskActive || phase != AutomationPhase.WAITING_FOR_DIRECT_MESSAGE) return@withLock
                 val context = currentWindowContext() ?: return@withLock
@@ -4183,7 +4183,7 @@ class DouyinNavigationController(
         }
         phase = AutomationPhase.WAITING_FOR_USER_RESULTS
         AutomationStore.publishPhase(phase)
-        delay(USER_PROFILE_BACK_DELAY_MS)
+        delay(TuningConstants.NavigationFlow.USER_PROFILE_BACK_DELAY_MS)
         val resultsContext = currentWindowContext()
         if (resultsContext == null || pageDetector.detect(resultsContext).kind != PageKind.USER_RESULTS) {
             failTaskWithoutManualHandoff("User results did not return after skipping an unavailable profile")
@@ -4265,7 +4265,7 @@ class DouyinNavigationController(
         currentUserDisplayNameSource = null
 
         var resultsContext: ScreenContext? = null
-        for (attempt in 0 until MAX_BACK_ACTIONS_FROM_MESSAGE_FAILURE) {
+        for (attempt in 0 until TuningConstants.NavigationFlow.MAX_BACK_ACTIONS_FROM_MESSAGE_FAILURE) {
             val currentContext = currentWindowContext()
             if (currentContext != null && pageDetector.detect(currentContext).kind == PageKind.USER_RESULTS) {
                 resultsContext = currentContext
@@ -4275,7 +4275,7 @@ class DouyinNavigationController(
                 failTaskWithoutManualHandoff("Could not return to user results after a message-send failure")
                 return
             }
-            delay(USER_PROFILE_BACK_DELAY_MS)
+            delay(TuningConstants.NavigationFlow.USER_PROFILE_BACK_DELAY_MS)
         }
         resultsContext = resultsContext ?: currentWindowContext()
         if (resultsContext == null || pageDetector.detect(resultsContext!!).kind != PageKind.USER_RESULTS) {
@@ -4377,7 +4377,7 @@ class DouyinNavigationController(
     }
 
     private fun userResultViewportSignature(context: ScreenContext): String =
-        UserResultsViewportFingerprint.create(context, topRatio = USER_RESULTS_TOP_RATIO)
+        UserResultsViewportFingerprint.create(context, topRatio = TuningConstants.NavigationFlow.USER_RESULTS_TOP_RATIO)
 
     private suspend fun clickSelector(context: ScreenContext, request: SelectorRequest): ActionOutcome {
         val liveContext = waitForTargetWindow("click_${request.name}") ?: context
@@ -4413,7 +4413,7 @@ class DouyinNavigationController(
      */
     private suspend fun waitForTargetWindow(tag: String): ScreenContext? {
         var overlayReported = false
-        repeat(SYSTEM_OVERLAY_WAIT_ATTEMPTS) { attempt ->
+        repeat(TuningConstants.NavigationFlow.SYSTEM_OVERLAY_WAIT_ATTEMPTS) { attempt ->
             val context = currentWindowContext()
             if (context != null) {
                 val liveOverlay = TransientOverlayDetector.find(context)
@@ -4430,7 +4430,7 @@ class DouyinNavigationController(
                             ),
                         )
                     }
-                    delay(SYSTEM_OVERLAY_WAIT_INTERVAL_MS)
+                    delay(TuningConstants.NavigationFlow.SYSTEM_OVERLAY_WAIT_INTERVAL_MS)
                     return@repeat
                 }
                 if (overlayReported) {
@@ -4449,7 +4449,7 @@ class DouyinNavigationController(
                     attributes = mapOf("tag" to tag),
                 )
             }
-            delay(SYSTEM_OVERLAY_WAIT_INTERVAL_MS)
+            delay(TuningConstants.NavigationFlow.SYSTEM_OVERLAY_WAIT_INTERVAL_MS)
         }
         logger.warn(
             "target_window_unavailable",
@@ -4486,17 +4486,17 @@ class DouyinNavigationController(
             "user_result_page_swipe_requested",
             attributes = mapOf(
                 "tag" to tag,
-                "start_y" to USER_PAGE_SWIPE_START_Y,
-                "end_y" to USER_PAGE_SWIPE_END_Y,
-                "travel" to (USER_PAGE_SWIPE_START_Y - USER_PAGE_SWIPE_END_Y),
+                "start_y" to TuningConstants.NavigationFlow.USER_PAGE_SWIPE_START_Y,
+                "end_y" to TuningConstants.NavigationFlow.USER_PAGE_SWIPE_END_Y,
+                "travel" to (TuningConstants.NavigationFlow.USER_PAGE_SWIPE_START_Y - TuningConstants.NavigationFlow.USER_PAGE_SWIPE_END_Y),
             ),
         )
         val outcome = swipeNormalizedGuarded(
             startX = 0.50f,
-            startY = USER_PAGE_SWIPE_START_Y,
+            startY = TuningConstants.NavigationFlow.USER_PAGE_SWIPE_START_Y,
             endX = 0.50f,
-            endY = USER_PAGE_SWIPE_END_Y,
-            durationMs = USER_PAGE_SWIPE_DURATION_MS,
+            endY = TuningConstants.NavigationFlow.USER_PAGE_SWIPE_END_Y,
+            durationMs = TuningConstants.NavigationFlow.USER_PAGE_SWIPE_DURATION_MS,
             tag = tag,
         )
         if (outcome.succeeded) remotePageNumber = (remotePageNumber + 1).coerceAtMost(10_000)
@@ -4532,7 +4532,7 @@ class DouyinNavigationController(
             startY = 0.84f,
             endX = 0.86f,
             endY = 0.22f,
-            durationMs = LIVE_ROOM_SWIPE_DURATION_MS,
+            durationMs = TuningConstants.NavigationFlow.LIVE_ROOM_SWIPE_DURATION_MS,
             tag = "live_room_recovery",
         )
         logger.info(
@@ -4563,7 +4563,7 @@ class DouyinNavigationController(
     }
 
     private suspend fun ensureSearchKeyword(initialTarget: NodeSnapshot, expected: String): Boolean {
-        delay(KEYWORD_POSTCONDITION_DELAY_MS)
+        delay(TuningConstants.NavigationFlow.KEYWORD_POSTCONDITION_DELAY_MS)
         val firstActual = readLiveNodeText(initialTarget)
         if (SearchKeywordVerifier.matches(expected, firstActual)) return true
 
@@ -4583,7 +4583,7 @@ class DouyinNavigationController(
             ?: return false
         val retry = withLiveNode(refreshedTarget) { liveNode -> gestures.setText(liveNode, expected) }
         if (!retry.succeeded) return false
-        delay(KEYWORD_POSTCONDITION_DELAY_MS)
+        delay(TuningConstants.NavigationFlow.KEYWORD_POSTCONDITION_DELAY_MS)
         val finalActual = readLiveNodeText(refreshedTarget)
         val verified = SearchKeywordVerifier.matches(expected, finalActual)
         if (!verified) {
@@ -4658,7 +4658,7 @@ class DouyinNavigationController(
                 // consume more than one normal action interval. Give only the launch surface a
                 // longer bounded window; user-row/profile/message steps retain the short guard.
                 AutomationPhase.WAITING_FOR_HOME -> TuningConstants.NavigationLifecycle.STARTUP_STEP_TIMEOUT_MS
-                AutomationPhase.WAITING_FOR_DIRECT_MESSAGE -> MESSAGE_ENTRY_TIMEOUT_MS
+                AutomationPhase.WAITING_FOR_DIRECT_MESSAGE -> TuningConstants.NavigationFlow.MESSAGE_ENTRY_TIMEOUT_MS
                 else -> TuningConstants.NavigationLifecycle.STEP_TIMEOUT_MS
             }
             delay(timeoutMs)
@@ -4687,7 +4687,7 @@ class DouyinNavigationController(
                             "The user profile did not open within the allowed time",
                             failurePage = PageKind.USER_RESULTS,
                         )
-                    } else if (timeoutRecoveryAttempts < MAX_TIMEOUT_RECOVERY_ATTEMPTS) {
+                    } else if (timeoutRecoveryAttempts < TuningConstants.NavigationFlow.MAX_TIMEOUT_RECOVERY_ATTEMPTS) {
                         timeoutRecoveryAttempts += 1
                         recoverAfterTimeout(nextPhase, timeoutDescription)
                     } else {
@@ -4821,7 +4821,7 @@ class DouyinNavigationController(
 
     private fun saveNodeDump(context: ScreenContext, tag: String) {
         val safeTag = tag.replace(Regex("[^a-zA-Z0-9_-]+"), "_").take(32).ifBlank { "window" }
-        val directory = File(service.filesDir, NODE_DUMP_DIRECTORY)
+        val directory = File(service.filesDir, TuningConstants.NavigationFlow.NODE_DUMP_DIRECTORY)
         if (!directory.exists() && !directory.mkdirs()) {
             logger.error("node_dump_failed", message = "Could not create private node-dump directory")
             return
@@ -4978,110 +4978,6 @@ class DouyinNavigationController(
     }
 
     private companion object {
-        const val NODE_DUMP_DIRECTORY = "diagnostics/nodes"
-        /** Callback snapshots older than this cannot prove the currently launched target page. */
-        const val INITIAL_CONTEXT_MAX_AGE_MS = 4_000L
-        const val CURRENT_PROFILE_ENTRY_SETTLE_DELAY_MS = 700L
-        /** A profile launch can take several seconds while Douyin restores a custom surface. */
-        const val CURRENT_PROFILE_OBSERVATION_ATTEMPTS = 120
-        const val CURRENT_PROFILE_OBSERVATION_INTERVAL_MS = 500L
-        /** Allow the app-owned overlay to disappear before reading the target app's root. */
-        const val CURRENT_PROFILE_RESUME_SETTLE_DELAY_MS = 150L
-        /** A bounded retry window for the overlay/root handoff; it performs no gestures. */
-        const val CURRENT_PROFILE_RESUME_CONTEXT_ATTEMPTS = 6
-        const val CURRENT_PROFILE_RESUME_CONTEXT_INTERVAL_MS = 250L
-        /** OCR-enriched callback snapshots remain valid only for this short transition window. */
-        const val CURRENT_PROFILE_CONTEXT_MAX_AGE_MS = 4_000L
-        const val NEXT_TASK_SETTLE_DELAY_MS = 900L
-        const val INITIAL_READY_STABLE_OBSERVATIONS = 2
-        val INITIAL_READY_PAGE_KINDS = setOf(
-            PageKind.HOME,
-            PageKind.SEARCH_ENTRY,
-            PageKind.SEARCH_RESULTS,
-            PageKind.USER_RESULTS,
-        )
-        const val KEYWORD_POSTCONDITION_DELAY_MS = 280L
-        const val MAX_NODE_SCROLL_ATTEMPTS = 2
-        const val USER_RESULTS_POSTCONDITION_ATTEMPTS = 8
-        const val USER_RESULTS_POSTCONDITION_INTERVAL_MS = 500L
-        const val USER_ROW_POSTCONDITION_ATTEMPTS = 8
-        const val USER_ROW_POSTCONDITION_INTERVAL_MS = 350L
-        const val P0_USER_ROW_POSTCONDITION_ATTEMPTS = 2
-        const val P0_USER_ROW_POSTCONDITION_INTERVAL_MS = 120L
-        const val IDENTITY_RETRY_ATTEMPTS = 3
-        const val IDENTITY_RETRY_INTERVAL_MS = 450L
-        /** Two exception-only OCR samples must settle before P0 may use geometry fallback. */
-        const val P0_FIRST_USER_OCR_STABILITY_DELAY_MS = 350L
-        const val VIEWPORT_ANCHOR_PROBE_ATTEMPTS = 8
-        const val VIEWPORT_ANCHOR_PROBE_INTERVAL_MS = 650L
-        const val VIEWPORT_IDENTITY_STABLE_OBSERVATIONS = 2
-        const val REMOTE_RESUME_EXTRA_SWIPES = 8
-        const val MAX_REMOTE_RESUME_SWIPES = 30
-        const val MAX_VISIBLE_USER_ROWS = 20
-        const val MESSAGE_ENTRY_POSTCONDITION_DELAY_MS = 900L
-        const val PRIVATE_MESSAGE_ENTRY_ATTEMPTS = 3
-        const val PRIVATE_MESSAGE_ENTRY_RETRY_INTERVAL_MS = 450L
-        const val PRIVATE_MESSAGE_ENTRY_POSTCONDITION_ATTEMPTS = 7
-        const val PRIVATE_MESSAGE_ENTRY_POSTCONDITION_INITIAL_DELAY_MS = 500L
-        const val PRIVATE_MESSAGE_ENTRY_POSTCONDITION_INTERVAL_MS = 450L
-        const val PRIVATE_MESSAGE_ENTRY_OCR_PROBE_ATTEMPT = 2
-        const val USER_PROFILE_BACK_DELAY_MS = 700L
-        const val MAX_BACK_ACTIONS_TO_SEARCH_ENTRY = 3
-        /** One extra action covers a focused restored search field; still strictly bounded. */
-        const val MAX_INITIAL_HOME_BACK_ACTIONS = 5
-        const val MAX_INITIAL_BLIND_BACK_ACTIONS = 4
-        const val PROFILE_POSTCONDITION_ATTEMPTS = 16
-        const val PROFILE_POSTCONDITION_INITIAL_DELAY_MS = 180L
-        const val PROFILE_POSTCONDITION_INTERVAL_MS = 250L
-        const val PROFILE_NAME_CONFIRM_ATTEMPTS = 2
-        const val PROFILE_NAME_CONFIRM_INTERVAL_MS = 110L
-        const val USER_NEXT_RESULT_DELAY_MS = 700L
-        // Network-backed result pages can expose a half-moved RecyclerView for several seconds.
-        // Keep the wait bounded but long enough to cover a slow page append before handing off.
-        const val USER_NEXT_RESULT_POSTCONDITION_ATTEMPTS = 36
-        const val USER_NEXT_RESULT_POSTCONDITION_INTERVAL_MS = 400L
-        const val MAX_BACK_ACTIONS_FROM_MESSAGE_FAILURE = 2
-        const val MESSAGE_ENTRY_TIMEOUT_MS = 12_000L
-        const val MAX_MESSAGE_LENGTH = 500
-        const val MESSAGE_TARGET_RESTORE_DELAY_MS = 700L
-        const val MESSAGE_INPUT_SETTLE_DELAY_MS = 250L
-        const val MESSAGE_INPUT_ATTEMPTS = 3
-        const val MESSAGE_ACTION_ATTEMPTS = 3
-        const val MESSAGE_INPUT_RETRY_INTERVAL_MS = 350L
-        const val MESSAGE_RESULT_ATTEMPTS = 8
-        const val MESSAGE_RESULT_INTERVAL_MS = 600L
-        // The rejection toast is transient. Start quickly, then sample for roughly six seconds
-        // while also listening for Accessibility notification events. This replaces the old
-        // 4.8-second/600ms cadence that routinely missed the toast on the real device.
-        const val EMPTY_MESSAGE_PROBE_ATTEMPTS = 18
-        const val EMPTY_MESSAGE_PROBE_INITIAL_DELAY_MS = 120L
-        const val EMPTY_MESSAGE_PROBE_INTERVAL_MS = 350L
-        const val EMPTY_MESSAGE_OCR_EVERY_ATTEMPTS = 4
-        const val MAX_TIMEOUT_RECOVERY_ATTEMPTS = 1
-        const val SEARCH_ENTRY_POSTCONDITION_ATTEMPTS = 8
-        const val SEARCH_ENTRY_POSTCONDITION_INTERVAL_MS = 350L
-        // Results can arrive without a second accessibility callback. Poll for roughly six
-        // seconds before falling back to the normal phase watchdog instead of false-pausing on a
-        // page that is already visible.
-        const val SEARCH_SUBMIT_POSTCONDITION_ATTEMPTS = 12
-        const val SEARCH_SUBMIT_POSTCONDITION_DELAY_MS = 450L
-        const val SEARCH_SUBMIT_POSTCONDITION_INTERVAL_MS = 500L
-        const val SEARCH_SUBMIT_CONTEXT_MAX_AGE_MS = 8_000L
-        // OEM/Douyin live banners can remain above the target for several seconds. Wait long
-        // enough for a normal transient notification to clear, but keep a bounded manual-handoff
-        // path when the active window never returns.
-        const val SYSTEM_OVERLAY_WAIT_ATTEMPTS = 30
-        const val SYSTEM_OVERLAY_WAIT_INTERVAL_MS = 350L
-        const val USER_PAGE_SWIPE_START_Y = 0.76f
-        const val USER_PAGE_SWIPE_END_Y = 0.38f
-        const val USER_PAGE_SWIPE_DURATION_MS = 480L
-        const val LIVE_ROOM_SWIPE_DURATION_MS = 460L
-        const val USER_RESULTS_TOP_RATIO = 0.14f
-        const val USER_ROW_CONTENT_LEFT_RATIO = 0.24f
-        const val USER_ROW_CONTENT_TOP_RATIO = 0.12f
-        const val USER_ROW_CONTENT_BOTTOM_RATIO = 0.58f
-        const val USER_ROW_SAFE_TAP_RIGHT_RATIO = 0.70f
-
         val searchSubmitSelector = SelectorRequest(
             name = "search-submit",
             // The submit target is the visible, non-editable top-right label. Requiring a
@@ -5096,8 +4992,13 @@ class DouyinNavigationController(
             // The search input itself also exposes the hint “搜索” and can otherwise outrank the
             // top-right submit label. Never treat an editable node as the submit control.
             requireEditable = false,
-            preferredRegion = NormalizedRect(0.68f, 0f, 1f, 0.30f),
-            minimumScore = 0.30f,
+            preferredRegion = NormalizedRect(
+                TuningConstants.NavigationFlow.SEARCH_SUBMIT_LEFT_RATIO,
+                TuningConstants.NavigationFlow.SEARCH_SUBMIT_TOP_RATIO,
+                TuningConstants.NavigationFlow.SEARCH_SUBMIT_RIGHT_RATIO,
+                TuningConstants.NavigationFlow.SEARCH_SUBMIT_BOTTOM_RATIO,
+            ),
+            minimumScore = TuningConstants.NavigationFlow.SEARCH_SUBMIT_MINIMUM_SCORE,
         )
     }
 
@@ -5177,14 +5078,14 @@ class DouyinNavigationController(
                         "ocr_blocks" to augmentedContext.ocrBlocks.size,
                     ),
                 )
-                if (detection.kind in INITIAL_READY_PAGE_KINDS) {
+                if (detection.kind in TuningConstants.NavigationFlow.INITIAL_READY_PAGE_KINDS) {
                     if (detection.kind == lastReadyKind) {
                         readyObservations++
                     } else {
                         lastReadyKind = detection.kind
                         readyObservations = 1
                     }
-                    if (readyObservations < INITIAL_READY_STABLE_OBSERVATIONS) {
+                    if (readyObservations < TuningConstants.NavigationFlow.INITIAL_READY_STABLE_OBSERVATIONS) {
                         logger.info(
                             "initial_observation_waiting_stable",
                             message = "The first target page is visible; waiting for one more stable snapshot before acting",
@@ -5246,7 +5147,7 @@ class DouyinNavigationController(
     private fun recentInitialTargetContext(): ScreenContext? =
         latestContext
             ?.takeIf { it.packageName == TargetAppLauncher.DOUYIN_PACKAGE }
-            ?.takeIf { System.currentTimeMillis() - it.capturedAtMillis <= INITIAL_CONTEXT_MAX_AGE_MS }
+            ?.takeIf { System.currentTimeMillis() - it.capturedAtMillis <= TuningConstants.NavigationFlow.INITIAL_CONTEXT_MAX_AGE_MS }
 
     private fun hasInitialSearchSelectorCandidate(context: ScreenContext): Boolean =
         selector.select(context, DouyinSelectors.searchEntry).node != null ||

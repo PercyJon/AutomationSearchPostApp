@@ -4,6 +4,31 @@
 
 ---
 
+## [未发布] 2026-08-24 —— M7-C1 跨流程调参收敛完成
+
+### 修改内容
+
+- [`TuningConstants.kt`](app/src/main/java/com/example/douyinautomation/automation/TuningConstants.kt) 已形成版本 `4` 的四个只读分组：导航生命周期、导航流程、评论运行时、无障碍生命周期。
+- [`DouyinNavigationController.kt`](app/src/main/java/com/example/douyinautomation/automation/DouyinNavigationController.kt)、[`CommentPrivateMessageRuntime.kt`](app/src/main/java/com/example/douyinautomation/automation/CommentPrivateMessageRuntime.kt)、[`DouyinAccessibilityService.kt`](app/src/main/java/com/example/douyinautomation/automation/DouyinAccessibilityService.kt) 的跨流程时序、重试、上限和归一化动作参数均改由该层读取；数值与行为不变。
+- 单一检测器的证据系数、加密/存储/协议常量继续局部封装，不开放为远程或全局运行调参。
+
+### 已验证项
+
+- `TuningConstantsTest` 覆盖启动、恢复、评论私信、滚动/直播上限、消息安全和归一化手势关键值；控制器 84 个 `NavigationFlow` 引用均有配置声明。
+- 自动化验证：`./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` 与 `git diff --check` 均通过。
+- **真机 OnePlus NE2210 / b33aa309**：更新后服务 Bound/Enabled、Crashed 为空；停止态没有任务、恢复、页面动作、空白探测或消息发送。
+
+### 几何与兼容性检查
+
+- 未新增 Android 几何尺寸、固定 px、点击坐标或动作逻辑；既有比例坐标保持 `0..1`，未与 dp 体系混用。
+- 节点优先、OCR 辅助、几何校验、页面确认和消息安全门保持不变。
+
+### 交接记录
+
+- [`2026-08-24-m7-c1-tuning-constants-completion.md`](docs/2026-08-24-m7-c1-tuning-constants-completion.md)
+
+---
+
 ## [未发布] 2026-08-24 —— M7-C1b 评论运行时调参收敛
 
 ### 修改内容

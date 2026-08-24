@@ -9,7 +9,7 @@ class TuningConstantsTest {
     fun navigationLifecycleKeepsTheEstablishedBoundedStartupBudget() {
         val lifecycle = TuningConstants.NavigationLifecycle
 
-        assertEquals(2, TuningConstants.VERSION)
+        assertEquals(4, TuningConstants.VERSION)
         assertEquals(12_000L, lifecycle.STEP_TIMEOUT_MS)
         assertEquals(30_000L, lifecycle.STARTUP_STEP_TIMEOUT_MS)
         assertEquals(5_000L, lifecycle.INITIAL_SCREEN_SETTLE_DELAY_MS)
@@ -35,5 +35,33 @@ class TuningConstantsTest {
         assertEquals(3, runtime.MAX_EMPTY_SCROLLS)
         assertEquals(3, runtime.MAX_LIVE_ROOM_EXITS)
         assertEquals(3, runtime.MAX_LIVE_ROOM_SWIPES)
+    }
+
+    @Test
+    fun navigationFlowKeepsTheEstablishedRecoveryAndSafetyBounds() {
+        val flow = TuningConstants.NavigationFlow
+
+        assertEquals(120, flow.CURRENT_PROFILE_OBSERVATION_ATTEMPTS)
+        assertEquals(30, flow.MAX_REMOTE_RESUME_SWIPES)
+        assertEquals(20, flow.MAX_VISIBLE_USER_ROWS)
+        assertEquals(5, flow.MAX_INITIAL_HOME_BACK_ACTIONS)
+        assertEquals(4, flow.MAX_INITIAL_BLIND_BACK_ACTIONS)
+        assertEquals(2, flow.MAX_BACK_ACTIONS_FROM_MESSAGE_FAILURE)
+        assertEquals(500, flow.MAX_MESSAGE_LENGTH)
+        assertEquals(18, flow.EMPTY_MESSAGE_PROBE_ATTEMPTS)
+        assertEquals(1, flow.MAX_TIMEOUT_RECOVERY_ATTEMPTS)
+        assertEquals(30, flow.SYSTEM_OVERLAY_WAIT_ATTEMPTS)
+        assertEquals(0.76f, flow.USER_PAGE_SWIPE_START_Y)
+        assertEquals(0.38f, flow.USER_PAGE_SWIPE_END_Y)
+    }
+
+    @Test
+    fun accessibilityLifecycleKeepsOcrAndRebindBounds() {
+        val lifecycle = TuningConstants.AccessibilityLifecycle
+
+        assertEquals(1_500L, lifecycle.OCR_PROBE_INTERVAL_MS)
+        assertEquals(4_000L, lifecycle.OCR_CACHE_TTL_MS)
+        assertEquals(700L, lifecycle.REBIND_RESUME_DELAY_MS)
+        assertEquals(15_000L, lifecycle.REBIND_RESUME_THROTTLE_MS)
     }
 }
