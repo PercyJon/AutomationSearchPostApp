@@ -116,7 +116,10 @@ object VideoCommentButtonDetector {
                 val normalized = block.bounds.normalized(context.screenSize)
                 (block.confidence ?: 0f) + normalized.centerX
             }
-        if (ocrLabelFallback != null) return CommentButtonTarget.OcrFallback(ocrLabelFallback.bounds)
+        if (ocrLabelFallback != null) {
+            return commentIconBoundsAboveLabel(ocrLabelFallback, context.screenSize)
+                ?.let(CommentButtonTarget::OcrFallback)
+        }
 
         // The speech-bubble itself contains no text on some current player layouts, but its
         // right-side count column remains readable: like, comment, favorite, share. Infer the
@@ -197,6 +200,55 @@ object VideoCommentButtonDetector {
         }
     }
 
+    /**
+     * Douyin renders the OCR-visible “评论” label below its speech-bubble icon. A text-box tap
+     * can therefore be acknowledged as a gesture while leaving the panel closed. The label has
+     * already passed the compact right-rail check above; derive only the immediately preceding
+     * icon area from screen-relative geometry and keep a visible gap above the text.
+     */
+    private fun commentIconBoundsAboveLabel(
+        label: OcrTextBlock,
+        screenSize: ScreenSize,
+    ): ScreenBounds? {
+        // NormalizedRect clamps out-of-screen geometry for ranking. That is useful for a live
+        // node, but never sufficient for an OCR-derived gesture: refuse the raw label before
+        // deriving any click area from it.
+        if (
+            label.bounds.width <= 0 ||
+                label.bounds.height <= 0 ||
+                label.bounds.left < 0 ||
+                label.bounds.top < 0 ||
+                label.bounds.right > screenSize.width ||
+                label.bounds.bottom > screenSize.height
+        ) {
+            return null
+        }
+        val screenHeight = screenSize.height.coerceAtLeast(1)
+        val halfSide = (screenHeight * OCR_LABEL_ICON_HALF_SIDE_RATIO).toInt().coerceAtLeast(1)
+        val centerY = label.bounds.top - (screenHeight * OCR_LABEL_ICON_CENTER_OFFSET_RATIO).toInt()
+        val centerX = label.bounds.centerX.toInt()
+        val left = (centerX - halfSide).coerceAtLeast(0)
+        val top = (centerY - halfSide).coerceAtLeast(0)
+        val right = (centerX + halfSide).coerceAtMost(screenSize.width)
+        val bottom = (centerY + halfSide).coerceAtMost(screenSize.height)
+        if (right <= left || bottom <= top) return null
+        val bounds = ScreenBounds(
+            left = left,
+            top = top,
+            right = right,
+            bottom = bottom,
+        )
+        val normalized = bounds.normalized(screenSize)
+        val minimumClearance = (screenHeight * OCR_LABEL_ICON_MIN_CLEARANCE_RATIO).toInt()
+        return bounds.takeIf {
+            it.width > 0 &&
+                it.height > 0 &&
+                it.bottom <= label.bounds.top - minimumClearance &&
+                normalized.centerX >= OCR_RAIL_LEFT &&
+                normalized.centerY in OCR_RAIL_TOP..OCR_RAIL_BOTTOM
+        }
+    }
+
     private const val OCR_RAIL_LEFT = 0.76f
     private const val OCR_RAIL_TOP = 0.28f
     private const val OCR_RAIL_BOTTOM = 0.90f
@@ -205,7 +257,11 @@ object VideoCommentButtonDetector {
     private const val SEMANTIC_RAIL_BOTTOM = 0.90f
     private const val SEMANTIC_RAIL_MAX_WIDTH = 0.24f
     private const val SEMANTIC_RAIL_MAX_HEIGHT = 0.18f
-    private const val OCR_COUNT_RAIL_LEFT = 0.82f
+    // Current Douyin players can place the count labels slightly left of their right-rail icons
+    // (about 78% of the display width on the verified device). Keep this as a screen ratio: the
+    // fallback still requires all four evenly spaced count slots before it derives the comment
+    // bubble, so a caption or a lone number cannot become a coordinate target.
+    private const val OCR_COUNT_RAIL_LEFT = 0.74f
     private const val OCR_COUNT_RAIL_TOP = 0.42f
     private const val OCR_COUNT_RAIL_BOTTOM = 0.93f
     private const val OCR_COUNT_CLUSTER_TOLERANCE = 28
@@ -213,6 +269,9 @@ object VideoCommentButtonDetector {
     private const val OCR_COUNT_MAX_GAP_FRACTION = 0.16f
     private const val OCR_COUNT_MAX_GAP_RATIO = 1.45f
     private const val OCR_COUNT_MAX_X_SPREAD_FRACTION = 0.08f
+    private const val OCR_LABEL_ICON_CENTER_OFFSET_RATIO = 0.045f
+    private const val OCR_LABEL_ICON_HALF_SIDE_RATIO = 0.026f
+    private const val OCR_LABEL_ICON_MIN_CLEARANCE_RATIO = 0.012f
     private const val OCR_COMMENT_ICON_OFFSET_FRACTION = 0.40f
     private const val OCR_COMMENT_ICON_SIZE_FRACTION = 0.30f
     private const val OCR_MIN_ICON_GAP_FRACTION = 0.16f

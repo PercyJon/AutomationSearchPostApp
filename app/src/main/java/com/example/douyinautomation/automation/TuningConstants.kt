@@ -186,8 +186,10 @@ object TuningConstants {
         const val LIVE_ROOM_SWIPE_DURATION_MS = 460L
         const val USER_RESULTS_TOP_RATIO = 0.14f
         const val USER_ROW_CONTENT_LEFT_RATIO = 0.24f
-        const val USER_ROW_CONTENT_TOP_RATIO = 0.12f
-        const val USER_ROW_CONTENT_BOTTOM_RATIO = 0.58f
+        // Custom-rendered result cards expose the profile entry at their top. Keep the gesture
+        // centred on that bounded name band rather than lower follower/account metadata.
+        const val USER_ROW_CONTENT_TOP_RATIO = 0.05f
+        const val USER_ROW_CONTENT_BOTTOM_RATIO = 0.32f
         const val USER_ROW_SAFE_TAP_RIGHT_RATIO = 0.70f
 
         const val SEARCH_SUBMIT_LEFT_RATIO = 0.68f

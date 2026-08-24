@@ -219,7 +219,12 @@ fun AppHomeScreen(
             },
             onRetry = {
                 detailTaskId = null
-                section = HomeSection.TODO.name
+                // retryTask() has already dispatched the frozen historical snapshot directly to
+                // the accessibility controller. Returning to TODO here opens the generic B-end
+                // creation form and visually suggests that a comment task needs to be rebuilt as
+                // a different task type. Keep the operator on records while the same safe-probe
+                // task starts in Douyin.
+                section = HomeSection.RECORDS.name
             },
         )
         return

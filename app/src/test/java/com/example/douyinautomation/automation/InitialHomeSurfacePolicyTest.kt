@@ -6,6 +6,34 @@ import org.junit.Test
 class InitialHomeSurfacePolicyTest {
 
     @Test
+    fun pendingStartupDefersOnlyUnknownHomeRecovery() {
+        assertEquals(
+            true,
+            InitialHomeSurfacePolicy.shouldDeferUnknownRecovery(
+                phase = AutomationPhase.WAITING_FOR_HOME,
+                detectedPage = PageKind.UNKNOWN,
+                initialClassificationPending = true,
+            ),
+        )
+        assertEquals(
+            false,
+            InitialHomeSurfacePolicy.shouldDeferUnknownRecovery(
+                phase = AutomationPhase.WAITING_FOR_HOME,
+                detectedPage = PageKind.USER_PROFILE,
+                initialClassificationPending = true,
+            ),
+        )
+        assertEquals(
+            false,
+            InitialHomeSurfacePolicy.shouldDeferUnknownRecovery(
+                phase = AutomationPhase.WAITING_FOR_SEARCH_ENTRY,
+                detectedPage = PageKind.UNKNOWN,
+                initialClassificationPending = true,
+            ),
+        )
+    }
+
+    @Test
     fun unknownPageWithVerifiedSearchEntryBecomesHome() {
         val result = InitialHomeSurfacePolicy.normalize(
             detected = detection(PageKind.UNKNOWN),

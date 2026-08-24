@@ -149,6 +149,8 @@ class DouyinNavigationController(
     /** Durable contract for the active local batch; null for legacy and remote single-task runs. */
     private var localTaskQueueSession: LocalTaskQueueSession? = null
     private var initialOcrAttempts = 0
+    /** True from normal target launch until initial HOME/search evidence is positively classified. */
+    private var initialHomeClassificationPending = false
     /** Number of bounded blind BACK actions used while the target tree is temporarily unavailable. */
     private var initialBlindBackAttempts = 0
     private var latestContext: ScreenContext? = null
@@ -350,6 +352,19 @@ class DouyinNavigationController(
         // operator navigates to the intended profile. Only the explicit overlay Resume action may
         // hand the verified profile to the comment runtime.
         if (phase == AutomationPhase.SUSPENDED_BEFORE_START) return
+        if (
+            InitialHomeSurfacePolicy.shouldDeferUnknownRecovery(
+                phase = phase,
+                detectedPage = detection.kind,
+                initialClassificationPending = initialHomeClassificationPending,
+            )
+        ) {
+            logger.info(
+                "initial_unknown_deferred",
+                message = "The launch surface is not classified yet; continuing bounded observation without BACK",
+            )
+            return
+        }
         if (detection.kind == PageKind.HUMAN_INTERVENTION) {
             pause("Verification or risk screen detected; manual handoff required")
             return
@@ -367,6 +382,12 @@ class DouyinNavigationController(
             return
         }
         if (!confirmOcrBackedPage(context, detection)) return
+        // An OCR-backed HOME/SEARCH result must pass its existing consecutive-observation gate
+        // before it may release the UNKNOWN launch-surface safety hold. Otherwise one transient
+        // positive frame can be followed by UNKNOWN and restart the bounded BACK recovery.
+        if (phase == AutomationPhase.WAITING_FOR_HOME && detection.kind != PageKind.UNKNOWN) {
+            initialHomeClassificationPending = false
+        }
 
         // Comment tasks reuse the already-validated search/profile navigation until a user
         // profile is reached, then switch to the isolated comment runtime. CURRENT_PROFILE also
@@ -582,6 +603,7 @@ class DouyinNavigationController(
                 )
                 delay(TuningConstants.NavigationLifecycle.INITIAL_SCREEN_SETTLE_DELAY_MS)
                 logger.info("initial_screen_settle_completed")
+                initialHomeClassificationPending = true
                 await(
                     nextPhase = AutomationPhase.WAITING_FOR_HOME,
                     timeoutDescription = "Douyin home or search page was not detected",
@@ -3586,7 +3608,13 @@ class DouyinNavigationController(
             try {
                 val result = engine.recognize(bitmap, region)
                 base.copy(
-                    ocrBlocks = OcrTextBlockMapper.map(result),
+                    ocrBlocks = OcrTextBlockMapper.map(
+                        result = result,
+                        // The P0 first-card detector must correlate a name line with the
+                        // follower and account lines of that same card. Other OCR consumers
+                        // retain their historical whole-block representation.
+                        preserveLineGeometry = region == OcrRegion.USER_RESULTS,
+                    ),
                     capturedAtMillis = System.currentTimeMillis(),
                 ).also {
                     latestContext = it

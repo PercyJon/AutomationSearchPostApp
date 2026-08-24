@@ -7,6 +7,19 @@ package com.example.douyinautomation.automation
  */
 object InitialHomeSurfacePolicy {
 
+    /**
+     * A custom-rendered launch surface can be UNKNOWN for several frames while its HOME evidence
+     * settles. That state is not evidence that global BACK is safe; the bounded startup observer
+     * must collect a confirmed page or let its watchdog take the existing safe-pause path.
+     */
+    fun shouldDeferUnknownRecovery(
+        phase: AutomationPhase,
+        detectedPage: PageKind,
+        initialClassificationPending: Boolean,
+    ): Boolean = initialClassificationPending &&
+        phase == AutomationPhase.WAITING_FOR_HOME &&
+        detectedPage == PageKind.UNKNOWN
+
     fun normalize(
         detected: PageDetection,
         hasTransientOverlay: Boolean,

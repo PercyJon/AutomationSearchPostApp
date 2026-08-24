@@ -146,7 +146,7 @@ class CommentSurfaceSignalsTest {
     }
 
     @Test
-    fun `OCR comment label is used only after malformed accessibility rail bounds are rejected`() {
+    fun `OCR comment label targets its verified action bubble above the label`() {
         val malformedRail = (0..3).map { index ->
             node(
                 text = null,
@@ -165,9 +165,21 @@ class CommentSurfaceSignalsTest {
         )
 
         assertEquals(
-            CommentButtonTarget.OcrFallback(ocrBounds),
+            CommentButtonTarget.OcrFallback(ScreenBounds(893, 1390, 1017, 1514)),
             VideoCommentButtonDetector.find(context),
         )
+    }
+
+    @Test
+    fun `out of screen OCR comment label is rejected before deriving a gesture`() {
+        val context = ScreenContext(
+            screenSize = screen,
+            ocrBlocks = listOf(
+                OcrTextBlock("评论", ScreenBounds(1120, 1560, 1220, 1610), confidence = 0.96f),
+            ),
+        )
+
+        assertEquals(null, VideoCommentButtonDetector.find(context))
     }
 
     @Test
@@ -195,6 +207,38 @@ class CommentSurfaceSignalsTest {
 
         assertEquals(
             CommentButtonTarget.OcrFallback(ScreenBounds(920, 1505, 1040, 1625)),
+            VideoCommentButtonDetector.find(context),
+        )
+    }
+
+    @Test
+    fun `OCR action-count rail accepts compact labels left of the icon centers`() {
+        val malformedRail = (0..3).map { index ->
+            node(
+                text = null,
+                className = "android.widget.ImageView",
+                left = 900,
+                top = -900 + index * 180,
+                right = 1000,
+                bottom = -800 + index * 180,
+            )
+        }
+        val context = ScreenContext(
+            screenSize = screen,
+            nodes = malformedRail,
+            // Verified player screenshots place these count labels around 78% of screen width,
+            // while the icon itself remains farther right. The complete four-slot rail remains
+            // the safety proof for the OCR-only coordinate fallback.
+            ocrBlocks = listOf(
+                OcrTextBlock("935", ScreenBounds(800, 1420, 890, 1470), confidence = 0.97f),
+                OcrTextBlock("43", ScreenBounds(800, 1620, 890, 1670), confidence = 0.96f),
+                OcrTextBlock("194", ScreenBounds(800, 1820, 890, 1870), confidence = 0.98f),
+                OcrTextBlock("58", ScreenBounds(800, 2020, 890, 2070), confidence = 0.95f),
+            ),
+        )
+
+        assertEquals(
+            CommentButtonTarget.OcrFallback(ScreenBounds(785, 1505, 905, 1625)),
             VideoCommentButtonDetector.find(context),
         )
     }
@@ -357,6 +401,31 @@ class CommentSurfaceSignalsTest {
 
         assertNotNull(observation.commentButton)
         assertTrue(observation.hasCommentEntry)
+    }
+
+    @Test
+    fun `HOME classified next video accepts only a complete OCR action rail`() {
+        val context = ScreenContext(
+            screenSize = screen,
+            packageName = "com.ss.android.ugc.aweme",
+            nodes = listOf(
+                NodeSnapshot(text = "首页"),
+                NodeSnapshot(text = "推荐"),
+            ),
+            ocrBlocks = listOf(
+                OcrTextBlock("465", ScreenBounds(930, 1240, 1030, 1290), confidence = 0.97f),
+                OcrTextBlock("5", ScreenBounds(930, 1440, 1030, 1490), confidence = 0.96f),
+                OcrTextBlock("187", ScreenBounds(930, 1640, 1030, 1690), confidence = 0.98f),
+                OcrTextBlock("76", ScreenBounds(930, 1840, 1030, 1890), confidence = 0.95f),
+            ),
+        )
+
+        val observation = CommentEntrySignalDetector.observe(context)
+
+        assertEquals(PageKind.HOME, observation.page)
+        assertTrue(observation.hasVideoSurface)
+        assertTrue(observation.hasCommentEntry)
+        assertNotNull(observation.commentButton)
     }
 
     private fun node(

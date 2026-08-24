@@ -621,12 +621,13 @@ class CommentPrivateMessageRuntime(
                     skipPinnedVideos = config?.skipPinnedVideos == true,
                 )
                 // Direct tree reads are intentionally cheap, but they contain no OCR blocks.
-                // The post-swipe failure we are recovering from is exactly a player whose rail
-                // pixels are on-screen while every corresponding accessibility node has stale
-                // negative bounds. Capture at most two bounded, full-screen OCR samples only
-                // after a genuine video was observed without a safe entry, then re-run the same
-                // strict detector against the enriched snapshot.
-                if (observation.hasVideoSurface && !observation.hasCommentEntry &&
+                // A profile-detail player can temporarily be classified as HOME after the
+                // verified next-video swipe, even while its right rail is visibly rendered.
+                // Capture at most two bounded, full-screen OCR samples in either that narrow
+                // HOME detail state or an already-recognised video surface, then re-run the
+                // same strict detector against the enriched snapshot.
+                val mayBePostSwipeVideo = observation.hasVideoSurface || observation.page == PageKind.HOME
+                if (mayBePostSwipeVideo && !observation.hasCommentEntry &&
                     ocrProbeCount < TuningConstants.CommentRuntime.NEXT_VIDEO_OCR_PROBE_LIMIT
                 ) {
                     ocrProbeCount += 1

@@ -53,6 +53,8 @@ class TuningConstantsTest {
         assertEquals(30, flow.SYSTEM_OVERLAY_WAIT_ATTEMPTS)
         assertEquals(0.76f, flow.USER_PAGE_SWIPE_START_Y)
         assertEquals(0.38f, flow.USER_PAGE_SWIPE_END_Y)
+        assertEquals(0.05f, flow.USER_ROW_CONTENT_TOP_RATIO)
+        assertEquals(0.32f, flow.USER_ROW_CONTENT_BOTTOM_RATIO)
     }
 
     @Test
