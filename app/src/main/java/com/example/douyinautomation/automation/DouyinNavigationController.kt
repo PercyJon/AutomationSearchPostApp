@@ -103,6 +103,25 @@ class DouyinNavigationController(
         resumeRemoteAnchor = { context -> resumeRemoteTaskFromAnchor(context) },
         handleAccountHelpEnd = { handleAccountHelpOnlyEnd() },
     )
+    /** Bounded timeout recovery dispatch; concrete recovery effects remain controller-owned. */
+    private val recoveryFlow = RecoveryFlow(
+        waitForStartupAd = { marker, timeoutDescription ->
+            waitForStartupAdTimeoutRecovery(marker, timeoutDescription)
+        },
+        retryKeywordPreservingBudget = { context -> retryKeywordAfterSearchResultsTimeout(context) },
+        enterKeyword = ::enterKeyword,
+        reuseSearchEntryQuery = { context ->
+            reuseSearchResultsQueryField(context, "search_entry_timeout_recovery")
+        },
+        openSearch = ::openSearch,
+        reuseHomeQuery = { context -> reuseSearchResultsQueryField(context, "home_timeout_recovery") },
+        recoverInitialSurface = { context -> recoverInitialSurface(context, requireHome = true) },
+        selectVisibleUser = { context -> selectVisibleUser(context) },
+        selectUserTab = ::selectUserTab,
+        openPrivateMessage = ::openPrivateMessage,
+        skipProfileRecoveryFailure = { page -> skipProfileRecoveryFailure(page) },
+        pauseTimeout = { reason -> pause(reason) },
+    )
     private var phase = AutomationPhase.IDLE
     @Volatile private var taskActive = false
     private var keyword: String? = null
@@ -4698,59 +4717,48 @@ class DouyinNavigationController(
         val startupAd = context
             ?.takeIf { timedOutPhase == AutomationPhase.WAITING_FOR_HOME }
             ?.let(TransientOverlayDetector::findStartupAd)
-        when (
-            RecoveryFlowRouter.route(
-                timedOutPhase = timedOutPhase,
-                page = detection?.kind,
-                startupAdVisible = startupAd != null,
-            )
-        ) {
-            RecoveryFlowRoute.WAIT_FOR_STARTUP_AD -> {
-                logger.info(
-                    "startup_ad_timeout_recovery_wait",
-                    message = "The startup advertisement is still visible; extending the bounded wait",
-                    attributes = mapOf("marker" to requireNotNull(startupAd).marker),
-                )
-                await(
-                    nextPhase = AutomationPhase.WAITING_FOR_HOME,
-                    timeoutDescription = timeoutDescription,
-                    resetRecoveryBudget = false,
-                )
-                scheduleInitialObservation()
-            }
+        recoveryFlow.onTimeout(
+            timedOutPhase = timedOutPhase,
+            context = context,
+            page = detection?.kind,
+            startupAdMarker = startupAd?.marker,
+            timeoutDescription = timeoutDescription,
+        )
+    }
 
-            RecoveryFlowRoute.RETRY_KEYWORD_PRESERVING_BUDGET -> {
-                logger.warn(
-                    "search_results_timeout_retry",
-                    message = "Search entry is still visible; revalidating the keyword and resubmitting",
-                )
-                enterKeyword(requireNotNull(context), preserveTimeoutRecoveryBudget = true)
-            }
+    private suspend fun waitForStartupAdTimeoutRecovery(
+        marker: String,
+        timeoutDescription: String,
+    ) {
+        logger.info(
+            "startup_ad_timeout_recovery_wait",
+            message = "The startup advertisement is still visible; extending the bounded wait",
+            attributes = mapOf("marker" to marker),
+        )
+        await(
+            nextPhase = AutomationPhase.WAITING_FOR_HOME,
+            timeoutDescription = timeoutDescription,
+            resetRecoveryBudget = false,
+        )
+        scheduleInitialObservation()
+    }
 
-            RecoveryFlowRoute.ENTER_KEYWORD -> enterKeyword(requireNotNull(context))
-            RecoveryFlowRoute.REUSE_SEARCH_ENTRY_QUERY ->
-                reuseSearchResultsQueryField(requireNotNull(context), "search_entry_timeout_recovery")
+    private suspend fun retryKeywordAfterSearchResultsTimeout(context: ScreenContext) {
+        logger.warn(
+            "search_results_timeout_retry",
+            message = "Search entry is still visible; revalidating the keyword and resubmitting",
+        )
+        enterKeyword(context, preserveTimeoutRecoveryBudget = true)
+    }
 
-            RecoveryFlowRoute.OPEN_SEARCH -> openSearch(requireNotNull(context))
-            RecoveryFlowRoute.REUSE_HOME_QUERY ->
-                reuseSearchResultsQueryField(requireNotNull(context), "home_timeout_recovery")
-
-            RecoveryFlowRoute.RECOVER_INITIAL_SURFACE ->
-                recoverInitialSurface(requireNotNull(context), requireHome = true)
-
-            RecoveryFlowRoute.SELECT_VISIBLE_USER -> selectVisibleUser(requireNotNull(context))
-            RecoveryFlowRoute.SELECT_USER_TAB -> selectUserTab(requireNotNull(context))
-            // The profile transition can be delivered without a follow-up accessibility event on
-            // custom-rendered Douyin pages. If the watchdog sees a verified profile, retry the
-            // private-message entry instead of pausing on a screen ready for the next action.
-            RecoveryFlowRoute.OPEN_PRIVATE_MESSAGE -> openPrivateMessage(requireNotNull(context))
-            RecoveryFlowRoute.SKIP_PROFILE_RECOVERY_FAILURE -> skipMessageSendFailure(
-                "The user profile did not become available after the bounded recovery window",
-                failurePage = detection?.kind ?: PageKind.USER_RESULTS,
-            )
-
-            RecoveryFlowRoute.PAUSE_TIMEOUT -> pause(timeoutDescription)
-        }
+    private suspend fun skipProfileRecoveryFailure(failurePage: PageKind) {
+        // The profile transition can be delivered without a follow-up accessibility event on
+        // custom-rendered Douyin pages. If the watchdog does not see a verified profile or result
+        // page, retain the existing per-user failure record instead of a task-level pause.
+        skipMessageSendFailure(
+            "The user profile did not become available after the bounded recovery window",
+            failurePage = failurePage,
+        )
     }
 
     private suspend fun dumpNodeTreeInternal(tag: String) {
