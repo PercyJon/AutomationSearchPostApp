@@ -151,15 +151,15 @@
 
 ### M6 —— 跨设备适配与并发修复（横切）
 
-- [ ] **A1 像素常量 dp 归一化**：
+- [x] **A1 像素常量 dp 归一化**：
   - `StructuralUserRowDetector` 的 `MIN_ROW_HEIGHT=180 / MAX_ROW_HEIGHT=400`。
   - `DouyinNavigationController` 的 `USER_ROW_MIN_HEIGHT / MAX_HEIGHT / CONTENT_LEFT_RATIO`。
   - `GestureEngine` 的 `TAP_DURATION_MS / SWIPE_DURATION_MS`。
   - 统一改为 `dp × density` 动态计算或以 `screenSize` 比例替代。
-- [ ] **A3 节点树截断**：`NodeTreeInspector.MAX_NODES=400` 截断时记录告警，或按优先级保留可见节点。
-- [ ] **A6 截图降级**：FLAG_SECURE 窗口下接入 `MediaProjection` 降级通道，或明确切换纯节点树路径并记录降级。
+- [x] **A3 节点树截断**：`NodeTreeInspector.MAX_NODES=400` 截断时记录告警，或按优先级保留可见节点。（2026-08-24 已完成：保留既有预算，仅记录连续截断的首次原因。）
+- [x] **A6 截图降级**：FLAG_SECURE 窗口下接入 `MediaProjection` 降级通道，或明确切换纯节点树路径并记录降级。（2026-08-24 已选择纯节点树路径；不申请录屏权限。）
 - [x] **B2 OCR 性能**：按 `OcrRegion` 裁剪后再放大，避免全屏 1.5x。（2026-08-24 审计确认：既有实现 `7614f38` 已满足此项。）
-- [ ] **B3 事件签名**：`nodeSignature` 改为增量/关键节点哈希，降低事件风暴成本。
+- [x] **B3 事件签名**：`nodeSignature` 改为增量/关键节点哈希，降低事件风暴成本。（2026-08-24 已完成：保留相同字段与顺序，消除整树临时字符串。）
 
 **验收**：在 ≥2 种分辨率设备上跑同一回归不因几何阈值失效；OCR 耗时下降可量化。
 

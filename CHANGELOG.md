@@ -4,6 +4,30 @@
 
 ---
 
+## [未发布] 2026-08-24 —— M6-B3 节点观察事件增量签名
+
+### 修改内容
+
+- 新增 [`NodeObservationSignaturePolicy.kt`](app/src/main/java/com/example/douyinautomation/automation/NodeObservationSignaturePolicy.kt)：按照既有节点顺序逐项累积 `text`、描述、边界、选中和可见状态的哈希，不再为每个无障碍事件构造整棵节点树的临时拼接字符串。
+- [`DouyinAccessibilityService.kt`](app/src/main/java/com/example/douyinautomation/automation/DouyinAccessibilityService.kt) 仅改用该增量签名；页面检测、OCR 签名、最终去重条件、控制器和安全动作链路保持不变。
+
+### 已验证项
+
+- 新增 `NodeObservationSignaturePolicyTest`，覆盖相同快照、既有全部语义/几何字段变更及节点顺序。
+- 自动化验证：`./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` 与 `git diff --check` 均通过。
+- **真机 OnePlus NE2210 / b33aa309**：任务停止态安装后，回到桌面并仅将抖音带到前台以产生观察事件；服务 Bound/Enabled、Crashed 为空，未出现 `node_inspection_failed` 或任何任务/消息动作。
+
+### 几何与兼容性检查
+
+- 未新增 Android 几何尺寸、固定 px、坐标或手势；节点边界仅保留为原有签名字段，不构成几何阈值。
+- 节点优先、OCR 辅助、页面确认和私信安全门保持不变。
+
+### 交接记录
+
+- [`2026-08-24-m6-node-observation-signature.md`](docs/2026-08-24-m6-node-observation-signature.md)
+
+---
+
 ## [未发布] 2026-08-24 —— M6-B2 OCR 预处理审计（无源码改动）
 
 ### 审计结论

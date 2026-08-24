@@ -153,16 +153,7 @@ class DouyinAccessibilityService : AccessibilityService() {
                     // same size. Include a compact semantic/geometry signature so a post-click
                     // USER_RESULTS observation is not suppressed as a duplicate SEARCH_RESULTS
                     // snapshot, while identical content-change events still remain cheap to drop.
-                    val nodeSignature = context.nodes.joinToString("|") { node ->
-                        buildString {
-                            append(node.text.orEmpty())
-                            append('\u0001').append(node.contentDescription.orEmpty())
-                            append('\u0001').append(node.bounds.left).append(',').append(node.bounds.top)
-                            append(',').append(node.bounds.right).append(',').append(node.bounds.bottom)
-                            append('\u0001').append(node.isSelected)
-                            append('\u0001').append(node.isVisibleToUser)
-                        }
-                    }.hashCode()
+                    val nodeSignature = NodeObservationSignaturePolicy.hash(context.nodes)
                     val signature = "${detection.kind}:${detection.confidence}:${context.nodes.size}:${nodeSignature}:${augmentedContext.ocrBlocks.size}:$ocrSignature"
                     if (signature == lastSignature && event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
                         return@withLock
