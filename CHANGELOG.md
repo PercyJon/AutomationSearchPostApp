@@ -4,6 +4,30 @@
 
 ---
 
+## [未发布] 2026-08-24 —— M7-C2b 私信阶段路由拆分
+
+### 修改内容
+
+- 新增 [`PrivateMessageFlowRouter.kt`](app/src/main/java/com/example/douyinautomation/automation/PrivateMessageFlowRouter.kt)，将私信页、消息结果和空白探测结果的既有页面分流收敛为无副作用路由。
+- [`DouyinNavigationController.kt`](app/src/main/java/com/example/douyinautomation/automation/DouyinNavigationController.kt) 保留所有完成、跳过、后置确认和暂停方法；不移动发送、空白探测、节点/OCR/手势或风险页全局安全门。
+
+### 已验证项
+
+- 新增 `PrivateMessageFlowRouterTest`，覆盖私信终态、空白拒绝、私信受限、普通/探测失败、后置确认与风险映射。
+- 自动化验证：`./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` 与 `git diff --check` 均通过。
+- **真机 OnePlus NE2210 / b33aa309**：更新后服务 Bound/Enabled、Crashed 为空；停止态没有任务、恢复、私信进入、页面动作、空白探测或消息发送。
+
+### 几何与兼容性检查
+
+- 未新增 Android 几何尺寸、固定 px、坐标或手势；无需新增 dp 归一化逻辑。
+- 节点优先、OCR 辅助、几何校验、页面确认和消息安全门保持不变。
+
+### 交接记录
+
+- [`2026-08-24-m7-c2-private-message-flow-router.md`](docs/2026-08-24-m7-c2-private-message-flow-router.md)
+
+---
+
 ## [未发布] 2026-08-24 —— M7-C2a 搜索阶段路由拆分
 
 ### 修改内容
