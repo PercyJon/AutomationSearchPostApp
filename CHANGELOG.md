@@ -4,6 +4,32 @@
 
 ---
 
+## [未发布] 2026-08-24 —— P2-H 已保存检查点恢复路由策略
+
+### 修改内容
+
+- 在 [`AutomationModels.kt`](app/src/main/java/com/example/douyinautomation/automation/AutomationModels.kt) 增加 `SavedTaskResumePolicy`：将“已保存检查点是否可原地复用当前已验证页面、对应恢复阶段为何”的无副作用决策从 `DouyinNavigationController` 抽出。
+- 原有语义保持不变：仅 HOME、搜索入口、搜索结果、用户结果四类已验证导航页可原地续接；用户主页、私信页、未知/风险页及页面缺失均回到冻结的初始流程；队列明确要求重启时同样不得原地续接。
+- 控制器仍负责窗口读取、页面识别、状态发布、启动应用和后续动作；本轮不改动 OCR、节点点击、手势、队列顺序、消息提交或终态行为。
+
+### 已验证项
+
+- 新增 `SavedTaskResumePolicyTest`：遍历全部 `PageKind`，锁定仅四类既有导航页可复用；覆盖强制初始重启和可见页面缺失两条拒绝路径。
+- 自动化验证：`./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` 与 `git diff --check` 均通过。
+- **真机 OnePlus NE2210 / b33aa309**：受控 B 端安全探测任务暂停后，当前前台不属于抖音；恢复日志记录 `queue_type=B_END_PRIVATE_MESSAGE`、`visible_page=OUTSIDE_TARGET`、`restart_from_initial=true`，随后出现 `saved_task_resume_requested` 与新的 `task_started`，确认从冻结检查点的初始流程重新建立页面状态，而非复用后台页面。
+- 真机恢复后的受控任务在进入消息动作前即停止；日志未出现空白探测提交或真实文本发送。服务重连后保持停止态，不会自动恢复该任务。
+
+### 几何与兼容性检查
+
+- 未新增 Android 几何尺寸、像素常量或点击坐标；无需新增 dp 归一化逻辑。
+- 不修改稳定的节点、OCR、手势和队列推进链路。
+
+### 交接记录
+
+- [`2026-08-24-p2-saved-task-resume-policy.md`](docs/2026-08-24-p2-saved-task-resume-policy.md)
+
+---
+
 ## [未发布] 2026-08-24 —— P0 多任务队列真机追加验收（无代码改动）
 
 ### 修改内容

@@ -976,20 +976,12 @@ class DouyinNavigationController(
         }
         val existingContext = currentWindowContext()
         val existingDetection = existingContext?.let(pageDetector::detect)
-        if (!forceInitialRestart &&
-            existingContext != null && existingDetection != null && existingDetection.kind in setOf(
-                PageKind.HOME,
-                PageKind.SEARCH_ENTRY,
-                PageKind.SEARCH_RESULTS,
-                PageKind.USER_RESULTS,
-            )
-        ) {
-            phase = when (existingDetection.kind) {
-                PageKind.USER_RESULTS -> AutomationPhase.WAITING_FOR_USER_RESULTS
-                PageKind.SEARCH_ENTRY -> AutomationPhase.WAITING_FOR_SEARCH_ENTRY
-                PageKind.SEARCH_RESULTS -> AutomationPhase.WAITING_FOR_SEARCH_RESULTS
-                else -> AutomationPhase.WAITING_FOR_HOME
-            }
+        val inPlaceResumePhase = SavedTaskResumePolicy.phaseForInPlaceResume(
+            forceInitialRestart = forceInitialRestart,
+            visiblePage = existingDetection?.kind,
+        )
+        if (existingContext != null && existingDetection != null && inPlaceResumePhase != null) {
+            phase = inPlaceResumePhase
             AutomationStore.publishPhase(phase)
             onScreenObserved(existingContext, existingDetection)
             return

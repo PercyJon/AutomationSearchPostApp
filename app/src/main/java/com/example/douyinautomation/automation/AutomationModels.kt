@@ -285,6 +285,30 @@ object AutomationResumePolicy {
     }
 }
 
+/**
+ * Chooses whether a persisted task can continue from the already visible screen after its
+ * controller is rebound. Only the early navigation surfaces are reusable: a later profile or
+ * message screen may belong to a different user, so it must return to the frozen initial flow.
+ *
+ * This policy is deliberately side-effect free. The caller remains responsible for verifying the
+ * window context and for launching Douyin when no in-place route is returned.
+ */
+object SavedTaskResumePolicy {
+    fun phaseForInPlaceResume(
+        forceInitialRestart: Boolean,
+        visiblePage: PageKind?,
+    ): AutomationPhase? {
+        if (forceInitialRestart) return null
+        return when (visiblePage) {
+            PageKind.HOME -> AutomationPhase.WAITING_FOR_HOME
+            PageKind.SEARCH_ENTRY -> AutomationPhase.WAITING_FOR_SEARCH_ENTRY
+            PageKind.SEARCH_RESULTS -> AutomationPhase.WAITING_FOR_SEARCH_RESULTS
+            PageKind.USER_RESULTS -> AutomationPhase.WAITING_FOR_USER_RESULTS
+            else -> null
+        }
+    }
+}
+
 /** A small set of labels used by PageDetector and SelectorEngine. */
 object DouyinLabels {
     val search = listOf("搜索", "search")
