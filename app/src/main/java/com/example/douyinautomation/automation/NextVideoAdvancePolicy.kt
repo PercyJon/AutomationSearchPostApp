@@ -109,6 +109,13 @@ object NextVideoAdvancePolicy {
     /** Comment-list pagination belongs to the video being left, not the sheet after the swipe. */
     fun commentListScrollCountAfterLeavingVideo(): Int = 0
 
+    /**
+     * Closing the current sheet must not stay in READY_TO_READ. Accessibility events from the
+     * disappearing panel would otherwise keep triggering comment OCR and stretch the 150ms
+     * close poll to seconds.
+     */
+    fun shouldArmWaitingForVideoBeforeSheetClose(): Boolean = true
+
     data class ChangedPlayerSignatureSamples(
         val signature: Int?,
         val count: Int,

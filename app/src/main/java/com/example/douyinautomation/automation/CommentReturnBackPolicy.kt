@@ -26,4 +26,14 @@ internal object CommentReturnBackPolicy {
         backsDispatched: Int,
         requiredBacks: Int,
     ): Boolean = stillOnUserProfile && backsDispatched > 0 && backsDispatched >= requiredBacks
+
+    /**
+     * Action-rail OCR is only a sparse-player fallback. If nodes already prove the comment
+     * sheet, skip the screenshot so returning from DM is not blocked by next-video rail work.
+     */
+    fun shouldEnrichReturnWithActionRailOcr(
+        stillNested: Boolean,
+        nodeCommentSurfaceReady: Boolean,
+        ocrAlreadyAttempted: Boolean,
+    ): Boolean = !stillNested && !nodeCommentSurfaceReady && !ocrAlreadyAttempted
 }

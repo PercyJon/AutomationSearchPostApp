@@ -49,6 +49,38 @@ class CommentReturnBackPolicyTest {
     }
 
     @Test
+    fun returnSkipsActionRailOcrWhenNodesAlreadyProveTheCommentSheet() {
+        assertFalse(
+            CommentReturnBackPolicy.shouldEnrichReturnWithActionRailOcr(
+                stillNested = false,
+                nodeCommentSurfaceReady = true,
+                ocrAlreadyAttempted = false,
+            ),
+        )
+        assertTrue(
+            CommentReturnBackPolicy.shouldEnrichReturnWithActionRailOcr(
+                stillNested = false,
+                nodeCommentSurfaceReady = false,
+                ocrAlreadyAttempted = false,
+            ),
+        )
+        assertFalse(
+            CommentReturnBackPolicy.shouldEnrichReturnWithActionRailOcr(
+                stillNested = true,
+                nodeCommentSurfaceReady = false,
+                ocrAlreadyAttempted = false,
+            ),
+        )
+        assertFalse(
+            CommentReturnBackPolicy.shouldEnrichReturnWithActionRailOcr(
+                stillNested = false,
+                nodeCommentSurfaceReady = false,
+                ocrAlreadyAttempted = true,
+            ),
+        )
+    }
+
+    @Test
     fun dmPathTakesTheSecondBackWithoutAProfileLeavePoll() {
         assertTrue(
             CommentReturnBackPolicy.shouldDispatchAnotherReturnBack(

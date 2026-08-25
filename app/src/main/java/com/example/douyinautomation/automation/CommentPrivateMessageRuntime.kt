@@ -27,6 +27,15 @@ data class CommentRuntimeTerminal(
     }
 }
 
+/** Dump a missing comment rail only while the sheet is not already the active surface. */
+internal object CommentButtonMissDumpPolicy {
+    fun shouldDump(
+        hasVideoSurface: Boolean,
+        hasCommentEntry: Boolean,
+        commentSurfaceReady: Boolean,
+    ): Boolean = hasVideoSurface && !hasCommentEntry && !commentSurfaceReady
+}
+
 /** Pure gate for the bounded post-swipe action-rail probe. It never authorizes a click. */
 internal object NextVideoTransitionProbePolicy {
     fun shouldProbeActionRail(
@@ -393,7 +402,13 @@ class CommentPrivateMessageRuntime(
         // dropped an actionable speech-bubble. Dump every semantic/rail candidate so the failing
         // filter (visibility flag, clickable/enabled flag, bounds, or rail cardinality) is visible
         // in the log instead of a silent timeout on the second video after swipe.
-        if (observation.hasVideoSurface && !observation.hasCommentEntry) {
+        if (
+            CommentButtonMissDumpPolicy.shouldDump(
+                hasVideoSurface = observation.hasVideoSurface,
+                hasCommentEntry = observation.hasCommentEntry,
+                commentSurfaceReady = observation.isCommentSurfaceReady,
+            )
+        ) {
             logCommentButtonMissDiagnostics(context)
         }
         logger.info(
@@ -1592,6 +1607,17 @@ class CommentPrivateMessageRuntime(
                 attributes = mapOf("previous_scroll_count" to previousScrollCount),
             )
         }
+        nextVideoCommitted = false
+        nextVideoPlayerFingerprintConfirmed = false
+        awaitingNextVideoConfirmation = true
+        nextVideoCommentsOpenAuthorized = false
+        nextVideoSwipeAttempt = 1
+        nextVideoAdvanceReason = reason
+        if (NextVideoAdvancePolicy.shouldArmWaitingForVideoBeforeSheetClose()) {
+            stateMachine.prepareNextVideo()
+            pendingViewportContext = null
+            logger.info("comment_next_video_close_route_armed")
+        }
         if (!prepareClosedPlayerForNextVideoSwipe()) {
             terminal(CommentRuntimeTerminal.Outcome.FAILED, "关闭当前视频评论区失败，无法继续下一个视频")
             return
@@ -1601,17 +1627,6 @@ class CommentPrivateMessageRuntime(
             terminal(CommentRuntimeTerminal.Outcome.FAILED, "关闭评论区后未能确认视频播放器，无法切换下一个视频")
             return
         }
-        nextVideoCommitted = false
-        nextVideoPlayerFingerprintConfirmed = false
-        awaitingNextVideoConfirmation = true
-        nextVideoCommentsOpenAuthorized = false
-        nextVideoSwipeAttempt = 1
-        nextVideoAdvanceReason = reason
-        // Re-arm the route before the swipe so the closing panel's accessibility events are
-        // gated by WAITING_FOR_VIDEO instead of READY_TO_READ, and drop any parked stale viewport
-        // so the merge consumer cannot drain the old panel's candidates into the next video.
-        stateMachine.prepareNextVideo()
-        pendingViewportContext = null
 
         if (!dispatchNextVideoSwipe(reason)) {
             awaitingNextVideoConfirmation = false
@@ -2469,11 +2484,18 @@ class CommentPrivateMessageRuntime(
                     }
                     val minimumBackActions = requiredBackActions ?: 0
                     val stillOnUserProfile = detection.kind == PageKind.USER_PROFILE
+                    val nodeCommentSurfaceReady = CommentSurfaceDetector.detect(context).isCommentSurface
 
                     // A commenter profile can return directly to a video whose full right rail
                     // is visually present but sparse in accessibility. Take one bounded OCR
-                    // sample before deciding whether the final comment sheet is present.
-                    if (!stillInsideNestedSurface && !ocrRecoveryAttempted) {
+                    // sample only when nodes have not already proved the comment sheet.
+                    if (
+                        CommentReturnBackPolicy.shouldEnrichReturnWithActionRailOcr(
+                            stillNested = stillInsideNestedSurface,
+                            nodeCommentSurfaceReady = nodeCommentSurfaceReady,
+                            ocrAlreadyAttempted = ocrRecoveryAttempted,
+                        )
+                    ) {
                         ocrRecoveryAttempted = true
                         context = enrichWithOcr(context)
                         detection = pageDetector.detect(context)
@@ -2487,6 +2509,15 @@ class CommentPrivateMessageRuntime(
                             PageKind.MESSAGE_EMPTY_REJECTED,
                             PageKind.MESSAGE_SEND_FAILED,
                             PageKind.PRIVATE_MESSAGE_RESTRICTED,
+                        )
+                    } else if (!stillInsideNestedSurface && nodeCommentSurfaceReady) {
+                        logger.info(
+                            "comment_return_ocr_skipped",
+                            attributes = mapOf(
+                                "attempt" to attempt,
+                                "back_actions" to returnCommentSurfaceBackActions,
+                                "required_back_actions" to minimumBackActions,
+                            ),
                         )
                     }
 

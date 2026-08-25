@@ -177,6 +177,11 @@ class NextVideoAdvancePolicyTest {
     }
 
     @Test
+    fun nextVideoRouteArmsBeforeClosingTheCommentSheet() {
+        assertTrue(NextVideoAdvancePolicy.shouldArmWaitingForVideoBeforeSheetClose())
+    }
+
+    @Test
     fun leftoverCommentScrollFromTheFinishedVideoMustNotSkipTheNextVideoGate() {
         assertEquals(0, NextVideoAdvancePolicy.commentListScrollCountAfterLeavingVideo())
         assertTrue(

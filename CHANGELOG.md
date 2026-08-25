@@ -4,6 +4,71 @@
 
 ---
 
+## [未发布] 2026-08-25 —— 评论区已就绪则跳过 miss-dump
+
+### 优化前记录
+
+- 现象：3×2 已能完成；评论面板 `ready=true` 后仍对 150–390 节点做 `comment_button_miss_diagnostic` + 全树 dump，阻塞 2.4–5.5s 才开始 READ_COMMENTS。
+- 基线：室内设计师 / 3×2 / 不跳过置顶 / 完整私信，约 3 分 41 秒（opt2）。
+- 本轮唯一假设：面板已覆盖动作栏，`hasCommentEntry=false` 是正常后验，不应再写诊断 dump。
+
+### 最小修改
+
+`CommentButtonMissDumpPolicy.shouldDump`：仅在视频面、无评论入口、且评论区未就绪时 dump。不改点击、OCR、关面板帧数。
+
+### 真机验证
+
+- **设备**：OnePlus NE2210 / `b33aa309` / Android 16。先 `am force-stop` 抖音。
+- **条件**：室内设计师 / 3×2 / 不跳过置顶 / 完整私信。
+- 结果：`COMPLETED`，6 次 `BLANK_PROBE_VERIFIED`，`video_count=3`。总时长约 3 分 34 秒（opt2 基线 3 分 41 秒，最初 3 分 42 秒）。
+- 三条视频评论区 `ready=true` 后均无 `comment_button_miss_diagnostic` / `blank_probe_node_dump_saved`。首条 `ready`→`READ_COMMENTS` 约 1.3s（原先 2.4–5.5s）。
+- 结论：**改善。** 流程稳定且去掉了面板就绪后的诊断阻塞。
+
+---
+
+## [未发布] 2026-08-25 —— 关评论区前先进入换片等待，避免 OCR 拖住轮询
+
+### 优化前记录
+
+- 现象：关评论区配置 150ms×3 帧，实测 7s+；关面板时仍处于 `READY_TO_READ`，无障碍事件继续触发全屏 OCR。
+- 本轮唯一假设：先 `prepareNextVideo()` 并置 `awaitingNextVideoConfirmation`，关闭过程中的观测会被 hold，轮询才能按 150ms 节奏结束。
+
+### 最小修改
+
+`advanceAfterVideo` 在 `prepareClosedPlayerForNextVideoSwipe` 之前武装 `WAITING_FOR_VIDEO`。不改手势、不减少稳定帧数。
+
+### 真机验证
+
+- **设备**：OnePlus NE2210 / `b33aa309` / Android 16。先 `am force-stop` 抖音。
+- **条件**：室内设计师 / 3×2 / 不跳过置顶 / 完整私信。
+- 结果：`COMPLETED`，6 次 `BLANK_PROBE_VERIFIED`，`video_index=1` 与 `2` 均确认。总时长约 3 分 41 秒（基线 3 分 42 秒，opt1 3 分 37 秒）。
+- 关面板：`comment_next_video_close_route_armed` 命中两次；轮询仍约 2.5s/帧（约 10s 关完），`comment_next_video_observation_held` 未出现。关闭过程中控制器仍有 `ocr_page_waiting_stable`。
+- 结论：**稳定，关面板耗时无改善。** 保留换片前武装，不再改同一点；下一轮去掉评论区已就绪后的 miss-dump。
+
+---
+
+## [未发布] 2026-08-25 —— 返回评论区时节点已确认则跳过动作栏 OCR
+
+### 优化前记录
+
+- 现象：3×2 全流程已能完成，但从私信 BACK×2 回到评论区仍要 4–8s；日志在确认节点评论面板之前先拍 `comment_next_video_rail`。
+- 基线：室内设计师 / 3 视频 / 每视频 2 评论 / 不跳过置顶 / 完整私信，约 3 分 42 秒完成。
+- 本轮唯一假设：动作栏 OCR 是换片用的，节点已能证明评论区时不应阻塞返回。
+
+### 最小修改
+
+`CommentReturnBackPolicy.shouldEnrichReturnWithActionRailOcr`：仍在嵌套页、节点未确认评论区、且尚未 OCR 时才截动作栏；否则直接用节点确认返回。
+
+### 真机验证
+
+- **设备**：OnePlus NE2210 / `b33aa309` / Android 16。先 `am force-stop` 抖音。
+- **条件**：室内设计师 / 3×2 / 不跳过置顶 / 完整私信。
+- 结果：`COMPLETED`，6 次 `BLANK_PROBE_VERIFIED`，`video_count=3`。总时长约 3 分 37 秒（基线 3 分 42 秒）。
+- `comment_return_ocr_skipped` 仅最后一次返回命中（BACK→评论区 4.8s）；其余 5 次仍先拍动作栏，返回 5–8s。
+- 结论：**稳定，耗时基本无变化。** 保留该门，不在同一点继续加码；下一轮改关评论区时的观测阻塞。
+
+---
+
 ## [未发布] 2026-08-25 —— 换片确认不再被上一条评论滚动挡住
 
 ### 修复前记录
