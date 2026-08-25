@@ -65,3 +65,12 @@ object CommentLaunchHomeOcrPolicy {
 
     data class BandHits(val top: Int, val bottom: Int)
 }
+
+/**
+ * After the source profile is handed to the comment runtime, a second matching OCR page
+ * frame only delays accessibility delivery. Search and home launch still require two frames.
+ */
+object CommentTaskOcrPageStabilityPolicy {
+    fun shouldRequireSecondOcrFrame(commentProfileHandoffObserved: Boolean): Boolean =
+        !commentProfileHandoffObserved
+}

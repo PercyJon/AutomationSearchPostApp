@@ -3511,6 +3511,15 @@ class DouyinNavigationController(
             ocrPageStableObservations = 0
             return true
         }
+        if (!CommentTaskOcrPageStabilityPolicy.shouldRequireSecondOcrFrame(commentProfileHandoffObserved)) {
+            lastOcrPageSignature = null
+            ocrPageStableObservations = 0
+            logger.info(
+                "ocr_page_stable_skipped",
+                attributes = mapOf("page" to detection.kind.name),
+            )
+            return true
+        }
         val signature = "${detection.kind}|${detection.reasons.sorted().joinToString(";")}".hashCode().toString()
         if (signature == lastOcrPageSignature) {
             ocrPageStableObservations++

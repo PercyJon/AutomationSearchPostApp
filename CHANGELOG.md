@@ -4,6 +4,28 @@
 
 ---
 
+## [未发布] 2026-08-25 —— 评论主页交接后不再等第二帧 OCR 页面
+
+### 优化前记录
+
+- 现象：3×2 已能完成；源主页交接后仍出现 `ocr_page_waiting_stable`（USER_PROFILE / HOME），把无障碍事件挡住约 3–11s。
+- 基线：室内设计师 / 3×2 / 不跳过置顶 / 完整私信，约 3 分 34 秒。
+- 本轮唯一假设：评论 runtime 已有后验，交接后控制器不必再等第二帧 OCR 页面。搜索/启动 HOME 仍保持双帧。
+
+### 最小修改
+
+`CommentTaskOcrPageStabilityPolicy.shouldRequireSecondOcrFrame`：仅在尚未交接源主页时要求第二帧。不改点击、关面板帧数、用户行双 OCR。
+
+### 真机验证
+
+- **设备**：OnePlus NE2210 / `b33aa309` / Android 16。先 `am force-stop` 抖音。
+- **条件**：室内设计师 / 3×2 / 不跳过置顶 / 完整私信。
+- 结果：`COMPLETED`，6 次 `BLANK_PROBE_VERIFIED`，`video_count=3`。总时长约 3 分 27 秒（miss-dump 后 3 分 34 秒，最初 3 分 42 秒）。
+- 交接前仍有 1 次 `ocr_page_waiting_stable`（HOME）。交接后多次 `ocr_page_stable_skipped`，无第二帧等待。
+- 结论：**改善。** 流程稳定。
+
+---
+
 ## [未发布] 2026-08-25 —— 评论区已就绪则跳过 miss-dump
 
 ### 优化前记录
