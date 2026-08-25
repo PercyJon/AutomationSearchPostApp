@@ -410,7 +410,7 @@ fun AppHomeScreen(
                 onOpenRecords = { section = HomeSection.RECORDS.name },
                 onOpenSettings = { section = HomeSection.SETTINGS.name },
                 onOpenDiagnostics = { section = HomeSection.DIAGNOSTICS.name },
-                onSignOut = { AuthStore.clearConfig(context) },
+                onSignOut = { AuthStore.logout(context) },
             )
 
             HomeSection.RECORDS -> TaskRecordsPage(

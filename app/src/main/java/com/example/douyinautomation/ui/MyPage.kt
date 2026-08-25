@@ -39,6 +39,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -61,18 +62,15 @@ import com.example.douyinautomation.ui.theme.AutomationSuccess
 import com.example.douyinautomation.ui.theme.AutomationSuccessSurface
 import com.example.douyinautomation.ui.theme.AutomationWarning
 import com.example.douyinautomation.ui.theme.AutomationWarningSurface
+import kotlinx.coroutines.launch
 
-/**
- * The account hub deliberately owns only navigation and local sign-out for now.  Server-side
- * session revocation and device-binding detail are added with the mobile-auth backend phase.
- */
 @Composable
 internal fun MyPage(
     padding: PaddingValues,
     onOpenRecords: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenDiagnostics: () -> Unit,
-    onSignOut: () -> Unit,
+    onSignOut: suspend () -> Unit,
 ) {
     val licenseState by AuthStore.uiState.collectAsState()
     val automationState by AutomationStore.uiState.collectAsState()
@@ -81,24 +79,47 @@ internal fun MyPage(
         ?: "未登录"
     val signedIn = AuthStore.currentConfig() != null
     var showSignOutConfirmation by rememberSaveable { mutableStateOf(false) }
+    var signOutError by rememberSaveable { mutableStateOf<String?>(null) }
+    var signingOut by rememberSaveable { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     if (showSignOutConfirmation) {
         AlertDialog(
             onDismissRequest = { showSignOutConfirmation = false },
             title = { Text("退出登录") },
-            text = { Text("将清除本机已加密保存的移动端授权信息。") },
+            text = {
+                Text(
+                    signOutError
+                        ?: "将先通知服务端解除本机设备绑定，再清除本机已加密保存的授权信息。",
+                )
+            },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        showSignOutConfirmation = false
-                        onSignOut()
+                        signingOut = true
+                        signOutError = null
+                        scope.launch {
+                            runCatching { onSignOut() }
+                                .onSuccess { showSignOutConfirmation = false }
+                                .onFailure { error ->
+                                    signOutError = "退出未同步：${error.message ?: "请检查网络后重试"}"
+                                }
+                            signingOut = false
+                        }
                     },
+                    enabled = !signingOut,
                 ) {
-                    Text("退出", color = AutomationError)
+                    Text(if (signingOut) "退出中…" else "退出", color = AutomationError)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showSignOutConfirmation = false }) {
+                TextButton(
+                    enabled = !signingOut,
+                    onClick = {
+                        signOutError = null
+                        showSignOutConfirmation = false
+                    },
+                ) {
                     Text("取消")
                 }
             },

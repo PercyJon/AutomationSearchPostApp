@@ -296,6 +296,28 @@ object AuthStore {
         verifyNow()
     }
 
+    /**
+     * Ends the mobile session at the server first, then removes the encrypted local token.
+     *
+     * A rejected token is already unusable on the server, so it is safe to remove it locally.
+     * Transport failures deliberately keep the local session untouched: otherwise the user could
+     * believe a device binding had been released when the backend never received the request.
+     */
+    suspend fun logout(context: android.content.Context) {
+        initialize(context)
+        val config = _session.value
+        if (config?.isUsable() != true) {
+            clearConfig(context)
+            return
+        }
+        try {
+            AutomationHttpClient(config).logout()
+        } catch (error: AutomationGatewayException) {
+            if (error.statusCode !in setOf(401, 403)) throw error
+        }
+        clearConfig(context)
+    }
+
     fun currentConfig(): AuthConfig? = _session.value
 
     /** Remote-first catalog with the existing 24-hour cache and built-in fallback. */

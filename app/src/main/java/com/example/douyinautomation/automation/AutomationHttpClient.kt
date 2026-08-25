@@ -166,6 +166,12 @@ class AutomationHttpClient(
             .toRemoteTask()
     }
 
+    /** Releases the current server-side mobile license before local credentials are cleared. */
+    suspend fun logout() = withContext(Dispatchers.IO) {
+        execute("/automation/mobile/logout", "POST")
+        Unit
+    }
+
     private fun execute(
         path: String,
         method: String,
