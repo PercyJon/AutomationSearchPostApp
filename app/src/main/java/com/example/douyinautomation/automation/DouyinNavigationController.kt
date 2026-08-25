@@ -162,6 +162,10 @@ class DouyinNavigationController(
     /** Durable contract for the active local batch; null for legacy and remote single-task runs. */
     private var localTaskQueueSession: LocalTaskQueueSession? = null
     private var initialOcrAttempts = 0
+    /** Bounded FULL-frame OCR used only to confirm a leftover comment sheet at launch. */
+    private var nestedCommentSurfaceOcrAttempts = 0
+    /** Bounded nav-band OCR used only to classify comment-task launch HOME; never taps search. */
+    private var commentLaunchHomeNavOcrAttempts = 0
     /** True from normal target launch until initial HOME/search evidence is positively classified. */
     private var initialHomeClassificationPending = false
     /** One sanitized geometry dump per WAITING_FOR_HOME UNKNOWN session; never includes node text. */
@@ -367,10 +371,111 @@ class DouyinNavigationController(
         // operator navigates to the intended profile. Only the explicit overlay Resume action may
         // hand the verified profile to the comment runtime.
         if (phase == AutomationPhase.SUSPENDED_BEFORE_START) return
+        var nestedSurfaceContext = context
+        val nodeDetectedSheet = CommentSurfaceDetector.detect(nestedSurfaceContext).isCommentSurface
+        if (
+            NestedLaunchSurfacePolicy.shouldProbeCommentSurfaceOcr(
+                phase = phase,
+                pageIsUnknown = detection.kind == PageKind.UNKNOWN,
+                nodeDetectedSheet = nodeDetectedSheet,
+                hasOcrBlocks = nestedSurfaceContext.ocrBlocks.isNotEmpty(),
+                attempts = nestedCommentSurfaceOcrAttempts,
+                maxAttempts = TuningConstants.NavigationLifecycle.NESTED_COMMENT_SURFACE_OCR_MAX_ATTEMPTS,
+            )
+        ) {
+            nestedCommentSurfaceOcrAttempts++
+            nestedSurfaceContext = captureContextWithOcr(
+                nestedSurfaceContext,
+                "nested_comment_surface",
+                OcrRegion.FULL,
+            ) ?: nestedSurfaceContext
+            logger.info(
+                "initial_nested_comment_surface_ocr",
+                attributes = mapOf(
+                    "attempt" to nestedCommentSurfaceOcrAttempts,
+                    "ocr_blocks" to nestedSurfaceContext.ocrBlocks.size,
+                    "sheet" to CommentSurfaceDetector.detect(nestedSurfaceContext).isCommentSurface,
+                ),
+            )
+        }
+        val commentSurface = CommentSurfaceDetector.detect(nestedSurfaceContext)
+        if (
+            NestedLaunchSurfacePolicy.shouldRecoverByBoundedBack(
+                phase = phase,
+                isCommentSurface = commentSurface.isCommentSurface,
+            )
+        ) {
+            logger.info(
+                "initial_nested_comment_surface_recovery",
+                message = "A verified comment sheet is open; using bounded BACK instead of treating the launch surface as unclassified home",
+                attributes = mapOf(
+                    "confidence" to commentSurface.confidence,
+                    "reason_count" to commentSurface.reasons.size,
+                    "ocr_blocks" to nestedSurfaceContext.ocrBlocks.size,
+                ),
+            )
+            recoverInitialSurface(
+                context,
+                requireHome = true,
+                suppressSearchUntilBack = NestedLaunchSurfacePolicy.shouldForceInitialBack(
+                    ocrConfirmedSheet = commentSurface.isCommentSurface,
+                    nodeDetectedSheet = nodeDetectedSheet,
+                ),
+            )
+            return
+        }
+        var effectiveDetection = detection
+        var homeNavContext = nestedSurfaceContext
+        var acceptedByCommentHomeNavOcr = false
+        if (
+            CommentLaunchHomeOcrPolicy.shouldClassify(
+                isCommentTask = isCommentPrivateMessageTask(),
+                phase = phase,
+                pageIsUnknown = effectiveDetection.kind == PageKind.UNKNOWN,
+                isCommentSurface = commentSurface.isCommentSurface,
+            )
+        ) {
+            if (
+                CommentLaunchHomeOcrPolicy.shouldProbe(
+                    hasOcrBlocks = homeNavContext.ocrBlocks.isNotEmpty(),
+                    attempts = commentLaunchHomeNavOcrAttempts,
+                    maxAttempts = TuningConstants.NavigationLifecycle.COMMENT_LAUNCH_HOME_NAV_OCR_MAX_ATTEMPTS,
+                )
+            ) {
+                commentLaunchHomeNavOcrAttempts++
+                homeNavContext = captureContextWithOcr(
+                    homeNavContext,
+                    "comment_launch_home_nav",
+                    OcrRegion.FULL,
+                ) ?: homeNavContext
+            }
+            val homeHits = CommentLaunchHomeOcrPolicy.bandHits(homeNavContext)
+            val homeDetection = CommentLaunchHomeOcrPolicy.classify(homeNavContext)
+            logger.info(
+                "initial_comment_home_nav_ocr",
+                attributes = mapOf(
+                    "attempt" to commentLaunchHomeNavOcrAttempts,
+                    "ocr_blocks" to homeNavContext.ocrBlocks.size,
+                    "top_hits" to homeHits.top,
+                    "bottom_hits" to homeHits.bottom,
+                    "home" to (homeDetection != null),
+                ),
+            )
+            if (homeDetection != null) {
+                effectiveDetection = homeDetection
+                // This policy has already established top and bottom home navigation bands and
+                // excluded a comment sheet. Generic OCR stability can be reset by concurrent
+                // raw accessibility events, which otherwise keeps a visually confirmed HOME in
+                // WAITING_FOR_HOME until timeout. Accept this narrowly-scoped classification;
+                // search remains node → structural → constrained fallback.
+                acceptedByCommentHomeNavOcr = true
+                AutomationStore.publishObservation(effectiveDetection)
+            }
+        }
         if (
             InitialHomeSurfacePolicy.shouldDeferUnknownRecovery(
                 phase = phase,
-                detectedPage = detection.kind,
+                detectedPage = effectiveDetection.kind,
                 initialClassificationPending = initialHomeClassificationPending,
             )
         ) {
@@ -379,12 +484,16 @@ class DouyinNavigationController(
                 message = "The launch surface is not classified yet; continuing bounded observation without BACK",
             )
             logWaitingForHomeUnknownDiagnosis(
-                context = context,
+                context = homeNavContext,
                 detectedPage = detection.kind,
-                normalizedPage = detection.kind,
+                normalizedPage = effectiveDetection.kind,
                 observationAttempt = 0,
                 stableObservations = 0,
-                ocrSkippedReason = if (isCommentPrivateMessageTask()) "comment_task" else "none",
+                ocrSkippedReason = when {
+                    homeNavContext.ocrBlocks.isNotEmpty() -> "none"
+                    isCommentPrivateMessageTask() -> "comment_task"
+                    else -> "none"
+                },
             )
             return
         }
@@ -404,11 +513,11 @@ class DouyinNavigationController(
             swipeLiveRoomAway()
             return
         }
-        if (!confirmOcrBackedPage(context, detection)) return
+        if (!acceptedByCommentHomeNavOcr && !confirmOcrBackedPage(context, effectiveDetection)) return
         // An OCR-backed HOME/SEARCH result must pass its existing consecutive-observation gate
         // before it may release the UNKNOWN launch-surface safety hold. Otherwise one transient
         // positive frame can be followed by UNKNOWN and restart the bounded BACK recovery.
-        if (phase == AutomationPhase.WAITING_FOR_HOME && detection.kind != PageKind.UNKNOWN) {
+        if (phase == AutomationPhase.WAITING_FOR_HOME && effectiveDetection.kind != PageKind.UNKNOWN) {
             initialHomeClassificationPending = false
         }
 
@@ -418,9 +527,9 @@ class DouyinNavigationController(
         // present. Never let the normal profile-to-DM branch click a private-message control for
         // a comment task.
         if (isCommentPrivateMessageTask() &&
-            (detection.kind == PageKind.USER_PROFILE || isCurrentProfileCommentTask())
+            (effectiveDetection.kind == PageKind.USER_PROFILE || isCurrentProfileCommentTask())
         ) {
-            if (handoffCommentProfileObservation(context, detection, source = "accessibility_event")) {
+            if (handoffCommentProfileObservation(context, effectiveDetection, source = "accessibility_event")) {
                 return
             }
             // A result-row tap can be followed by one delayed profile tree from before that tap.
@@ -432,12 +541,12 @@ class DouyinNavigationController(
             if (phase == AutomationPhase.WAITING_FOR_PROFILE) return
         }
 
-        if (searchFlow.onPageObserved(phase, context, detection.kind)) return
+        if (searchFlow.onPageObserved(phase, context, effectiveDetection.kind)) return
 
-        if (privateMessageFlow.onPageObserved(phase, detection.kind)) return
+        if (privateMessageFlow.onPageObserved(phase, effectiveDetection.kind)) return
 
         when (phase) {
-            AutomationPhase.WAITING_FOR_PROFILE -> when (detection.kind) {
+            AutomationPhase.WAITING_FOR_PROFILE -> when (effectiveDetection.kind) {
                 PageKind.USER_PROFILE -> openPrivateMessage(context)
                 else -> Unit
             }
@@ -534,6 +643,8 @@ class DouyinNavigationController(
         pendingSafetyProbe = safetyProbe
         pausedPhase = null
         initialOcrAttempts = 0
+        nestedCommentSurfaceOcrAttempts = 0
+        commentLaunchHomeNavOcrAttempts = 0
         homeUnknownGeometryDumpSaved = false
         initialBlindBackAttempts = 0
         // A prior POC can leave a profile/result snapshot in memory. Startup normalization must
@@ -996,6 +1107,8 @@ class DouyinNavigationController(
         pendingSafetyProbe = checkpoint.snapshot.executionMode == TaskExecutionMode.SAFE_BLANK_PROBE
         pausedPhase = null
         initialOcrAttempts = 0
+        nestedCommentSurfaceOcrAttempts = 0
+        commentLaunchHomeNavOcrAttempts = 0
         homeUnknownGeometryDumpSaved = false
         initialBlindBackAttempts = 0
         latestContext = null
@@ -1433,7 +1546,12 @@ class DouyinNavigationController(
             message = "Replacing the restored result-page query after node verification",
             attributes = mapOf("source" to source),
         )
-        enterKeyword(context)
+        val queryNode = selection.node
+        withLiveNode(queryNode) { liveNode ->
+            gestures.click(liveNode, queryNode.bounds)
+        }
+        delay(TuningConstants.NavigationFlow.KEYWORD_POSTCONDITION_DELAY_MS)
+        enterKeyword(currentWindowContext() ?: context)
     }
 
     /**
@@ -1444,8 +1562,10 @@ class DouyinNavigationController(
     private suspend fun recoverInitialSurface(
         initialContext: ScreenContext?,
         requireHome: Boolean = false,
+        suppressSearchUntilBack: Boolean = false,
     ) {
         var context: ScreenContext? = initialContext
+        var pendingForcedBack = suppressSearchUntilBack
         repeat(TuningConstants.NavigationFlow.MAX_INITIAL_HOME_BACK_ACTIONS) { attempt ->
             val current = context ?: currentWindowContext() ?: recentInitialTargetContext()
             if (current == null) {
@@ -1472,47 +1592,63 @@ class DouyinNavigationController(
                     failTaskWithoutManualHandoff("无法读取抖音页面，已尝试返回首页但无障碍服务未提供页面树")
                     return
                 }
-                delay(TuningConstants.NavigationFlow.USER_PROFILE_BACK_DELAY_MS)
+                delay(TuningConstants.NavigationFlow.INITIAL_SURFACE_RECOVERY_BACK_DELAY_MS)
                 context = currentWindowContext() ?: recentInitialTargetContext()
                 return@repeat
             }
             initialBlindBackAttempts = 0
-            val detection = normalizeInitialHomeDetection(current)
-            logger.info(
-                "initial_surface_recovery_probe",
-                attributes = mapOf("attempt" to attempt + 1, "page" to detection.kind.name),
-            )
-            when (detection.kind) {
-                PageKind.HOME -> {
-                    openSearch(current)
-                    return
-                }
-                PageKind.SEARCH_ENTRY -> {
-                    // A focused search-entry surface is already a clean, editable search page.
-                    // enterKeyword overwrites any default/stale text and verifies the requested
-                    // keyword before submitting, so it is safe even for comment tasks that
-                    // demand normalization back to home. Pressing BACK from a focused search
-                    // field only dismisses the keyboard and can exhaust the recovery budget
-                    // without ever reaching HOME (observed on device: UNKNOWN→USER_PROFILE→
-                    // USER_RESULTS→SEARCH_RESULTS→SEARCH_ENTRY, then BACK failed to leave it).
-                    enterKeyword(current)
-                    return
-                }
-                PageKind.SEARCH_RESULTS -> {
-                    // A verified editable search field is already an initial-flow reset point:
-                    // overwriting and resubmitting the frozen query cannot reuse a prior user,
-                    // profile, video, or comment. Do not spend the remaining BACK budget merely
-                    // to reach HOME when this safer semantic path is available.
-                    if (selector.select(current, DouyinSelectors.searchInput).node != null) {
-                        reuseSearchResultsQueryField(current, "initial_surface_recovery")
+            val commentSurface = CommentSurfaceDetector.detect(current)
+            val forceBack = pendingForcedBack ||
+                NestedLaunchSurfacePolicy.shouldSuppressHomeSearchAction(commentSurface.isCommentSurface)
+            if (forceBack) {
+                logger.info(
+                    "initial_nested_comment_surface_back",
+                    message = "The comment sheet is still open; issuing bounded BACK instead of tapping a search control above it",
+                    attributes = mapOf(
+                        "attempt" to attempt + 1,
+                        "confidence" to commentSurface.confidence,
+                        "forced" to pendingForcedBack,
+                    ),
+                )
+                pendingForcedBack = false
+            } else {
+                val detection = normalizeInitialHomeDetection(current)
+                logger.info(
+                    "initial_surface_recovery_probe",
+                    attributes = mapOf("attempt" to attempt + 1, "page" to detection.kind.name),
+                )
+                when (detection.kind) {
+                    PageKind.HOME -> {
+                        openSearch(current)
                         return
                     }
+                    PageKind.SEARCH_ENTRY -> {
+                        // A focused search-entry surface is already a clean, editable search page.
+                        // enterKeyword overwrites any default/stale text and verifies the requested
+                        // keyword before submitting, so it is safe even for comment tasks that
+                        // demand normalization back to home. Pressing BACK from a focused search
+                        // field only dismisses the keyboard and can exhaust the recovery budget
+                        // without ever reaching HOME (observed on device: UNKNOWN→USER_PROFILE→
+                        // USER_RESULTS→SEARCH_RESULTS→SEARCH_ENTRY, then BACK failed to leave it).
+                        enterKeyword(current)
+                        return
+                    }
+                    PageKind.SEARCH_RESULTS -> {
+                        // A verified editable search field is already an initial-flow reset point:
+                        // overwriting and resubmitting the frozen query cannot reuse a prior user,
+                        // profile, video, or comment. Do not spend the remaining BACK budget merely
+                        // to reach HOME when this safer semantic path is available.
+                        if (selector.select(current, DouyinSelectors.searchInput).node != null) {
+                            reuseSearchResultsQueryField(current, "initial_surface_recovery")
+                            return
+                        }
+                    }
+                    PageKind.OUTSIDE_TARGET -> {
+                        pause("抖音未处于前台，无法回到搜索页面")
+                        return
+                    }
+                    else -> Unit
                 }
-                PageKind.OUTSIDE_TARGET -> {
-                    pause("抖音未处于前台，无法回到搜索页面")
-                    return
-                }
-                else -> Unit
             }
             // Do not let the last profile/result snapshot masquerade as the post-BACK page if a
             // device drops one content-change callback during the transition.
@@ -1522,14 +1658,18 @@ class DouyinNavigationController(
                 pause("无法从抖音当前页面返回到可搜索页面")
                 return
             }
-            delay(TuningConstants.NavigationFlow.USER_PROFILE_BACK_DELAY_MS)
+            delay(TuningConstants.NavigationFlow.INITIAL_SURFACE_RECOVERY_BACK_DELAY_MS)
             context = currentWindowContext() ?: recentInitialTargetContext()
         }
         // The final bounded BACK can be the action that leaves a focused search field and
         // reveals HOME.  Check that resulting surface once before reporting a failed recovery;
         // otherwise the loop would reject a valid home page without ever observing it.
         val finalContext = currentWindowContext() ?: recentInitialTargetContext()
-        if (finalContext != null) {
+        if (finalContext != null &&
+            !NestedLaunchSurfacePolicy.shouldSuppressHomeSearchAction(
+                CommentSurfaceDetector.detect(finalContext).isCommentSurface,
+            )
+        ) {
             val finalDetection = normalizeInitialHomeDetection(finalContext)
             logger.info(
                 "initial_surface_recovery_final_probe",
@@ -3751,17 +3891,22 @@ class DouyinNavigationController(
             try {
                 val commentIconTemplateMatch = if (tag == "comment_next_video_rail") {
                     captureCommentIconTemplateMatch(bitmap, base.screenSize)
+                        ?.takeUnless { match -> AppOwnedOverlayExclusion.excludes(match.bounds) }
                 } else {
                     null
                 }
                 val actionRailAnchorTemplateMatch = if (tag == "comment_next_video_rail") {
                     captureActionRailAnchorTemplateMatch(bitmap, base.screenSize)
+                        ?.takeUnless { anchors ->
+                            AppOwnedOverlayExclusion.excludes(anchors.likeBounds) ||
+                                AppOwnedOverlayExclusion.excludes(anchors.collectBounds)
+                        }
                 } else {
                     null
                 }
                 val result = engine.recognize(bitmap, region)
-                base.copy(
-                    ocrBlocks = OcrTextBlockMapper.map(
+                val mappedOcrBlocks = AppOwnedOverlayExclusion.filterOcrBlocks(
+                    OcrTextBlockMapper.map(
                         result = result,
                         // The P0 first-card detector must correlate a name line with the
                         // follower and account lines of that same card. The next-video action
@@ -3772,6 +3917,9 @@ class DouyinNavigationController(
                         preserveLineGeometry = region == OcrRegion.USER_RESULTS ||
                             tag == "comment_next_video_rail",
                     ),
+                )
+                base.copy(
+                    ocrBlocks = mappedOcrBlocks,
                     commentIconTemplateMatch = commentIconTemplateMatch,
                     actionRailAnchorTemplateMatch = actionRailAnchorTemplateMatch,
                     capturedAtMillis = System.currentTimeMillis(),
@@ -3934,7 +4082,7 @@ class DouyinNavigationController(
             try {
                 val result = engine.recognize(bitmap, OcrRegion.MESSAGE_COMPOSER)
                 val enriched = base.copy(
-                    ocrBlocks = OcrTextBlockMapper.map(result),
+                    ocrBlocks = AppOwnedOverlayExclusion.filterOcrBlocks(OcrTextBlockMapper.map(result)),
                     capturedAtMillis = System.currentTimeMillis(),
                 )
                 latestContext = enriched
@@ -3974,7 +4122,13 @@ class DouyinNavigationController(
                 failTaskWithoutManualHandoff("Could not return to user results after the blank-message probe")
                 return
             }
-            delay(TuningConstants.NavigationFlow.USER_PROFILE_BACK_DELAY_MS)
+            resultsContext = awaitPageAfterProfileBack(
+                accepted = setOf(PageKind.USER_RESULTS),
+                tag = "empty_message_probe",
+            )
+            if (resultsContext != null && pageDetector.detect(resultsContext!!).kind == PageKind.USER_RESULTS) {
+                break
+            }
         }
         resultsContext = resultsContext ?: currentWindowContext()
         if (resultsContext == null || pageDetector.detect(resultsContext!!).kind != PageKind.USER_RESULTS) {
@@ -4151,8 +4305,10 @@ class DouyinNavigationController(
                 context = null
                 return@repeat
             }
-            delay(TuningConstants.NavigationFlow.USER_PROFILE_BACK_DELAY_MS)
-            context = currentWindowContext()
+            context = awaitPageAfterProfileBack(
+                accepted = setOf(PageKind.SEARCH_ENTRY, PageKind.HOME),
+                tag = "query_switch",
+            )
             logger.info(
                 "task_query_search_entry_back_probe",
                 attributes = mapOf("attempt" to attempt + 1, "page" to (context?.let { pageDetector.detect(it).kind.name } ?: "NO_CONTEXT")),
@@ -4496,8 +4652,10 @@ class DouyinNavigationController(
         }
         phase = AutomationPhase.WAITING_FOR_USER_RESULTS
         AutomationStore.publishPhase(phase)
-        delay(TuningConstants.NavigationFlow.USER_PROFILE_BACK_DELAY_MS)
-        val resultsContext = currentWindowContext()
+        val resultsContext = awaitPageAfterProfileBack(
+            accepted = setOf(PageKind.USER_RESULTS),
+            tag = "skip_restricted",
+        )
         if (resultsContext == null || pageDetector.detect(resultsContext).kind != PageKind.USER_RESULTS) {
             failTaskWithoutManualHandoff("User results did not return after skipping an unavailable profile")
             return
@@ -4588,7 +4746,13 @@ class DouyinNavigationController(
                 failTaskWithoutManualHandoff("Could not return to user results after a message-send failure")
                 return
             }
-            delay(TuningConstants.NavigationFlow.USER_PROFILE_BACK_DELAY_MS)
+            resultsContext = awaitPageAfterProfileBack(
+                accepted = setOf(PageKind.USER_RESULTS),
+                tag = "message_send_failure",
+            )
+            if (resultsContext != null && pageDetector.detect(resultsContext!!).kind == PageKind.USER_RESULTS) {
+                break
+            }
         }
         resultsContext = resultsContext ?: currentWindowContext()
         if (resultsContext == null || pageDetector.detect(resultsContext!!).kind != PageKind.USER_RESULTS) {
@@ -4668,7 +4832,7 @@ class DouyinNavigationController(
                 ?: return context
             try {
                 val result = ocrEngine.recognize(bitmap, OcrRegion.USER_RESULTS)
-                val blocks = OcrTextBlockMapper.map(result)
+                val blocks = AppOwnedOverlayExclusion.filterOcrBlocks(OcrTextBlockMapper.map(result))
                 cachedUserResultsViewportSignature = viewportSignature
                 cachedUserResultsOcrBlocks = blocks
                 logger.info(
@@ -4892,6 +5056,11 @@ class DouyinNavigationController(
         val refreshedTarget = currentWindowContext()
             ?.let { selector.select(it, DouyinSelectors.searchInput).node }
             ?: return false
+        val retryClick = withLiveNode(refreshedTarget) { liveNode ->
+            gestures.click(liveNode, refreshedTarget.bounds)
+        }
+        if (!retryClick.succeeded) return false
+        delay(TuningConstants.NavigationFlow.KEYWORD_POSTCONDITION_DELAY_MS)
         val retry = withLiveNode(refreshedTarget) { liveNode -> gestures.setText(liveNode, expected) }
         if (!retry.succeeded) return false
         delay(TuningConstants.NavigationFlow.KEYWORD_POSTCONDITION_DELAY_MS)
@@ -5123,7 +5292,9 @@ class DouyinNavigationController(
                 AutomationStore.publishOcr(result.text)
                 val base = freshContext ?: latestContext ?: currentWindowContext()
                 if (base != null) {
-                    val contextWithOcr = base.copy(ocrBlocks = OcrTextBlockMapper.map(result))
+                    val contextWithOcr = base.copy(
+                        ocrBlocks = AppOwnedOverlayExclusion.filterOcrBlocks(OcrTextBlockMapper.map(result)),
+                    )
                     val detection = pageDetector.detect(contextWithOcr)
                     latestContext = contextWithOcr
                     AutomationStore.publishObservation(detection)
@@ -5141,6 +5312,41 @@ class DouyinNavigationController(
     }
 
     private fun currentWindowContext(): ScreenContext? = windowContextReader.read()
+
+    /**
+     * After a profile/DM BACK, classify as soon as the accepted page is present. Slow
+     * transitions still spend the bounded poll budget instead of a fixed 700ms sleep.
+     */
+    private suspend fun awaitPageAfterProfileBack(
+        accepted: Set<PageKind>,
+        tag: String,
+    ): ScreenContext? {
+        var last: ScreenContext? = null
+        repeat(TuningConstants.NavigationFlow.USER_PROFILE_BACK_POLL_ATTEMPTS) { attempt ->
+            delay(
+                if (attempt == 0) {
+                    TuningConstants.NavigationFlow.USER_PROFILE_BACK_DELAY_MS
+                } else {
+                    TuningConstants.NavigationFlow.USER_PROFILE_BACK_POLL_INTERVAL_MS
+                },
+            )
+            val context = currentWindowContext()
+            last = context
+            val kind = context?.let { pageDetector.detect(it).kind }
+            logger.info(
+                "profile_back_page_probe",
+                attributes = mapOf(
+                    "tag" to tag,
+                    "attempt" to attempt + 1,
+                    "page" to (kind?.name ?: "NO_CONTEXT"),
+                ),
+            )
+            if (kind != null && kind in accepted) {
+                return context
+            }
+        }
+        return last
+    }
 
     /**
      * Marks a task-level navigation failure without presenting it as a manual-handoff state.
@@ -5443,7 +5649,13 @@ class DouyinNavigationController(
                 ?: return@runCatching context
             try {
                 val result = engine.recognize(bitmap)
-                if (result.isEmpty) context else context.copy(ocrBlocks = OcrTextBlockMapper.map(result))
+                if (result.isEmpty) {
+                    context
+                } else {
+                    context.copy(
+                        ocrBlocks = AppOwnedOverlayExclusion.filterOcrBlocks(OcrTextBlockMapper.map(result)),
+                    )
+                }
             } finally {
                 bitmap.recycle()
             }

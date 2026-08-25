@@ -144,7 +144,9 @@ object RemoteTaskRecordStatus {
 
     fun from(outcome: UserTaskRecord.Outcome): Int = when (outcome) {
         UserTaskRecord.Outcome.IN_PROGRESS -> PROCESSING
-        UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED -> SUCCESS
+        UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED,
+        UserTaskRecord.Outcome.PROFILE_OPENED,
+        -> SUCCESS
         UserTaskRecord.Outcome.FILTERED_BY_KEYWORD -> BLOCKED
         UserTaskRecord.Outcome.DUPLICATE_SKIPPED,
         UserTaskRecord.Outcome.FOLLOW_BACK_SKIPPED,

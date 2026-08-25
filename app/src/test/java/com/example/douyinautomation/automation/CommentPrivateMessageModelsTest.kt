@@ -15,6 +15,22 @@ class CommentPrivateMessageModelsTest {
     }
 
     @Test
+    fun `chinese and english commas both split operator keywords`() {
+        assertEquals(
+            listOf("价格", "优惠", "定制"),
+            CommentKeywordMatcher.parseOperatorInput("价格，优惠,定制"),
+        )
+        assertEquals(
+            listOf("不错", "漂亮"),
+            CommentKeywordMatcher.parseOperatorInput("不错, 漂亮"),
+        )
+        assertEquals(
+            listOf("不错", "漂亮"),
+            CommentKeywordMatcher.parseOperatorInput("不错，漂亮"),
+        )
+    }
+
+    @Test
     fun `empty match list means every comment`() {
         assertTrue(CommentKeywordMatcher.matches("任意评论", emptyList()))
         assertTrue(CommentKeywordMatcher.matches("想了解价格", listOf("价格")))
@@ -22,17 +38,17 @@ class CommentPrivateMessageModelsTest {
     }
 
     @Test
-    fun `all keyword mode requires every normalized term in the comment body`() {
+    fun `matching always uses any-term logic even when all mode is stored`() {
         assertTrue(
             CommentKeywordMatcher.matches(
-                comment = "想了解价格和优惠活动",
+                comment = "想了解价格",
                 keywords = listOf("价格", "优惠"),
                 matchMode = CommentKeywordMatchMode.ALL,
             ),
         )
         assertFalse(
             CommentKeywordMatcher.matches(
-                comment = "想了解价格",
+                comment = "很好看",
                 keywords = listOf("价格", "优惠"),
                 matchMode = CommentKeywordMatchMode.ALL,
             ),
@@ -61,9 +77,9 @@ class CommentPrivateMessageModelsTest {
     }
 
     @Test
-    fun `comment config requires target only for search entry`() {
+    fun `comment config requires nickname only for search entry`() {
         val searchErrors = CommentPrivateMessageConfig().validationErrors()
-        assertTrue(searchErrors.any { it.contains("目标用户") })
+        assertTrue(searchErrors.any { it.contains("用户昵称") })
 
         val currentProfileErrors = CommentPrivateMessageConfig(
             entryMode = CommentPrivateMessageEntryMode.CURRENT_PROFILE,
@@ -94,10 +110,10 @@ class CommentPrivateMessageModelsTest {
         assertEquals(AutomationTaskType.COMMENT_PRIVATE_MESSAGE, snapshot.taskType)
         assertEquals(CommentPrivateMessageEntryMode.CURRENT_PROFILE, snapshot.commentConfig?.entryMode)
         assertEquals(listOf("价格", "优惠"), snapshot.commentConfig?.matchKeywords)
-        assertEquals(CommentKeywordMatchMode.ALL, snapshot.commentConfig?.matchMode)
+        assertEquals(CommentKeywordMatchMode.ANY, snapshot.commentConfig?.matchMode)
         assertEquals(3, snapshot.commentConfig?.maxVideos)
         assertTrue(snapshot.commentConfig?.skipPinnedVideos == true)
-        assertFalse(snapshot.commentConfig?.matchesComment("请问有优惠吗") ?: true)
+        assertTrue(snapshot.commentConfig?.matchesComment("请问有优惠吗") == true)
     }
 
     @Test
@@ -131,5 +147,40 @@ class CommentPrivateMessageModelsTest {
 
         assertTrue(snapshot.taskName.startsWith("评论私信-"))
         assertTrue(snapshot.composedQueries.isEmpty())
+    }
+
+    @Test
+    fun `skip blank probe defaults off and copies into the snapshot`() {
+        val production = CommentPrivateMessageConfig(
+            entryMode = CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE,
+            targetUser = "室内设计师",
+        )
+        assertFalse(production.skipBlankProbe)
+        assertFalse(
+            production.normalized().let { config ->
+                CommentPrivateMessageSnapshot(
+                    entryMode = config.entryMode,
+                    targetUser = config.targetUser,
+                    matchKeywords = config.matchKeywords,
+                    maxVideos = config.maxVideos,
+                    maxUsersPerVideo = config.maxUsersPerVideo,
+                    skipBlankProbe = config.skipBlankProbe,
+                )
+            }.skipBlankProbe,
+        )
+
+        val debug = production.copy(skipBlankProbe = true)
+        val snapshot = TaskDraft(
+            id = "skip-probe",
+            name = "skip",
+            customKeywords = listOf("室内设计师"),
+            taskType = AutomationTaskType.COMMENT_PRIVATE_MESSAGE,
+            commentConfig = debug,
+        ).toSnapshot(
+            presets = SearchPresetCatalog("test", emptyList(), 0L),
+            nowMillis = 1L,
+        )
+        assertTrue(snapshot.commentConfig?.skipBlankProbe == true)
+        assertFalse(snapshot.commentConfig?.dryRun == true)
     }
 }

@@ -220,6 +220,12 @@ class CommentEntryStateMachine {
  */
 object CommentEntrySignalDetector {
     private val videoMarkers = listOf("视频", "播放", "暂停", "作品")
+    private val WORKS_TAB_PATTERN = Regex("^作品\\s*\\d*\\s*[▼▾]?$")
+
+    data class WorksGridAnchor(
+        val bounds: ScreenBounds,
+        val source: String,
+    )
 
     fun observe(
         context: ScreenContext,
@@ -230,6 +236,7 @@ object CommentEntrySignalDetector {
         val hasVideoMarker = normalizedTexts.any { text -> videoMarkers.any(text::contains) }
         val profileHasNoWorks = page == PageKind.USER_PROFILE && hasNoWorksSignal(normalizedTexts)
         val worksTabTarget = worksTabTarget(context)
+        val worksGridAnchor = worksGridAnchor(context)
         val worksSortLatestTarget = worksSortLatestTarget(context)
         val worksTabSelected = worksTabTarget?.isSelected ?: true
         val commentButton = VideoCommentButtonDetector.find(context)
@@ -243,6 +250,7 @@ object CommentEntrySignalDetector {
             page,
             hasVideoMarker,
             worksTabSelected,
+            worksGridAnchor,
             skipPinnedVideos,
         )
         val hasFirstVideoTarget = firstVideoTarget != null
@@ -293,17 +301,34 @@ object CommentEntrySignalDetector {
         val normalizedTexts = (context.nodeText() + context.ocrText()).map(TextNormalizer::normalize)
         val hasVideoMarker = normalizedTexts.any { text -> videoMarkers.any(text::contains) }
         val worksTabSelected = worksTabTarget(context)?.isSelected ?: true
-        return firstVideoTarget(context, page, hasVideoMarker, worksTabSelected, false)
+        return firstVideoTarget(
+            context,
+            page,
+            hasVideoMarker,
+            worksTabSelected,
+            worksGridAnchor(context),
+            false,
+        )
     }
+
+    fun hasWorksGridAnchor(context: ScreenContext): Boolean = worksGridAnchor(context) != null
 
     private fun firstVideoTarget(
         context: ScreenContext,
         page: PageKind,
         hasVideoMarker: Boolean,
         worksTabSelected: Boolean,
+        worksGridAnchor: WorksGridAnchor?,
         skipPinnedVideos: Boolean,
     ): NodeSnapshot? {
-        if (page != PageKind.USER_PROFILE || !hasVideoMarker || !worksTabSelected) return null
+        if (
+            page != PageKind.USER_PROFILE ||
+            !hasVideoMarker ||
+            !worksTabSelected ||
+            worksGridAnchor == null
+        ) {
+            return null
+        }
         return context.nodes.asSequence()
             .filter { node ->
                 val normalizedClass = TextNormalizer.normalize(node.className)
@@ -332,7 +357,10 @@ object CommentEntrySignalDetector {
                 (imageLike || videoResource) &&
                     (node.isVisibleToUser || hasVisibleClickableContainer || videoResource) &&
                     node.bounds.width >= MIN_VIDEO_EDGE && node.bounds.height >= MIN_VIDEO_EDGE &&
-                    normalizedBounds.top >= 0.24f
+                    normalizedBounds.top >= 0.24f &&
+                    normalizedBounds.top >= worksGridAnchor.bounds
+                        .normalized(context.screenSize)
+                        .bottom
             }
             .map { node ->
                 // Prefer the clickable tile container when the thumbnail itself is only a
@@ -355,6 +383,7 @@ object CommentEntrySignalDetector {
             }
             .distinctBy(NodeSnapshot::hierarchyPath)
             .filterNot { node -> skipPinnedVideos && isPinnedTile(node, context) }
+            .filterNot { node -> isStoreTile(node, context) }
             .sortedWith(
                 compareBy<NodeSnapshot> { it.normalizedBounds(context.screenSize).top }
                     .thenByDescending { it.bounds.width.toLong() * it.bounds.height.toLong() },
@@ -374,7 +403,7 @@ object CommentEntrySignalDetector {
         if (!hasMultipleProfileTabs(context)) return null
         val labels = context.nodes.filter { node ->
             node.isVisibleToUser &&
-                node.searchableText().any { TextNormalizer.normalize(it).contains("作品") }
+                node.searchableText().any(::isWorksTabLabel)
         }
         val target = labels.asSequence()
             .mapNotNull { labeled ->
@@ -403,6 +432,39 @@ object CommentEntrySignalDetector {
                     hasSelectedWorksSignal(selectedTarget, context),
             )
         }
+    }
+
+    /**
+     * Locates the visible Works tab even when it is the only profile tab. This is geometry-only
+     * evidence for the beginning of the works grid; callers must never click this anchor.
+     */
+    private fun worksTabAnchor(context: ScreenContext): NodeSnapshot? =
+        profileTabLabels(context)
+            .asSequence()
+            .filter { tab -> tab.searchableText().any(::isWorksTabLabel) }
+            .filter { it.bounds != ScreenBounds.EMPTY }
+            .maxWithOrNull(
+                compareBy<NodeSnapshot> { it.isSelected || hasSelectedWorksSignal(it, context) }
+                    .thenByDescending { it.bounds.width.toLong() * it.bounds.height.toLong() },
+            )
+
+    /**
+     * The Works label is an anchor, not a click target. Nodes are preferred; OCR is used only
+     * to recover that visual boundary when the custom profile tree omits the label.
+     */
+    private fun worksGridAnchor(context: ScreenContext): WorksGridAnchor? {
+        worksTabAnchor(context)?.let { tab ->
+            return WorksGridAnchor(bounds = tab.bounds, source = "node")
+        }
+        return context.ocrBlocks
+            .asSequence()
+            .filter { block ->
+                block.bounds != ScreenBounds.EMPTY &&
+                    block.bounds.normalized(context.screenSize).top in 0.35f..0.90f &&
+                    isWorksTabLabel(block.text)
+            }
+            .maxByOrNull { it.bounds.width.toLong() * it.bounds.height.toLong() }
+            ?.let { block -> WorksGridAnchor(bounds = block.bounds, source = "ocr") }
     }
 
     private fun hasSelectedWorksSignal(
@@ -474,13 +536,18 @@ object CommentEntrySignalDetector {
 
     private fun isProfileTabText(raw: String): Boolean {
         val text = TextNormalizer.normalize(raw)
+        if (isWorksTabLabel(text)) return true
         return PROFILE_TAB_LABELS.any { label ->
+            if (label == "作品") return@any false
             text == label ||
                 text.startsWith("$label ") ||
                 text.startsWith("$label,") ||
                 text.startsWith("$label，")
         }
     }
+
+    private fun isWorksTabLabel(raw: String): Boolean =
+        WORKS_TAB_PATTERN.matches(TextNormalizer.normalize(raw))
 
     private fun sameProfileTabLabel(first: NodeSnapshot, second: NodeSnapshot): Boolean {
         val firstText = first.searchableText().firstOrNull(::isProfileTabText)
@@ -553,9 +620,32 @@ object CommentEntrySignalDetector {
         return nodeMarker || ocrMarker
     }
 
+    /** Never treat a profile's shop/store card as a video work tile. */
+    private fun isStoreTile(tile: NodeSnapshot, context: ScreenContext): Boolean {
+        val marginX = (tile.bounds.width * 0.12f).toInt()
+        val marginY = (tile.bounds.height * 0.18f).toInt()
+        fun isWithinTile(bounds: ScreenBounds): Boolean =
+            bounds.centerX.toInt() in (tile.bounds.left - marginX)..(tile.bounds.right + marginX) &&
+                bounds.centerY.toInt() in (tile.bounds.top - marginY)..(tile.bounds.bottom + marginY)
+        fun hasStoreTerm(value: String): Boolean {
+            val text = TextNormalizer.normalize(value)
+            return STORE_TILE_TERMS.any(text::contains)
+        }
+        val nodeMarker = context.nodes.any { marker ->
+            marker.isVisibleToUser &&
+                marker.searchableText().any(::hasStoreTerm) &&
+                isWithinTile(marker.bounds)
+        }
+        val ocrMarker = context.ocrBlocks.any { marker ->
+            hasStoreTerm(marker.text) && isWithinTile(marker.bounds)
+        }
+        return nodeMarker || ocrMarker
+    }
+
     private fun isStrictAncestor(ancestor: List<Int>, descendant: List<Int>): Boolean =
         ancestor.size < descendant.size && descendant.subList(0, ancestor.size) == ancestor
 
     private const val MIN_VIDEO_EDGE = 80
+    private val STORE_TILE_TERMS = setOf("店铺", "商品", "橱窗", "去购买", "进入店铺")
     private val PROFILE_TAB_LABELS = setOf("作品", "橱窗", "商品", "直播", "视频", "合集", "收藏", "喜欢")
 }

@@ -26,6 +26,8 @@ data class UserTaskRecord(
     enum class Outcome {
         IN_PROGRESS,
         BLANK_PROBE_VERIFIED,
+        /** Debug skip: commenter profile was confirmed, then the runtime returned to comments. */
+        PROFILE_OPENED,
         PRIVATE_MESSAGE_UNAVAILABLE,
         MESSAGE_SEND_FAILED,
         FOLLOW_BACK_SKIPPED,

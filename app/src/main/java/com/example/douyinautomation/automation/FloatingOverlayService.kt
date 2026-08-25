@@ -46,6 +46,7 @@ class FloatingOverlayService : Service() {
     private var progressText: TextView? = null
     private var stageText: TextView? = null
     private var actionButton: Button? = null
+    private var nonTouchableForAutomation = false
 
     override fun onCreate() {
         super.onCreate()
@@ -94,6 +95,7 @@ class FloatingOverlayService : Service() {
         expandedY = dp(88)
         isCollapsed = true
         windowParams = params
+        publishOverlayBounds(view)
         serviceScope.launch {
             AutomationStore.uiState.collectLatest { state ->
                 updateOverlay(state)
@@ -121,6 +123,7 @@ class FloatingOverlayService : Service() {
     override fun onDestroy() {
         serviceScope.cancel()
         overlayView?.let { view -> runCatching { windowManager?.removeView(view) } }
+        AppOwnedOverlayExclusion.clear()
         overlayView = null
         expandedView = null
         collapsedView = null
@@ -226,7 +229,9 @@ class FloatingOverlayService : Service() {
         gravity = Gravity.CENTER
         setTextColor(Color.WHITE)
         textSize = 21f
-        background = roundedBackground(Color.rgb(45, 111, 226), dp(16))
+        // Sky-blue, semi-transparent, and half the prior side length. Recognition still uses
+        // dynamically published actual bounds rather than this visual style.
+        background = roundedBackground(Color.argb(170, 56, 189, 248), dp(10))
         elevation = dp(8).toFloat()
         setOnClickListener { expandOverlay() }
     }
@@ -258,6 +263,7 @@ class FloatingOverlayService : Service() {
             overlayView = collapsed
             collapsedView = collapsed
             isCollapsed = true
+            publishOverlayBounds(collapsed)
         }.onFailure { error ->
             AutomationStore.logger.error(
                 "floating_overlay_collapse_failed",
@@ -292,6 +298,7 @@ class FloatingOverlayService : Service() {
             overlayView = expanded
             collapsedView = null
             isCollapsed = false
+            publishOverlayBounds(expanded)
             updateOverlay(AutomationStore.uiState.value)
         }.onFailure { error ->
             AutomationStore.logger.error(
@@ -308,11 +315,15 @@ class FloatingOverlayService : Service() {
     }
 
     private fun updateOverlay(state: AutomationUiState) {
+        updateAutomationTouchability(state.phase)
         val taskName = state.taskName?.takeIf(String::isNotBlank) ?: "当前任务"
         val total = state.taskMaxUsers?.coerceAtLeast(0) ?: 0
         val handled = state.taskHandledUserCount.coerceAtLeast(0)
         val records = state.recordEntries.filter { it.taskId == state.taskId }
-        val success = records.count { it.outcome == UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED }
+        val success = records.count {
+            it.outcome == UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED ||
+                it.outcome == UserTaskRecord.Outcome.PROFILE_OPENED
+        }
         val failed = records.count {
             it.outcome in setOf(
                 UserTaskRecord.Outcome.MESSAGE_SEND_FAILED,
@@ -340,6 +351,46 @@ class FloatingOverlayService : Service() {
         )
     }
 
+    /** Keep the progress window visible but let all active automation touches pass through it. */
+    private fun updateAutomationTouchability(phase: AutomationPhase) {
+        val shouldDisableTouches = FloatingOverlayTouchPolicy.shouldDisableTouches(phase)
+        if (nonTouchableForAutomation == shouldDisableTouches) return
+        val view = overlayView ?: return
+        val params = windowParams ?: return
+        val previousFlags = params.flags
+        nonTouchableForAutomation = shouldDisableTouches
+        if (shouldDisableTouches) {
+            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        } else {
+            params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+        }
+        runCatching { windowManager?.updateViewLayout(view, params) }
+            .onFailure { error ->
+                params.flags = previousFlags
+                nonTouchableForAutomation = !shouldDisableTouches
+                AutomationStore.logger.error(
+                    "floating_overlay_touchability_update_failed",
+                    message = "无法更新自动化期间的悬浮窗触摸穿透",
+                    throwable = error,
+                )
+            }
+    }
+
+    private fun publishOverlayBounds(view: View) {
+        view.post {
+            val location = IntArray(2)
+            view.getLocationOnScreen(location)
+            AppOwnedOverlayExclusion.update(
+                ScreenBounds(
+                    left = location[0],
+                    top = location[1],
+                    right = location[0] + view.width,
+                    bottom = location[1] + view.height,
+                ),
+            )
+        }
+    }
+
     private inner class DragTouchListener : View.OnTouchListener {
         private var downX = 0f
         private var downY = 0f
@@ -365,7 +416,10 @@ class FloatingOverlayService : Service() {
                     if (dragging) {
                         params.x = startX + dx.toInt()
                         params.y = startY + dy.toInt()
-                        runCatching { windowManager?.updateViewLayout(view.rootView, params) }
+                        runCatching {
+                            windowManager?.updateViewLayout(view.rootView, params)
+                            publishOverlayBounds(view.rootView)
+                        }
                     }
                     return true
                 }
@@ -388,7 +442,8 @@ class FloatingOverlayService : Service() {
 
     companion object {
         private const val EXPANDED_WIDTH_DP = 250
-        private const val COLLAPSED_SIZE_DP = 58
+        /** Half the prior collapsed square side length (58dp → 29dp). */
+        private const val COLLAPSED_SIZE_DP = 29
 
         fun startIfAllowed(context: Context) {
             if (!canDrawOverlays(context)) {

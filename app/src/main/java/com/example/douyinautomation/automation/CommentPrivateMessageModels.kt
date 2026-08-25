@@ -23,7 +23,7 @@ enum class CommentKeywordMatchMode {
     /** Match when the body contains at least one configured keyword. */
     ANY,
 
-    /** Match only when the body contains every configured keyword. */
+    /** Legacy stored value; runtime matching always uses [ANY]. */
     ALL,
 }
 
@@ -48,8 +48,9 @@ enum class CommentPrivateMessageStage {
  * Persisted configuration for a comment-private-message task.  It contains only operator
  * intent; screen observations, OCR, and raw comments stay in memory/diagnostic storage.
  *
- * [matchKeywords] are evaluated against the comment body according to [matchMode]. An empty list
- * deliberately means "match every comment" for either mode.
+ * [matchKeywords] are evaluated against the comment body with ANY-match logic. An empty list
+ * deliberately means "match every comment". [matchMode] remains on persisted records for
+ * compatibility and is ignored at runtime.
  */
 data class CommentPrivateMessageConfig(
     val entryMode: CommentPrivateMessageEntryMode = CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE,
@@ -62,6 +63,11 @@ data class CommentPrivateMessageConfig(
     val skipPinnedVideos: Boolean = false,
     /** Debug-only inspection mode. Production-created tasks always retain the default false. */
     val dryRun: Boolean = false,
+    /**
+     * Debug-only: after the commenter profile is confirmed, return to the comment sheet without
+     * opening the paper-plane entry or submitting the blank-space probe. Production tasks stay false.
+     */
+    val skipBlankProbe: Boolean = false,
 ) {
     fun normalizedKeywords(): List<String> = CommentKeywordMatcher.normalizeKeywords(matchKeywords)
 
@@ -69,13 +75,13 @@ data class CommentPrivateMessageConfig(
         val config = this
         return buildList {
             if (config.entryMode == CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE && config.targetUser.isNullOrBlank()) {
-                add("搜索用户入口需要填写目标用户")
+                add("需要填写用户昵称")
             }
             if (config.maxVideos !in 1..MAX_VIDEOS) {
-                add("视频数量上限必须在 1-$MAX_VIDEOS 之间")
+                add("视频数必须在 1-$MAX_VIDEOS 之间")
             }
             if (config.maxUsersPerVideo !in 1..MAX_USERS_PER_VIDEO) {
-                add("每个视频的用户数量上限必须在 1-$MAX_USERS_PER_VIDEO 之间")
+                add("评论数必须在 1-$MAX_USERS_PER_VIDEO 之间")
             }
             AutomationTaskLimitPolicy.commentValidationError(config)?.let(::add)
         }
@@ -104,35 +110,41 @@ data class CommentPrivateMessageSnapshot(
     val maxUsersPerVideo: Int,
     val skipPinnedVideos: Boolean = false,
     val dryRun: Boolean = false,
+    val skipBlankProbe: Boolean = false,
 ) {
     fun matchesComment(comment: String): Boolean =
-        CommentKeywordMatcher.matches(comment, matchKeywords, matchMode)
+        CommentKeywordMatcher.matches(comment, matchKeywords)
 }
 
-/** Converts pipe-separated UI input into the canonical list stored in the task snapshot. */
+/** Converts operator keyword input into the canonical list stored in the task snapshot. */
 object CommentKeywordMatcher {
-    fun parsePipeSeparated(raw: String): List<String> =
-        normalizeKeywords(raw.split('|'))
+    /** Chinese comma, English comma, and legacy pipe separators are all accepted. */
+    private val KEYWORD_SEPARATORS = Regex("[，,|]")
+
+    fun parseOperatorInput(raw: String): List<String> =
+        normalizeKeywords(raw.split(KEYWORD_SEPARATORS))
+
+    fun parsePipeSeparated(raw: String): List<String> = parseOperatorInput(raw)
 
     fun normalizeKeywords(values: Iterable<String>): List<String> = values
-        .flatMap { it.split('|') }
+        .flatMap { it.split(KEYWORD_SEPARATORS) }
         .map(::normalize)
         .filter(String::isNotEmpty)
         .distinct()
 
-    /** Empty keywords intentionally match all comments; non-empty values use [matchMode]. */
+    /**
+     * Empty keywords intentionally match all comments. Non-empty values use ANY-match:
+     * a comment is kept when it contains at least one configured term.
+     */
     fun matches(
         comment: String,
         keywords: Iterable<String>,
-        matchMode: CommentKeywordMatchMode = CommentKeywordMatchMode.ANY,
+        @Suppress("UNUSED_PARAMETER") matchMode: CommentKeywordMatchMode = CommentKeywordMatchMode.ANY,
     ): Boolean {
         val normalizedComment = normalize(comment)
         val normalizedKeywords = normalizeKeywords(keywords)
         if (normalizedKeywords.isEmpty()) return true
-        return when (matchMode) {
-            CommentKeywordMatchMode.ANY -> normalizedKeywords.any(normalizedComment::contains)
-            CommentKeywordMatchMode.ALL -> normalizedKeywords.all(normalizedComment::contains)
-        }
+        return normalizedKeywords.any(normalizedComment::contains)
     }
 
     private fun normalize(value: String): String = IdentityTextCanonicalizer.normalize(value)

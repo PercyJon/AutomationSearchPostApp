@@ -71,10 +71,10 @@ object AutomationTaskLimitPolicy {
         }
         val comment = snapshot.commentConfig ?: return null
         if (comment.maxVideos !in 1..CommentPrivateMessageConfig.MAX_VIDEOS) {
-            return "视频数量上限必须在 1-${CommentPrivateMessageConfig.MAX_VIDEOS} 之间"
+            return "视频数必须在 1-${CommentPrivateMessageConfig.MAX_VIDEOS} 之间"
         }
         if (comment.maxUsersPerVideo !in 1..CommentPrivateMessageConfig.MAX_USERS_PER_VIDEO) {
-            return "每个视频的用户数量上限必须在 1-${CommentPrivateMessageConfig.MAX_USERS_PER_VIDEO} 之间"
+            return "评论数必须在 1-${CommentPrivateMessageConfig.MAX_USERS_PER_VIDEO} 之间"
         }
         return commentValidationError(comment)
     }

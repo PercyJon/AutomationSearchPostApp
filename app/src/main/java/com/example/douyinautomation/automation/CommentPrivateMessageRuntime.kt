@@ -27,6 +27,39 @@ data class CommentRuntimeTerminal(
     }
 }
 
+/** Pure gate for the bounded post-swipe action-rail probe. It never authorizes a click. */
+internal object NextVideoTransitionProbePolicy {
+    fun shouldProbeActionRail(
+        page: PageKind,
+        hasVideoSurface: Boolean,
+        hasCommentEntry: Boolean,
+        changedFromPreviousVideo: Boolean,
+        ocrProbeCount: Int,
+        ocrProbeLimit: Int,
+        sheetOpen: Boolean = false,
+    ): Boolean =
+        !sheetOpen &&
+            !hasCommentEntry &&
+            ocrProbeCount < ocrProbeLimit &&
+            (
+                hasVideoSurface ||
+                    page == PageKind.HOME ||
+                    (page == PageKind.UNKNOWN && changedFromPreviousVideo)
+                )
+
+    fun shouldReplaceSwipeWatchdog(
+        actionRailProbeWillRun: Boolean,
+        watchdogAlreadyReplaced: Boolean,
+    ): Boolean = actionRailProbeWillRun && !watchdogAlreadyReplaced
+}
+
+private val NEXT_VIDEO_INTERVENTION_PAGES = setOf(
+    PageKind.HUMAN_INTERVENTION,
+    PageKind.LOGIN,
+    PageKind.LIVE_ROOM,
+    PageKind.LIVE_ROOM_SESSION,
+)
+
 /**
  * P4-C runtime for the verified profile → first video → comments → commenter profile route.
  *
@@ -119,8 +152,21 @@ class CommentPrivateMessageRuntime(
      * already-verified profile for a short, fixed window instead of idling until the entry guard.
      */
     private var profileSurfaceProbeJob: Job? = null
+    /** One profile OCR sample used only to locate the Works-grid anchor when nodes omit it. */
+    private var profileWorksAnchorOcrAttempted = false
     /** Lightweight semantic fingerprint taken after the old comment sheet has closed. */
     private var nextVideoSurfaceSignatureBeforeSwipe: Int? = null
+    /** True once a stable changed closed-player fingerprint proves the swipe changed works. */
+    private var nextVideoPlayerFingerprintConfirmed = false
+    /** True until the changed player or comment viewport proves the swipe landed on a different video. */
+    @Volatile private var awaitingNextVideoConfirmation = false
+    private var nextVideoCommitted = false
+    private var nextVideoSwipeAttempt = 0
+    private var nextVideoAdvanceReason = ""
+    /** First video's first visible comment-row top as a screen-height ratio; not pixels. */
+    private var firstScreenCommentRowTopRatio: Float? = null
+    /** Probe-only: allow OPEN_COMMENTS while [awaitingNextVideoConfirmation] is still true. */
+    @Volatile private var nextVideoCommentsOpenAuthorized = false
 
     val isRunning: Boolean get() = running
     val stage: CommentEntryStage get() = stateMachine.stage
@@ -161,7 +207,15 @@ class CommentPrivateMessageRuntime(
         nextVideoTransitionProbeJob = null
         profileSurfaceProbeJob?.cancel()
         profileSurfaceProbeJob = null
+        profileWorksAnchorOcrAttempted = false
         nextVideoSurfaceSignatureBeforeSwipe = null
+        nextVideoPlayerFingerprintConfirmed = false
+        awaitingNextVideoConfirmation = false
+        nextVideoCommitted = false
+        nextVideoSwipeAttempt = 0
+        nextVideoAdvanceReason = ""
+        firstScreenCommentRowTopRatio = null
+        nextVideoCommentsOpenAuthorized = false
         // Search-target mode still traverses the existing launch/search/user-tab flow before the
         // runtime receives a profile observation. Give that bounded entry route a longer guard;
         // once the profile/video/comment actions begin, each step returns to the short watchdog.
@@ -175,7 +229,9 @@ class CommentPrivateMessageRuntime(
                 "terms_count" to snapshot.matchKeywords.size,
                 "max_videos" to snapshot.maxVideos,
                 "per_video_cap" to snapshot.maxUsersPerVideo,
+                "skip_pinned" to snapshot.skipPinnedVideos,
                 "dry_run" to snapshot.dryRun,
+                "skip_blank_probe" to snapshot.skipBlankProbe,
             ),
         )
     }
@@ -193,7 +249,15 @@ class CommentPrivateMessageRuntime(
         nextVideoTransitionProbeJob = null
         profileSurfaceProbeJob?.cancel()
         profileSurfaceProbeJob = null
+        profileWorksAnchorOcrAttempted = false
         nextVideoSurfaceSignatureBeforeSwipe = null
+        nextVideoPlayerFingerprintConfirmed = false
+        awaitingNextVideoConfirmation = false
+        nextVideoCommitted = false
+        nextVideoSwipeAttempt = 0
+        nextVideoAdvanceReason = ""
+        firstScreenCommentRowTopRatio = null
+        nextVideoCommentsOpenAuthorized = false
         pendingViewportContext = null
         running = false
         config = null
@@ -234,7 +298,15 @@ class CommentPrivateMessageRuntime(
         nextVideoTransitionProbeJob = null
         profileSurfaceProbeJob?.cancel()
         profileSurfaceProbeJob = null
+        profileWorksAnchorOcrAttempted = false
         nextVideoSurfaceSignatureBeforeSwipe = null
+        nextVideoPlayerFingerprintConfirmed = false
+        awaitingNextVideoConfirmation = false
+        nextVideoCommitted = false
+        nextVideoSwipeAttempt = 0
+        nextVideoAdvanceReason = ""
+        firstScreenCommentRowTopRatio = null
+        nextVideoCommentsOpenAuthorized = false
         running = true
         armTimeout("等待下一个用户主页")
     }
@@ -258,10 +330,48 @@ class CommentPrivateMessageRuntime(
             return
         }
 
-        val observation = CommentEntrySignalDetector.observe(
+        var observation = CommentEntrySignalDetector.observe(
             context,
             skipPinnedVideos = config?.skipPinnedVideos == true,
         )
+        if (
+            stateMachine.stage == CommentEntryStage.WAITING_FOR_PROFILE &&
+            observation.page == PageKind.USER_PROFILE &&
+            !observation.profileHasNoWorks &&
+            !observation.hasFirstVideoTarget &&
+            !profileWorksAnchorOcrAttempted
+        ) {
+            profileWorksAnchorOcrAttempted = true
+            val ocrContext = enrichWithOcr(context)
+            observation = CommentEntrySignalDetector.observe(
+                ocrContext,
+                skipPinnedVideos = config?.skipPinnedVideos == true,
+            )
+            logger.info(
+                "comment_profile_works_anchor_ocr",
+                attributes = mapOf(
+                    "ocr_blocks" to ocrContext.ocrBlocks.size,
+                    "works_anchor" to CommentEntrySignalDetector.hasWorksGridAnchor(ocrContext),
+                    "first_video" to observation.hasFirstVideoTarget,
+                ),
+            )
+        }
+        if (awaitingNextVideoConfirmation &&
+            stateMachine.stage == CommentEntryStage.WAITING_FOR_VIDEO &&
+            !nextVideoCommentsOpenAuthorized &&
+            observation.page !in NEXT_VIDEO_INTERVENTION_PAGES
+        ) {
+            logger.info(
+                "comment_next_video_observation_held",
+                attributes = mapOf(
+                    "page" to observation.page.name,
+                    "video_surface" to observation.hasVideoSurface,
+                    "comment_entry" to observation.hasCommentEntry,
+                    "sheet" to observation.isCommentSurfaceReady,
+                ),
+            )
+            return
+        }
         if (awaitingCommentSurfaceReturn && observation.isCommentSurfaceReady) {
             confirmedReturnCommentSurface = context
             confirmedReturnCommentSurfaceBackActions = returnCommentSurfaceBackActions
@@ -416,8 +526,46 @@ class CommentPrivateMessageRuntime(
             }
 
             CommentEntryAction.OPEN_FIRST_VIDEO -> {
-                val target = observation.firstVideoTarget
+                var target = observation.firstVideoTarget
                     ?: return terminal(CommentRuntimeTerminal.Outcome.FAILED, "未找到第一个视频入口")
+                var targetContext = context
+                // A pinned badge is commonly custom-rendered and absent from the profile tree.
+                // When the operator asked to skip pinned works, take one bounded OCR sample
+                // before the first work click and feed it only into the existing pinned-tile
+                // geometry filter. The selected action remains an accessibility node.
+                if (config?.skipPinnedVideos == true && context.ocrBlocks.isEmpty()) {
+                    val ocrContext = enrichWithOcr(context)
+                    val ocrObservation = CommentEntrySignalDetector.observe(
+                        ocrContext,
+                        skipPinnedVideos = true,
+                    )
+                    val ocrTarget = ocrObservation.firstVideoTarget
+                    logger.info(
+                        "comment_first_video_pinned_ocr_reselect",
+                        attributes = mapOf(
+                            "before_top" to target.normalizedBounds(context.screenSize).top,
+                            "after_top" to (ocrTarget?.normalizedBounds(ocrContext.screenSize)?.top ?: -1f),
+                            "ocr_blocks" to ocrContext.ocrBlocks.size,
+                        ),
+                    )
+                    if (ocrTarget == null) {
+                        return terminal(
+                            CommentRuntimeTerminal.Outcome.FAILED,
+                            "置顶视频过滤后未找到可安全打开的首个作品",
+                        )
+                    }
+                    target = ocrTarget
+                    targetContext = ocrContext
+                }
+                val tile = target.normalizedBounds(targetContext.screenSize)
+                logger.info(
+                    "comment_first_video_selected",
+                    attributes = mapOf(
+                        "skip_pinned" to (config?.skipPinnedVideos == true),
+                        "top" to tile.top,
+                        "left" to tile.left,
+                    ),
+                )
                 val outcome = clickSnapshot(target, "comment_first_video")
                 if (!outcome.succeeded) {
                     terminal(CommentRuntimeTerminal.Outcome.FAILED, "打开第一个视频失败：${outcome.reason}")
@@ -544,6 +692,8 @@ class CommentPrivateMessageRuntime(
     private fun scheduleFirstVideoTransitionProbe() {
         firstVideoTransitionProbeJob?.cancel()
         firstVideoTransitionProbeJob = scope.launch {
+            var ocrProbeCount = 0
+            var actionRailWatchdogReplaced = false
             repeat(TuningConstants.CommentRuntime.FIRST_VIDEO_TRANSITION_PROBE_ATTEMPTS) { attempt ->
                 delay(
                     if (attempt == 0) TuningConstants.CommentRuntime.FIRST_VIDEO_TRANSITION_INITIAL_DELAY_MS
@@ -552,11 +702,35 @@ class CommentPrivateMessageRuntime(
                 if (!running || stateMachine.stage != CommentEntryStage.WAITING_FOR_VIDEO) {
                     return@launch
                 }
-                val context = currentContext() ?: return@repeat
-                val observation = CommentEntrySignalDetector.observe(
+                var context = currentContext() ?: return@repeat
+                var observation = CommentEntrySignalDetector.observe(
                     context,
                     skipPinnedVideos = config?.skipPinnedVideos == true,
                 )
+                val actionRailProbe = NextVideoTransitionProbePolicy.shouldProbeActionRail(
+                    page = observation.page,
+                    hasVideoSurface = observation.hasVideoSurface,
+                    hasCommentEntry = observation.hasCommentEntry,
+                    changedFromPreviousVideo = false,
+                    ocrProbeCount = ocrProbeCount,
+                    ocrProbeLimit = TuningConstants.CommentRuntime.NEXT_VIDEO_OCR_PROBE_LIMIT,
+                    sheetOpen = CommentSurfaceDetector.detect(context).isCommentSurface,
+                )
+                if (actionRailProbe) {
+                    ocrProbeCount += 1
+                    if (!actionRailWatchdogReplaced) {
+                        actionRailWatchdogReplaced = true
+                        armTimeout(
+                            "等待首视频动作栏验证",
+                            timeoutMs = TuningConstants.CommentRuntime.VIDEO_PAGE_TIMEOUT_MS,
+                        )
+                    }
+                    context = enrichWithOcr(context)
+                    observation = CommentEntrySignalDetector.observe(
+                        context,
+                        skipPinnedVideos = config?.skipPinnedVideos == true,
+                    )
+                }
                 logger.info(
                     "comment_first_video_postcondition",
                     attributes = mapOf(
@@ -564,6 +738,8 @@ class CommentPrivateMessageRuntime(
                         "page" to observation.page.name,
                         "video_surface" to observation.hasVideoSurface,
                         "comment_entry" to observation.hasCommentEntry,
+                        "action_rail_ocr" to actionRailProbe,
+                        "ocr_blocks" to context.ocrBlocks.size,
                     ),
                 )
                 if (observation.hasVideoSurface && observation.hasCommentEntry) {
@@ -601,17 +777,29 @@ class CommentPrivateMessageRuntime(
             var hiddenEntryObservations = 0
             var controlsRevealAttempted = false
             var ocrProbeCount = 0
+            var actionRailWatchdogReplaced = false
             // Kept inside one post-swipe probe so an old video's matching coordinates cannot
             // promote a new screenshot by themselves.
             var previousCommentIconTemplateMatch: CommentIconTemplateMatch? = null
             var previousActionRailAnchorTemplateMatch: ActionRailAnchorTemplateMatch? = null
+            var consecutiveSheetOpen = 0
+            var changedPlayerSamples = NextVideoAdvancePolicy.ChangedPlayerSignatureSamples(
+                signature = null,
+                count = 0,
+            )
             repeat(TuningConstants.CommentRuntime.NEXT_VIDEO_TRANSITION_PROBE_ATTEMPTS) { attempt ->
                 val settleRemaining = (nextVideoSettleUntilMs - SystemClock.uptimeMillis()).coerceAtLeast(0L)
                 delay(
-                    if (attempt == 0) {
-                        settleRemaining + TuningConstants.CommentRuntime.NEXT_VIDEO_TRANSITION_INITIAL_GRACE_MS
-                    } else {
-                        TuningConstants.CommentRuntime.NEXT_VIDEO_TRANSITION_PROBE_INTERVAL_MS
+                    when {
+                        settleRemaining > 0L ->
+                            settleRemaining +
+                                if (attempt == 0) {
+                                    TuningConstants.CommentRuntime.NEXT_VIDEO_TRANSITION_INITIAL_GRACE_MS
+                                } else {
+                                    0L
+                                }
+                        attempt == 0 -> TuningConstants.CommentRuntime.NEXT_VIDEO_TRANSITION_INITIAL_GRACE_MS
+                        else -> TuningConstants.CommentRuntime.NEXT_VIDEO_TRANSITION_PROBE_INTERVAL_MS
                     },
                 )
                 if (!running || stateMachine.stage != CommentEntryStage.WAITING_FOR_VIDEO) {
@@ -622,16 +810,58 @@ class CommentPrivateMessageRuntime(
                     context,
                     skipPinnedVideos = config?.skipPinnedVideos == true,
                 )
+                val sheetOpen = CommentSurfaceDetector.detect(context).isCommentSurface
+                // Prove the page changed from the raw post-swipe tree. OCR adds blocks to the
+                // context and must not manufacture the fingerprint difference that authorizes
+                // the UNKNOWN-only diagnostic probe.
+                val signature = videoSurfaceFingerprint(context)
+                changedPlayerSamples = NextVideoAdvancePolicy.nextChangedPlayerSignatureSamples(
+                    beforeSwipeSignature = nextVideoSurfaceSignatureBeforeSwipe,
+                    currentSignature = signature,
+                    sheetOpen = sheetOpen,
+                    previous = changedPlayerSamples,
+                )
+                val fingerprintChanged = changedPlayerSamples.signature != null
+                val fingerprintChangedStable =
+                    NextVideoAdvancePolicy.isChangedPlayerSignatureStable(changedPlayerSamples)
                 // Direct tree reads are intentionally cheap, but they contain no OCR blocks.
                 // A profile-detail player can temporarily be classified as HOME after the
-                // verified next-video swipe, even while its right rail is visibly rendered.
-                // Capture at most two bounded, full-screen OCR samples in either that narrow
-                // HOME detail state or an already-recognised video surface, then re-run the
-                // same strict detector against the enriched snapshot.
-                val mayBePostSwipeVideo = observation.hasVideoSurface || observation.page == PageKind.HOME
-                if (mayBePostSwipeVideo && !observation.hasCommentEntry &&
-                    ocrProbeCount < TuningConstants.CommentRuntime.NEXT_VIDEO_OCR_PROBE_LIMIT
+                // verified next-video swipe, even while its right rail is visibly rendered. A
+                // changed UNKNOWN detail surface has the same failure mode. Capture at most two
+                // bounded action-rail samples, then re-run the same strict detector against the
+                // enriched snapshot. This gate does not classify the page or authorize a tap.
+                val actionRailProbeWillRun = NextVideoTransitionProbePolicy.shouldProbeActionRail(
+                    page = observation.page,
+                    hasVideoSurface = observation.hasVideoSurface,
+                    hasCommentEntry = observation.hasCommentEntry,
+                    changedFromPreviousVideo = fingerprintChanged,
+                    ocrProbeCount = ocrProbeCount,
+                    ocrProbeLimit = TuningConstants.CommentRuntime.NEXT_VIDEO_OCR_PROBE_LIMIT,
+                    sheetOpen = sheetOpen,
+                )
+                if (NextVideoTransitionProbePolicy.shouldReplaceSwipeWatchdog(
+                        actionRailProbeWillRun = actionRailProbeWillRun,
+                        watchdogAlreadyReplaced = actionRailWatchdogReplaced,
+                    )
                 ) {
+                    actionRailWatchdogReplaced = true
+                    // The old timeout starts at swipe dispatch. Replace it before the first
+                    // potentially expensive OCR/template pass so both bounded frames can finish.
+                    armTimeout(
+                        "等待下一视频动作栏验证",
+                        timeoutMs = TuningConstants.CommentRuntime.VIDEO_PAGE_TIMEOUT_MS,
+                    )
+                    logger.info(
+                        "comment_next_video_action_rail_watchdog_replaced",
+                        attributes = mapOf(
+                            "attempt" to (attempt + 1),
+                            "page" to observation.page.name,
+                            "changed" to fingerprintChanged,
+                            "sheet_open" to sheetOpen,
+                        ),
+                    )
+                }
+                if (actionRailProbeWillRun) {
                     ocrProbeCount += 1
                     context = enrichWithOcr(context)
                     val currentTemplateMatch = context.commentIconTemplateMatch
@@ -688,9 +918,26 @@ class CommentPrivateMessageRuntime(
                         skipPinnedVideos = config?.skipPinnedVideos == true,
                     )
                 }
-                val signature = videoSurfaceFingerprint(context)
-                val changedFromPreviousVideo = nextVideoSurfaceSignatureBeforeSwipe == null ||
-                    signature == null || signature != nextVideoSurfaceSignatureBeforeSwipe
+                val sheetOpenNow = CommentSurfaceDetector.detect(context).isCommentSurface
+                if (sheetOpenNow) {
+                    consecutiveSheetOpen += 1
+                } else {
+                    consecutiveSheetOpen = 0
+                }
+                val readyToOpen = NextVideoAdvancePolicy.shouldOpenCommentsAfterSwipe(
+                    sheetOpen = sheetOpenNow,
+                    hasVideoSurface = observation.hasVideoSurface,
+                    hasCommentEntry = observation.hasCommentEntry,
+                )
+                if (fingerprintChangedStable) {
+                    nextVideoPlayerFingerprintConfirmed = true
+                }
+                val confirmedReadyToOpen = NextVideoAdvancePolicy.shouldOpenCommentsAfterChangedPlayer(
+                    playerFingerprintChanged = fingerprintChanged,
+                    sheetOpen = sheetOpenNow,
+                    hasVideoSurface = observation.hasVideoSurface,
+                    hasCommentEntry = observation.hasCommentEntry,
+                )
                 logger.info(
                     "comment_next_video_postcondition",
                     attributes = mapOf(
@@ -698,23 +945,60 @@ class CommentPrivateMessageRuntime(
                         "page" to observation.page.name,
                         "video_surface" to observation.hasVideoSurface,
                         "comment_entry" to observation.hasCommentEntry,
-                        "changed" to changedFromPreviousVideo,
+                        "changed" to fingerprintChanged,
+                        "changed_stable" to fingerprintChangedStable,
+                        "changed_samples" to changedPlayerSamples.count,
+                        "sheet_open" to sheetOpenNow,
+                        "ready_to_open" to readyToOpen,
+                        "confirmed_ready_to_open" to confirmedReadyToOpen,
+                        "swipe_attempt" to nextVideoSwipeAttempt,
                         "ocr_blocks" to context.ocrBlocks.size,
                         "template_confirmed" to (context.commentIconTemplateMatch?.isConfirmed == true),
                         "dual_anchor_confirmed" to (context.actionRailAnchorTemplateMatch?.isConfirmed == true),
                     ),
                 )
-                if (observation.page in setOf(
-                        PageKind.HUMAN_INTERVENTION,
-                        PageKind.LOGIN,
-                        PageKind.LIVE_ROOM,
-                        PageKind.LIVE_ROOM_SESSION,
-                    )
-                ) {
+                if (observation.page in NEXT_VIDEO_INTERVENTION_PAGES) {
                     onObserved(context, pageDetector.detect(context))
                     return@launch
                 }
-                if (observation.hasVideoSurface && !observation.hasCommentEntry) {
+                if (NextVideoAdvancePolicy.shouldRetrySwipe(
+                        confirmed = readyToOpen,
+                        consecutiveSheetOpen = consecutiveSheetOpen,
+                        sheetOpenRetryThreshold = TuningConstants.CommentRuntime.NEXT_VIDEO_SHEET_OPEN_RETRY_THRESHOLD,
+                        swipeAttempt = nextVideoSwipeAttempt,
+                        maxSwipeAttempts = TuningConstants.CommentRuntime.NEXT_VIDEO_SWIPE_MAX_ATTEMPTS,
+                    )
+                ) {
+                    if (!retryNextVideoSwipe()) {
+                        terminal(CommentRuntimeTerminal.Outcome.FAILED, "未能确认切换到下一条视频")
+                        return@launch
+                    }
+                    consecutiveSheetOpen = 0
+                    hiddenEntryObservations = 0
+                    controlsRevealAttempted = false
+                    ocrProbeCount = 0
+                    previousCommentIconTemplateMatch = null
+                    previousActionRailAnchorTemplateMatch = null
+                    return@repeat
+                }
+                if (readyToOpen) {
+                    // The rail can auto-hide before a second fingerprint frame arrives. A raw
+                    // changed closed-player tree plus this fresh safe entry authorizes opening;
+                    // accounting remains deferred until the sheet itself is confirmed.
+                    if (!confirmedReadyToOpen) return@repeat
+                    nextVideoPlayerFingerprintConfirmed = true
+                    nextVideoCommentsOpenAuthorized = true
+                    armTimeout("等待下一视频评论入口处理")
+                    onObserved(context, pageDetector.detect(context))
+                    return@launch
+                }
+                if (
+                    NextVideoAdvancePolicy.shouldRevealHiddenEntryAfterConfirmedPlayer(
+                        playerChangedConfirmed = nextVideoPlayerFingerprintConfirmed,
+                        sheetOpen = sheetOpenNow,
+                        hasCommentEntry = observation.hasCommentEntry,
+                    )
+                ) {
                     hiddenEntryObservations += 1
                     // Persisting a full node dump is intentionally expensive. Capture it once
                     // per inaccessible video so it remains useful for triage without consuming
@@ -735,6 +1019,16 @@ class CommentPrivateMessageRuntime(
                                 "comment_video_controls_reveal",
                                 attributes = mapOf("success" to reveal.succeeded, "route" to reveal.route),
                             )
+                            if (reveal.succeeded) {
+                                // The action rail can be absent until this neutral media-canvas
+                                // tap. The previous watchdog was spent on bounded OCR evidence;
+                                // give exactly one fresh action-rail verification window after
+                                // the reveal, without adding another swipe or control tap.
+                                armTimeout(
+                                    "等待下一视频动作栏显示",
+                                    timeoutMs = TuningConstants.CommentRuntime.VIDEO_PAGE_TIMEOUT_MS,
+                                )
+                            }
                             delay(TuningConstants.CommentRuntime.VIDEO_CONTROLS_REVEAL_SETTLE_MS)
                         }
                     }
@@ -751,16 +1045,9 @@ class CommentPrivateMessageRuntime(
                         return@launch
                     }
                 }
-                if (changedFromPreviousVideo && observation.hasVideoSurface && observation.hasCommentEntry) {
-                    // The post-swipe probe has already proved that this is a new video with a
-                    // safe comment entry. Replace the swipe-level watchdog before the full
-                    // state-machine observation can inspect the tree and dispatch OPEN_COMMENTS;
-                    // otherwise a slow custom-rendered tree can let "等待下一个视频" win after
-                    // the valid postcondition has been found.
-                    armTimeout("等待下一视频评论入口处理")
-                    onObserved(context, pageDetector.detect(context))
-                    return@launch
-                }
+            }
+            if (running && awaitingNextVideoConfirmation && !nextVideoCommitted) {
+                terminal(CommentRuntimeTerminal.Outcome.FAILED, "未能确认切换到下一条视频")
             }
         }
     }
@@ -898,14 +1185,91 @@ class CommentPrivateMessageRuntime(
         timeoutJob?.cancel()
         val end = CommentPanelEndDetector.detect(context)
         if (end.reached) {
+            if (awaitingNextVideoConfirmation) {
+                terminal(CommentRuntimeTerminal.Outcome.FAILED, "未能确认切换到下一条视频")
+                return
+            }
             advanceAfterVideo("评论区已读取到底部：${end.marker.orEmpty()}")
             return
         }
 
         val terms = config?.matchKeywords.orEmpty()
-        val matchMode = config?.matchMode ?: CommentKeywordMatchMode.ANY
+        val matchMode = CommentKeywordMatchMode.ANY
         val extraction = CommentCandidateExtractor.extract(context, terms, matchMode)
         reportMatchStatistics(context, extraction)
+        if (awaitingNextVideoConfirmation && scrollCount == 0) {
+            if (nextVideoPlayerFingerprintConfirmed) {
+                logger.info(
+                    "comment_next_video_viewport_gate",
+                    attributes = mapOf(
+                        "first_screen" to true,
+                        "source" to "changed_player_with_safe_entry",
+                    ),
+                )
+                commitNextVideoAccounting()
+            } else {
+            val height = context.screenSize.height
+            val unprocessed = extraction.candidates.filterNot { candidate ->
+                processedCandidateKeys.contains(candidate.identityKey) ||
+                    processedTaskCandidateLedger.contains(candidate.identityKey)
+            }
+            val minTop = unprocessed.minOfOrNull(::candidateTop)?.takeIf { it < Int.MAX_VALUE }
+            if (minTop == null || height <= 0) {
+                logger.info(
+                    "comment_next_video_viewport_gate",
+                    attributes = mapOf("first_screen" to false, "reason" to "no_new_row"),
+                )
+                terminal(CommentRuntimeTerminal.Outcome.FAILED, "未能确认切换到下一条视频")
+                return
+            }
+            val minRowTopRatio = minTop.toFloat() / height.toFloat()
+            val firstScreen = NextVideoAdvancePolicy.isFirstScreenCommentViewport(
+                minRowTopRatio = minRowTopRatio,
+                baselineRowTopRatio = firstScreenCommentRowTopRatio,
+            )
+            logger.info(
+                "comment_next_video_viewport_gate",
+                attributes = mapOf(
+                    "min_row_ratio" to minRowTopRatio,
+                    "baseline_ratio" to (firstScreenCommentRowTopRatio ?: -1f),
+                    "first_screen" to firstScreen,
+                    "unprocessed_count" to unprocessed.size,
+                ),
+            )
+            if (!firstScreen) {
+                if (
+                    NextVideoAdvancePolicy.shouldRetryAfterContinuationViewport(
+                        firstScreen = false,
+                        swipeAttempt = nextVideoSwipeAttempt,
+                        maxSwipeAttempts = TuningConstants.CommentRuntime.NEXT_VIDEO_SWIPE_MAX_ATTEMPTS,
+                    )
+                ) {
+                    logger.info(
+                        "comment_next_video_continuation_retry",
+                        attributes = mapOf(
+                            "min_row_ratio" to minRowTopRatio,
+                            "swipe_attempt" to nextVideoSwipeAttempt,
+                        ),
+                    )
+                    stateMachine.prepareNextVideo()
+                    pendingViewportContext = null
+                    if (!retryNextVideoSwipe()) {
+                        terminal(CommentRuntimeTerminal.Outcome.FAILED, "未能确认切换到下一条视频")
+                        return
+                    }
+                    armTimeout(
+                        "等待下一个视频",
+                        timeoutMs = TuningConstants.CommentRuntime.VIDEO_PAGE_TIMEOUT_MS,
+                    )
+                    scheduleNextVideoTransitionProbe()
+                    return
+                }
+                terminal(CommentRuntimeTerminal.Outcome.FAILED, "未能确认切换到下一条视频")
+                return
+            }
+            commitNextVideoAccounting()
+            }
+        }
         val firstAvatar = extraction.firstVisibleCommentAvatar
         val firstCandidate = extraction.candidates.firstOrNull()
         val leadingRowVerifiedNonMatching = firstAvatar?.let { anchor ->
@@ -1079,6 +1443,7 @@ class CommentPrivateMessageRuntime(
                     "row_tops" to orderedCandidates.map(::candidateTop).joinToString(","),
                 ),
             )
+            rememberFirstScreenCommentRow(context, orderedCandidates)
         }
         for ((queuePosition, candidate) in orderedCandidates.withIndex()) {
             logger.info(
@@ -1179,6 +1544,8 @@ class CommentPrivateMessageRuntime(
      * Finishes one video and moves to the next one without returning to the profile grid. The
      * comment sheet is closed first, then a single bounded feed swipe selects the next video.
      * The state machine is re-armed only after the previous video has been fully accounted for.
+     * Video index and the per-video cap stay unchanged until a closed player fingerprint proves Null-context polls before treating the sheet as closed.
+     * the swipe landed on a different video.
      */
     private suspend fun advanceAfterVideo(
         reason: String,
@@ -1197,23 +1564,172 @@ class CommentPrivateMessageRuntime(
         }
 
         timeoutJob?.cancel()
-        if (closeCommentSheet) {
-            val closed = gestures.globalBack().succeeded
-            if (!closed) {
-                terminal(CommentRuntimeTerminal.Outcome.FAILED, "关闭当前视频评论区失败，无法继续下一个视频")
-                return
-            }
+        logger.info(
+            "comment_next_video_advance_begin",
+            attributes = mapOf(
+                "video_index" to videoIndex,
+                "close_sheet" to closeCommentSheet,
+                "reason" to reason,
+            ),
+        )
+        if (!prepareClosedPlayerForNextVideoSwipe()) {
+            terminal(CommentRuntimeTerminal.Outcome.FAILED, "关闭当前视频评论区失败，无法继续下一个视频")
+            return
         }
-        // Re-arm the route before the settle delay so the closing panel's accessibility events are
+        val fingerprint = nextVideoSurfaceSignatureBeforeSwipe
+        if (fingerprint == null) {
+            terminal(CommentRuntimeTerminal.Outcome.FAILED, "关闭评论区后未能确认视频播放器，无法切换下一个视频")
+            return
+        }
+        nextVideoCommitted = false
+        nextVideoPlayerFingerprintConfirmed = false
+        awaitingNextVideoConfirmation = true
+        nextVideoCommentsOpenAuthorized = false
+        nextVideoSwipeAttempt = 1
+        nextVideoAdvanceReason = reason
+        // Re-arm the route before the swipe so the closing panel's accessibility events are
         // gated by WAITING_FOR_VIDEO instead of READY_TO_READ, and drop any parked stale viewport
         // so the merge consumer cannot drain the old panel's candidates into the next video.
         stateMachine.prepareNextVideo()
         pendingViewportContext = null
-        nextVideoSettleUntilMs = SystemClock.uptimeMillis() + TuningConstants.CommentRuntime.NEXT_VIDEO_SETTLE_MS
-        if (closeCommentSheet) delay(TuningConstants.CommentRuntime.RETURN_TO_COMMENT_DELAY_MS)
-        nextVideoSurfaceSignatureBeforeSwipe = currentContext()?.let(::videoSurfaceFingerprint)
 
-        videoIndex = completedVideo
+        if (!dispatchNextVideoSwipe(reason)) {
+            awaitingNextVideoConfirmation = false
+            terminal(CommentRuntimeTerminal.Outcome.FAILED, "切换下一个视频失败")
+            return
+        }
+        armTimeout("等待下一个视频", timeoutMs = TuningConstants.CommentRuntime.VIDEO_PAGE_TIMEOUT_MS)
+        scheduleNextVideoTransitionProbe()
+    }
+
+    /**
+     * Close the comment sheet with at most one BACK, then wait until the player is stably
+     * closed (consecutive frames: sheet closed, video surface, comment entry). Do not BACK
+     * again from a one-frame sheet_open flicker.
+     */
+    private suspend fun prepareClosedPlayerForNextVideoSwipe(): Boolean {
+        var backDispatched = false
+        var consecutiveClosed = 0
+        repeat(TuningConstants.CommentRuntime.NEXT_VIDEO_SHEET_CLOSE_POLL_ATTEMPTS) { attempt ->
+            if (attempt > 0) {
+                delay(TuningConstants.CommentRuntime.NEXT_VIDEO_SHEET_CLOSE_POLL_INTERVAL_MS)
+            }
+            val context = currentContext()
+            if (context == null) {
+                consecutiveClosed = 0
+                logger.info(
+                    "comment_next_video_sheet_close_poll",
+                    attributes = mapOf(
+                        "attempt" to (attempt + 1),
+                        "open" to "null_context",
+                        "closed_samples" to consecutiveClosed,
+                    ),
+                )
+                return@repeat
+            }
+            val sheetOpen = CommentSurfaceDetector.detect(context).isCommentSurface
+            consecutiveClosed = NextVideoAdvancePolicy.nextClosedSampleCount(sheetOpen, consecutiveClosed)
+            val observation = CommentEntrySignalDetector.observe(
+                context,
+                skipPinnedVideos = config?.skipPinnedVideos == true,
+            )
+            logger.info(
+                "comment_next_video_sheet_close_poll",
+                attributes = mapOf(
+                    "attempt" to (attempt + 1),
+                    "open" to sheetOpen,
+                    "closed_samples" to consecutiveClosed,
+                    "video_surface" to observation.hasVideoSurface,
+                    "comment_entry" to observation.hasCommentEntry,
+                    "back_dispatched" to backDispatched,
+                ),
+            )
+            if (
+                NextVideoAdvancePolicy.isStableClosedPlayer(
+                    consecutiveClosedSamples = consecutiveClosed,
+                    requiredSamples = TuningConstants.CommentRuntime.NEXT_VIDEO_CLOSED_PLAYER_STABLE_SAMPLES,
+                    sheetOpen = sheetOpen,
+                    hasVideoSurface = observation.hasVideoSurface,
+                    hasCommentEntry = observation.hasCommentEntry,
+                )
+            ) {
+                val fingerprint = videoSurfaceFingerprint(context)
+                if (fingerprint != null) {
+                    nextVideoSurfaceSignatureBeforeSwipe = fingerprint
+                    logger.info(
+                        "comment_next_video_closed_player_stable",
+                        attributes = mapOf(
+                            "attempt" to (attempt + 1),
+                            "closed_samples" to consecutiveClosed,
+                            "video_index" to videoIndex,
+                        ),
+                    )
+                    return true
+                }
+            }
+            if (sheetOpen &&
+                NextVideoAdvancePolicy.shouldDispatchFingerprintCloseBack(alreadyDispatchedCloseBack = backDispatched)
+            ) {
+                val closed = gestures.globalBack().succeeded
+                backDispatched = true
+                consecutiveClosed = 0
+                logger.info(
+                    "comment_next_video_close_sheet_back",
+                    attributes = mapOf("success" to closed, "video_index" to videoIndex),
+                )
+                if (!closed) return false
+            }
+        }
+        return false
+    }
+
+    private suspend fun dispatchNextVideoSwipe(reason: String): Boolean {
+        nextVideoSettleUntilMs = SystemClock.uptimeMillis() + TuningConstants.CommentRuntime.NEXT_VIDEO_SETTLE_MS
+        val swipe = gestures.swipeNormalized(
+            startX = 0.50f,
+            startY = TuningConstants.CommentRuntime.NEXT_VIDEO_SWIPE_START_Y,
+            endX = 0.50f,
+            endY = TuningConstants.CommentRuntime.NEXT_VIDEO_SWIPE_END_Y,
+            durationMs = TuningConstants.CommentRuntime.NEXT_VIDEO_SWIPE_DURATION_MS,
+        )
+        logger.info(
+            "comment_next_video_swiped",
+            attributes = mapOf(
+                "video_index" to videoIndex,
+                "video_total" to (config?.maxVideos ?: 0),
+                "swipe_attempt" to nextVideoSwipeAttempt,
+                "start_y" to TuningConstants.CommentRuntime.NEXT_VIDEO_SWIPE_START_Y,
+                "end_y" to TuningConstants.CommentRuntime.NEXT_VIDEO_SWIPE_END_Y,
+                "duration_ms" to TuningConstants.CommentRuntime.NEXT_VIDEO_SWIPE_DURATION_MS,
+                "success" to swipe.succeeded,
+                "reason" to reason,
+            ),
+        )
+        return swipe.succeeded
+    }
+
+    private suspend fun retryNextVideoSwipe(): Boolean {
+        if (nextVideoSwipeAttempt >= TuningConstants.CommentRuntime.NEXT_VIDEO_SWIPE_MAX_ATTEMPTS) {
+            return false
+        }
+        nextVideoSwipeAttempt += 1
+        logger.info(
+            "comment_next_video_swipe_retry",
+            attributes = mapOf(
+                "swipe_attempt" to nextVideoSwipeAttempt,
+                "video_index" to videoIndex,
+            ),
+        )
+        nextVideoPlayerFingerprintConfirmed = false
+        if (!prepareClosedPlayerForNextVideoSwipe()) return false
+        return dispatchNextVideoSwipe(nextVideoAdvanceReason)
+    }
+
+    private fun commitNextVideoAccounting() {
+        if (nextVideoCommitted) return
+        nextVideoCommitted = true
+        awaitingNextVideoConfirmation = false
+        videoIndex += 1
         ledger.clear()
         processedCandidateKeys.clear()
         lastViewportFingerprint = null
@@ -1224,29 +1740,28 @@ class CommentPrivateMessageRuntime(
         initialCandidateReadRetryCount = 0
         reportedMatchStatisticsFingerprints.clear()
         activeCandidate = null
-
-        val swipe = gestures.swipeNormalized(
-            startX = 0.50f,
-            startY = 0.84f,
-            endX = 0.50f,
-            endY = 0.28f,
-            durationMs = TuningConstants.CommentRuntime.NEXT_VIDEO_SWIPE_DURATION_MS,
-        )
         logger.info(
-            "comment_next_video_swiped",
+            "comment_next_video_confirmed",
             attributes = mapOf(
                 "video_index" to videoIndex,
-                "video_total" to snapshot.maxVideos,
-                "success" to swipe.succeeded,
-                "reason" to reason,
+                "video_total" to (config?.maxVideos ?: 0),
             ),
         )
-        if (!swipe.succeeded) {
-            terminal(CommentRuntimeTerminal.Outcome.FAILED, "切换下一个视频失败：${swipe.reason.orEmpty()}")
-            return
-        }
-        armTimeout("等待下一个视频", timeoutMs = TuningConstants.CommentRuntime.VIDEO_PAGE_TIMEOUT_MS)
-        scheduleNextVideoTransitionProbe()
+    }
+
+    private fun rememberFirstScreenCommentRow(
+        context: ScreenContext,
+        orderedCandidates: List<CommentUserCandidate>,
+    ) {
+        if (scrollCount != 0 || firstScreenCommentRowTopRatio != null) return
+        val height = context.screenSize.height
+        val minTop = orderedCandidates.minOfOrNull(::candidateTop)?.takeIf { it < Int.MAX_VALUE } ?: return
+        if (height <= 0) return
+        firstScreenCommentRowTopRatio = minTop.toFloat() / height.toFloat()
+        logger.info(
+            "comment_first_screen_row_baseline",
+            attributes = mapOf("ratio" to firstScreenCommentRowTopRatio),
+        )
     }
 
     /**
@@ -1389,6 +1904,23 @@ class CommentPrivateMessageRuntime(
                 displayName,
                 UserTaskRecord.Outcome.IDENTITY_UNAVAILABLE,
                 "评论用户主页内容不可用",
+                PageKind.USER_PROFILE,
+            )
+            return returnToCommentSurface()
+        }
+        if (config?.skipBlankProbe == true) {
+            logger.info(
+                "comment_profile_return_skip_probe",
+                attributes = mapOf(
+                    "identity_fingerprint_prefix" to UserIdentityFingerprint.logPrefix(identityFingerprint),
+                    "row_top" to candidateTop(candidate),
+                ),
+            )
+            finishCandidate(
+                identityFingerprint,
+                displayName,
+                UserTaskRecord.Outcome.PROFILE_OPENED,
+                "调试：已进入评论用户主页，跳过私信入口与空白探测",
                 PageKind.USER_PROFILE,
             )
             return returnToCommentSurface()
@@ -1892,6 +2424,7 @@ class CommentPrivateMessageRuntime(
         try {
             var ocrRecoveryAttempted = false
             var requiredBackActions: Int? = null
+            var profileLeavePollCompleted = false
             for (attempt in 0..TuningConstants.CommentRuntime.MAX_RETURN_TO_COMMENT_BACKS) {
                 var context = currentContext()
                 if (context != null) {
@@ -1915,6 +2448,7 @@ class CommentPrivateMessageRuntime(
                         requiredBackActions = requiredBackActionsFor(detection.kind)
                     }
                     val minimumBackActions = requiredBackActions ?: 0
+                    val stillOnUserProfile = detection.kind == PageKind.USER_PROFILE
 
                     // A commenter profile can return directly to a video whose full right rail
                     // is visually present but sparse in accessibility. Take one bounded OCR
@@ -1997,21 +2531,73 @@ class CommentPrivateMessageRuntime(
                         )
                         break
                     }
+                    if (attempt == TuningConstants.CommentRuntime.MAX_RETURN_TO_COMMENT_BACKS) break
+                    val dispatchBack = CommentReturnBackPolicy.shouldDispatchAnotherReturnBack(
+                        stillNested = stillInsideNestedSurface,
+                        backsDispatched = returnCommentSurfaceBackActions,
+                        requiredBacks = minimumBackActions,
+                        stillOnUserProfile = stillOnUserProfile,
+                        profileLeavePollCompleted = profileLeavePollCompleted,
+                    )
+                    if (!dispatchBack) {
+                        if (
+                            CommentReturnBackPolicy.shouldPollForProfileLeave(
+                                stillOnUserProfile = stillOnUserProfile,
+                                backsDispatched = returnCommentSurfaceBackActions,
+                                requiredBacks = minimumBackActions,
+                            )
+                        ) {
+                            when (awaitLeaveUserProfileAfterReturnBack()) {
+                                ProfileLeavePoll.COMMENT_SURFACE -> {
+                                    logger.info(
+                                        "comment_surface_restored",
+                                        attributes = mapOf(
+                                            "back_attempts" to attempt,
+                                            "source" to "profile_leave_poll",
+                                        ),
+                                    )
+                                    return true
+                                }
+                                ProfileLeavePoll.LEFT_PROFILE,
+                                ProfileLeavePoll.STILL_PROFILE,
+                                -> profileLeavePollCompleted = true
+                            }
+                        }
+                        continue
+                    }
+                    val nextBackActionCount = returnCommentSurfaceBackActions + 1
+                    confirmedReturnCommentSurface = null
+                    confirmedReturnCommentSurfaceBackActions = -1
+                    returnCommentSurfaceBackActions = nextBackActionCount
+                    if (!gestures.globalBack().succeeded) {
+                        returnCommentSurfaceBackActions -= 1
+                        break
+                    }
+                    logger.info(
+                        "comment_return_back_dispatched",
+                        attributes = mapOf("attempt" to attempt, "back_actions" to nextBackActionCount),
+                    )
+                    profileLeavePollCompleted = false
+                    if (stillOnUserProfile) {
+                        when (awaitLeaveUserProfileAfterReturnBack()) {
+                            ProfileLeavePoll.COMMENT_SURFACE -> {
+                                logger.info(
+                                    "comment_surface_restored",
+                                    attributes = mapOf(
+                                        "back_attempts" to attempt,
+                                        "source" to "profile_leave_after_back",
+                                    ),
+                                )
+                                return true
+                            }
+                            ProfileLeavePoll.LEFT_PROFILE,
+                            ProfileLeavePoll.STILL_PROFILE,
+                            -> profileLeavePollCompleted = true
+                        }
+                    } else {
+                        delay(TuningConstants.CommentRuntime.RETURN_TO_COMMENT_DELAY_MS)
+                    }
                 }
-                if (attempt == TuningConstants.CommentRuntime.MAX_RETURN_TO_COMMENT_BACKS) break
-                val nextBackActionCount = returnCommentSurfaceBackActions + 1
-                confirmedReturnCommentSurface = null
-                confirmedReturnCommentSurfaceBackActions = -1
-                returnCommentSurfaceBackActions = nextBackActionCount
-                if (!gestures.globalBack().succeeded) {
-                    returnCommentSurfaceBackActions -= 1
-                    break
-                }
-                logger.info(
-                    "comment_return_back_dispatched",
-                    attributes = mapOf("attempt" to attempt, "back_actions" to nextBackActionCount),
-                )
-                delay(TuningConstants.CommentRuntime.RETURN_TO_COMMENT_DELAY_MS)
             }
             terminal(CommentRuntimeTerminal.Outcome.FAILED, "无法在限定次数内返回评论区")
             return false
@@ -2019,6 +2605,49 @@ class CommentPrivateMessageRuntime(
             awaitingCommentSurfaceReturn = false
             clearReturnCommentSurfaceConfirmation()
         }
+    }
+
+    private enum class ProfileLeavePoll {
+        COMMENT_SURFACE,
+        LEFT_PROFILE,
+        STILL_PROFILE,
+    }
+
+    /**
+     * After BACK from a commenter profile, wait like the B-end profile return:
+     * 200ms first sample, then 150ms × 4. Do not issue another BACK during this window.
+     */
+    private suspend fun awaitLeaveUserProfileAfterReturnBack(): ProfileLeavePoll {
+        var last = ProfileLeavePoll.STILL_PROFILE
+        repeat(TuningConstants.NavigationFlow.USER_PROFILE_BACK_POLL_ATTEMPTS) { attempt ->
+            delay(
+                if (attempt == 0) {
+                    TuningConstants.NavigationFlow.USER_PROFILE_BACK_DELAY_MS
+                } else {
+                    TuningConstants.NavigationFlow.USER_PROFILE_BACK_POLL_INTERVAL_MS
+                },
+            )
+            val context = currentContext()
+            val kind = context?.let { pageDetector.detect(it).kind }
+            val surface = context?.let { CommentSurfaceDetector.detect(it).isCommentSurface } == true
+            logger.info(
+                "comment_return_profile_leave_poll",
+                attributes = mapOf(
+                    "attempt" to (attempt + 1),
+                    "page" to (kind?.name ?: "NO_CONTEXT"),
+                    "surface" to surface,
+                ),
+            )
+            if (surface && kind != PageKind.USER_PROFILE && kind != PageKind.DIRECT_MESSAGE) {
+                return ProfileLeavePoll.COMMENT_SURFACE
+            }
+            if (kind != null && kind != PageKind.USER_PROFILE) {
+                last = if (surface) ProfileLeavePoll.COMMENT_SURFACE else ProfileLeavePoll.LEFT_PROFILE
+                if (last == ProfileLeavePoll.COMMENT_SURFACE) return last
+                return ProfileLeavePoll.LEFT_PROFILE
+            }
+        }
+        return last
     }
 
     private suspend fun awaitCommentSurface(minimumBackActions: Int): Boolean {

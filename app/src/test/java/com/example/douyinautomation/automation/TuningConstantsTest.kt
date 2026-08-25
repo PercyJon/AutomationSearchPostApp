@@ -17,6 +17,8 @@ class TuningConstantsTest {
         assertEquals(350L, lifecycle.INITIAL_OBSERVATION_INTERVAL_MS)
         assertEquals(2, lifecycle.INITIAL_OCR_RETRY_EVERY_OBSERVATIONS)
         assertEquals(6, lifecycle.INITIAL_OCR_MAX_ATTEMPTS)
+        assertEquals(2, lifecycle.NESTED_COMMENT_SURFACE_OCR_MAX_ATTEMPTS)
+        assertEquals(2, lifecycle.COMMENT_LAUNCH_HOME_NAV_OCR_MAX_ATTEMPTS)
         assertEquals(2, lifecycle.OCR_PAGE_STABLE_OBSERVATIONS)
     }
 
@@ -29,6 +31,7 @@ class TuningConstantsTest {
         assertEquals(3_200L, runtime.PRIVATE_MESSAGE_ENTRY_POSTCONDITION_TIMEOUT_MS)
         assertEquals(2, runtime.NEXT_VIDEO_HIDDEN_ENTRY_LIMIT)
         assertEquals(2, runtime.NEXT_VIDEO_OCR_PROBE_LIMIT)
+        assertEquals(120L, runtime.RETURN_TO_COMMENT_DELAY_MS)
         assertEquals(3, runtime.MAX_RETURN_TO_COMMENT_BACKS)
         assertEquals(20, runtime.MAX_COMMENT_SCROLLS)
         assertEquals(2, runtime.MAX_STALE_SCROLLS)
@@ -36,6 +39,7 @@ class TuningConstantsTest {
         assertEquals(3, runtime.MAX_LIVE_ROOM_EXITS)
         assertEquals(3, runtime.MAX_LIVE_ROOM_SWIPES)
         assertEquals(250L, runtime.PAGE_POLL_INTERVAL_MS)
+        assertEquals(24, runtime.FIRST_VIDEO_TRANSITION_PROBE_ATTEMPTS)
         assertEquals(200L, runtime.FIRST_VIDEO_TRANSITION_INITIAL_DELAY_MS)
         assertEquals(300L, runtime.FIRST_VIDEO_TRANSITION_PROBE_INTERVAL_MS)
         assertEquals(100L, runtime.NEXT_VIDEO_TRANSITION_INITIAL_GRACE_MS)
@@ -44,6 +48,15 @@ class TuningConstantsTest {
         assertEquals(300L, runtime.COMMENT_PANEL_PROBE_INTERVAL_MS)
         assertEquals(300L, runtime.POST_SCROLL_POLL_INTERVAL_MS)
         assertEquals(700L, runtime.NEXT_VIDEO_SETTLE_MS)
+        assertEquals(8, runtime.COMMENT_SURFACE_POLL_ATTEMPTS)
+        assertEquals(12, runtime.NEXT_VIDEO_SHEET_CLOSE_POLL_ATTEMPTS)
+        assertEquals(150L, runtime.NEXT_VIDEO_SHEET_CLOSE_POLL_INTERVAL_MS)
+        assertEquals(3, runtime.NEXT_VIDEO_CLOSED_PLAYER_STABLE_SAMPLES)
+        assertEquals(2, runtime.NEXT_VIDEO_SWIPE_MAX_ATTEMPTS)
+        assertEquals(2, runtime.NEXT_VIDEO_SHEET_OPEN_RETRY_THRESHOLD)
+        assertEquals(520L, runtime.NEXT_VIDEO_SWIPE_DURATION_MS)
+        assertEquals(0.84f, runtime.NEXT_VIDEO_SWIPE_START_Y)
+        assertEquals(0.28f, runtime.NEXT_VIDEO_SWIPE_END_Y)
     }
 
     @Test
@@ -54,6 +67,10 @@ class TuningConstantsTest {
         assertEquals(30, flow.MAX_REMOTE_RESUME_SWIPES)
         assertEquals(20, flow.MAX_VISIBLE_USER_ROWS)
         assertEquals(5, flow.MAX_INITIAL_HOME_BACK_ACTIONS)
+        assertEquals(200L, flow.USER_PROFILE_BACK_DELAY_MS)
+        assertEquals(150L, flow.USER_PROFILE_BACK_POLL_INTERVAL_MS)
+        assertEquals(4, flow.USER_PROFILE_BACK_POLL_ATTEMPTS)
+        assertEquals(2_000L, flow.INITIAL_SURFACE_RECOVERY_BACK_DELAY_MS)
         assertEquals(4, flow.MAX_INITIAL_BLIND_BACK_ACTIONS)
         assertEquals(2, flow.MAX_BACK_ACTIONS_FROM_MESSAGE_FAILURE)
         assertEquals(500, flow.MAX_MESSAGE_LENGTH)

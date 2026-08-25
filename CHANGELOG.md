@@ -4,6 +4,476 @@
 
 ---
 
+## [未发布] 2026-08-25 —— 悬浮窗动态排除且保留显示
+
+### 修改内容
+
+- 悬浮窗保持显示，收起态边长从 58dp 缩至 29dp，改为半透明天蓝色。
+- 运行中改为 `NOT_TOUCHABLE` 触摸穿透；暂停、失败、完成后恢复交互。
+- 服务按实际渲染位置发布悬浮窗边界；OCR、评论入口模板与双锚点模板排除相交区域，不依赖悬浮窗颜色、尺寸或固定坐标。
+
+### 诊断结果
+
+- 最近三条 `designer-20260825-223559`（含两次重试）均在用户搜索结果阶段失败，处理数为 0。
+- 三张诊断截图显示结果行正常，但旧蓝色悬浮窗覆盖首行“关注”锚点；日志为 `NO_FOLLOW_LABEL` / 用户行结构不可验证。
+- 新版 `designer / 1×1 / 跳过私信` 已通过该用户行验证并进入用户主页，未再触发用户结果结构失败；之后停在首作品动作栏识别，属于独立问题。
+
+### 测试与安全检查
+
+- JVM：`AppOwnedOverlayExclusionTest`、`CommentEntryStateMachineTest`、`NextVideoTransitionProbePolicyTest` 通过；Debug APK 构建通过。
+- 未新增固定 px 几何或固定点击坐标；悬浮窗任意样式均由真实边界动态排除。
+
+---
+
+## [未发布] 2026-08-25 —— 作品标签锚点混合识别 4×1 回归通过
+
+### 修改内容
+
+- 首作品不再扫描整页封面：必须在“作品”标签下方的网格内。
+- “作品”标签忽略动态视频数量；节点优先，节点缺失时 OCR 仅定位标签边界，最终点击仍为无障碍节点。
+- 同图块内有“店铺、商品、橱窗、去购买、进入店铺”标识时排除；跳过置顶继续由既有几何规则处理。
+- 换片后首次“播放器已变化 + 新鲜安全评论入口”立即开评论区，避免等待第二帧时入口自动隐藏。
+
+### 真机验证
+
+- **设备**：OnePlus NE2210 / `b33aa309` / Android 16。
+- **条件**：室内设计师 / 4 视频 / 每视频 1 评论 / 跳过置顶 / 跳过私信。
+- 日志：`max_videos=4`、`per_video_cap=1`；`video_index=1`、`2`、`3` 均确认；最终 `comment_video_batch_completed [video_count=4]`、`comment_runtime_terminal [outcome=COMPLETED]`。
+- 结果：4 名评论用户均记录 `PROFILE_OPENED`，每次由主页返回评论区；无私信入口、空格探测、店铺入口点击。
+
+### 测试与安全检查
+
+- JVM：`CommentEntryStateMachineTest`、`NextVideoAdvancePolicyTest` 通过；Debug APK 构建通过。
+- 未新增固定 px 或坐标点击；OCR/模板只定位标签或入口，最终点击仍经无障碍节点、受限 OCR 入口与评论面板后验。
+
+---
+
+## [未发布] 2026-08-25 —— 3×2 换片止损记录
+
+### 最新真机结果
+
+- **设备**：OnePlus NE2210 / `b33aa309` / Android 16。
+- **条件**：室内设计师 / 3 视频 / 每视频 2 评论 / 跳过私信。
+- **最深入一轮**：首作品 2 人 `PROFILE_OPENED`；第二作品由稳定变化播放器指纹确认 `video_index=1`，评论区未被 BACK 关闭，另处理 2 人；第三作品入口先出现后隐藏，画布点按成功但旧看门狗先到期。
+- **最后一轮**：首作品完成 2 人；切到第二作品时入口在稳定确认前隐藏，未能重新定位中性画布，因此按安全规则跳过该不可验证入口，后续换片超时。
+- 结论：最终 3×2 成功条件**尚未达到**；两轮共同证明入口自动隐藏 / 无新鲜可点击入口是剩余阻断。
+
+### 已排除
+
+- 3×2 预设未生效：日志持续为 `max_videos=3`、`per_video_cap=2`。
+- 跳过私信未生效：6 次候选路径均只记录 `PROFILE_OPENED`，无私信入口和空格探测。
+- 第二作品未实际切换：日志两帧 `changed_stable=true` 后 `video_index=1`，并处理了两个不同候选。
+- 通过评论首行位置确认新作品：抖音会保留评论区滚动位置，真实换片仍可能为 `0.571`。
+
+### 止损
+
+- 同一换片问题已超过五轮真机修改，按项目规范暂停继续改动。
+- 继续前需确认的最小诊断：在第三作品安全入口可见、自动隐藏前后各抓一份无文本节点几何摘要，确认中性媒体画布节点为何在此帧不可重新定位。
+
+---
+
+## [未发布] 2026-08-25 —— 用稳定变化的播放器确认换片
+
+### 修复前记录
+
+- 真机已打开下一条作品的评论区，但评论首行仍在 `0.571`；此前代码将其误判为旧视频续翻，BACK 关评论区后失败。
+
+### 修改内容
+
+- 关闭评论区后，以两次相同、且不同于上滑前的播放器指纹确认已换片。
+- 评论首行位置保留为诊断与无播放器确认时的保守回退，不再否决已稳定确认的作品切换。
+
+### 已验证项
+
+- JVM：`NextVideoAdvancePolicyTest`、`NextVideoTransitionProbePolicyTest` 通过。
+- 当前设备已断开，Debug APK 已构建，待 OnePlus NE2210 重新连接后复跑「室内设计师 / 3 视频 / 每视频 2 评论 / 跳过私信」。
+
+### 几何与安全检查
+
+- 未新增 px、点击坐标或新的点击路径。评论入口仍经既有节点 / OCR 几何 / 面板后验链路。
+
+---
+
+## [未发布] 2026-08-25 —— 关评论区后再滑，不再死等评论按钮
+
+### 修复前记录
+
+- 第二个视频：打开评论区后因 `first_screen=false`（0.571）BACK 关掉，准备再滑。
+- 关掉后 `comment_entry=false video_surface=false` 连续 12 帧，第二次上滑没发出，任务失败。
+
+### 本轮唯一假设
+
+续翻重滑时动作栏已收起，再要求「有评论入口」会把第二次上滑卡死。面板连续 3 帧关着即可滑。
+
+### 几何与安全检查
+
+- 仍是 0–1 比例上滑，未新增点击坐标。
+
+---
+
+## [未发布] 2026-08-25 —— 重新开始：先让搜索能填词，再验 3×2
+
+### 成功要求
+
+室内设计师 / 3 视频 / 每视频 2 评论 / 跳过私信。每条视频进 2 个用户主页后回到评论区，再换到下一条作品的评论首屏。
+
+### 本轮唯一假设
+
+上一轮停在搜索：复用的结果页输入框 SET_TEXT 成功但内容仍为空。先点击该输入框再写入。
+
+### 已验证项
+
+- 真机同一 3×2 缩短路径见本轮记录。换片续翻重滑已在代码中，待搜索通过后验证。
+
+---
+
+## [未发布] 2026-08-25 —— 续翻评论区时再滑一次而不是直接失败
+
+### 修复前记录
+
+- 成功要求：室内设计师 / 3 视频 × 每视频 2 人 / 跳过私信。
+- 立刻上滑（1 帧 already_closed）变差：误滑进仍开着的评论区，动作栏超时。
+- 稳定关面板后上滑仍打开同一条评论（0.571）时，任务直接失败，没有再滑。
+
+### 修改内容
+
+- 撤回「1 帧就滑」。关面板仍需连续 3 帧关闭且有视频面/评论入口。
+- 行程保持 `0.84→0.28 / 520ms`。
+- 重开评论区若不是首屏，在次数内关面板再滑一次，不处理这些人。
+
+### 已验证项
+
+- JVM：`NextVideoAdvancePolicyTest`、`TuningConstantsTest`。真机 3×2 见本轮记录。
+
+---
+
+## [未发布] 2026-08-25 —— 关面板后立刻用原行程上滑
+
+### 修复前记录
+
+- 上半屏 `0.38→0.12 / 520ms` 仍得到 `first_screen=false`、`0.571`（无变化）。
+- 更早一次 2×3 成功是：关面板后很快 `0.84→0.28` 上滑。本轮假设：空等 3 帧评论入口把作品页坐死，pager 不再翻。
+
+### 修改内容
+
+- 关面板后第 1 帧 `open=false` 就上滑，不再等视频面/评论入口。
+- 行程恢复 `0.84→0.28 / 520ms`。
+
+### 已验证项
+
+- JVM：`NextVideoAdvancePolicyTest`、`TuningConstantsTest`。真机 3×2 缩短路径见本轮记录。
+
+---
+
+## [未发布] 2026-08-25 —— 换片上滑改到评论区以上的视频画布
+
+
+### 修复前记录
+
+- 现象：室内设计师 / 3×2 / 跳过私信，两人能回评论区；关面板稳定后上滑，重开仍是续翻 0.571。
+- 预期：每条视频 2 人后换到下一条作品的评论首屏（约 0.44），共 3 条。
+- 本轮唯一假设：`0.84→0.28` 仍走在刚关掉的评论区高度上，作品 pager 没收到翻页。
+
+### 修改内容
+
+- 上滑改为屏幕比例 `0.38→0.12`（评论首屏约 0.44 之上），时长仍 520ms，x 仍 0.50，不碰右侧动作栏。
+
+### 已验证项
+
+- JVM：`TuningConstantsTest`。真机同一 3×2 缩短路径见本轮记录。
+
+### 几何与安全检查
+
+- 手势仍是 0–1 屏幕比例，未新增 px 或点击坐标。
+
+---
+
+## [未发布] 2026-08-25 —— 先稳主页回评论区，再稳关面板后换片
+
+### 修改内容
+
+- B：评论用户主页 BACK 后按 B 端等待（200ms + 150ms×4）再决定是否第二次 BACK；跳过私信时 required=1，未离开主页前不再连按。
+- A：关评论区最多一次 BACK；连续 3 帧「面板关 + 视频面 + 评论入口」才上滑；闪断 `sheet_open` 不再额外 BACK。行程仍为 `0.84→0.28 / 520ms`。
+
+### 已验证项
+
+- JVM：`CommentReturnBackPolicyTest`、`NextVideoAdvancePolicyTest`、`TuningConstantsTest`。
+- **真机 OnePlus NE2210 / b33aa309 / Android 16**，缩短 3×2（跳过私信）：
+  - **B 改善**：两人 `PROFILE_OPENED`；第一次 BACK 后 `comment_return_profile_leave_poll attempt=1 page=UNKNOWN surface=true`，没有第二次 BACK 落到作品页。
+  - **A 无变化**：关面板 1 次 BACK，连续 3 帧稳定后上滑 `0.84→0.28 / 520ms`，`changed=true`；重开评论区仍是 `min_row_ratio=0.571 first_screen=false`，任务失败停止。
+
+### 几何与安全检查
+
+- 未新增 px 或点击坐标。回评论区仍禁止自动点评论入口。换片仍是 0–1 比例手势。
+
+---
+
+## [未发布] 2026-08-25 —— 调试任务可跳过私信与空白探测
+
+### 修改内容
+
+- OPEN_COMMENT_P0 默认 `COMMENT_SKIP_BLANK_PROBE=true`：评论用户主页确认后立即返回评论区，不打开纸飞机、不提交空格探测。
+- 正式表单与生产快照默认仍为 `skipBlankProbe=false`，完整空白探测不变。
+- 人数上限仍按进入主页的候选人计数，用于缩短 3×2 换片回归。
+
+### 已验证项
+
+- JVM：`CommentPrivateMessageModelsTest`、`RemoteTaskSyncQueueTest`。真机同一 3×2 条件见本轮记录。
+
+### 几何与安全检查
+
+- 未新增 px 或点击坐标。跳过路径仍先确认 `USER_PROFILE`，再走既有 `returnToCommentSurface()`。
+
+---
+
+## [未发布] 2026-08-25 —— 恢复能换片的上滑行程与等待
+
+### 修改内容
+
+- 换片手势从 `0.70→0.42 / 180ms`、settle 400ms 恢复为已验证能拨动作品页的 `0.84→0.28 / 520ms`、settle 700ms。
+- 首屏行比例确认、关面板才 BACK、面板仍开才允许再滑，均保持不变。
+
+### 已验证项
+
+- `TuningConstantsTest`。真机同一 3×2 条件见本轮记录。
+
+### 几何与安全检查
+
+- 手势仍是 0–1 屏幕比例，未新增 px 或点击坐标。
+
+---
+
+## [未发布] 2026-08-25 —— 用评论首屏行位置确认换片，并改为轻甩
+
+### 修改内容
+
+- 换片后打开评论区，用首条可见评论行的屏幕高度比例对照第一条视频的首屏基线；续翻列表（如 1377/2412）不算新视频，不清人数，关面板后再滑一次。
+- 只有评论面板仍开着才允许再滑一次；播放器指纹没变不再重滑，避免跳过中间那条视频。
+- 上滑改为中部轻甩：`y 0.70→0.42`、180ms，settle 400ms，不再从 0.84 拖到 0.28。
+
+### 已验证项
+
+- JVM：`NextVideoAdvancePolicyTest`、`TuningConstantsTest` 通过。
+- **真机 OnePlus NE2210 / b33aa309 / Android 16**，同一 3×2 空白探测：
+  - 第一条 `row_tops=1067,1318`，基线 `ratio=0.442`，2 人探测成功。
+  - 上滑日志 `duration_ms=180, start_y=0.7, end_y=0.42`。
+  - 重开评论区 `min_row_ratio=0.571`（约 1377px 续翻），`first_screen=false`，任务失败停止；没有再处理第 3、4 人，也没有无操作连滑下一条。
+  - 结果：**部分改善**。人数上限和跳片已止住；轻甩仍未换到新作品首屏。
+
+### 几何与安全检查
+
+- 行位置用屏幕高度比例 `0.52` / 基线 `+0.08`，不是 px。手势仍是 0–1 比例。未新增点击坐标。
+
+### 交接记录
+
+- [`2026-08-25-next-video-cap-confirmation.md`](docs/2026-08-25-next-video-cap-confirmation.md)
+
+---
+
+## [未发布] 2026-08-25 —— 换视频必须确认新作品后才重置人数
+
+### 修改内容
+
+- 关闭评论区：仅在面板确认仍打开时 BACK，有界轮询等到关掉；已在视频上不再多一次 BACK。
+- 滑动前指纹只在关面板后的播放器上采集；滑完需面板仍关、指纹变化、视频面成立，才增加视频序号并清空本视频人数。
+- 换失败最多再滑一次，仍未确认则失败停止，不再对同一条视频继续点人。
+- 上一轮 3×2 日志自称 `COMPLETED video_count=3` 是计数虚高，同一条视频被当成了三条。
+
+### 已验证项
+
+- JVM：`NextVideoAdvancePolicyTest`、`NextVideoTransitionProbePolicyTest`、`TuningConstantsTest`、`lintDebug`、`assembleDebug` 通过。
+- **真机 OnePlus NE2210 / b33aa309 / Android 16**，「室内设计师 / 3 视频 / 每视频 2 评论 / 跳过置顶开启」，空白探测。
+  - 关面板：`sheet_close_poll open=true` 后才 BACK，约 150ms 后 `open=false`，已在视频上不再多一次 BACK。
+  - 第一条：`row_tops=1067,1318`，2 人 `BLANK_PROBE_VERIFIED`。
+  - 第一次上滑 `confirmed=true` 后评论行是 `1377,1713`（同一列表往下，不是新视频首屏），又处理 2 人后停止再加点人。
+  - 第二次上滑 `changed=false`，重滑一次仍未确认，任务 `FAILED`（等待下一视频动作栏验证），没有出现第三条视频的 2 人。
+  - 相对修复前「同一条视频 6 人 / 第二条 4 人」：**部分改善**。多 BACK 和人数上限清空已收敛，但播放器指纹变化仍会把同一条作品误认为新视频。
+
+### 几何与安全检查
+
+- 未新增 px 或点击坐标。上滑仍用既有屏幕比例手势。关面板 BACK 仅在评论区确认打开时发出。
+
+### 交接记录
+
+- [`2026-08-25-next-video-cap-confirmation.md`](docs/2026-08-25-next-video-cap-confirmation.md)
+
+---
+
+## [未发布] 2026-08-25 —— 评论任务启动首页有界 OCR
+
+### 修改内容
+
+- 评论任务 `WAITING_FOR_HOME` 且节点为 `UNKNOWN`、又不是残留评论面板时，用顶部/底部导航带 OCR 只分类 `HOME`。
+- OCR 块不交给 `PageDetector`；搜索仍走节点 → 结构 → 既有归一化兜底。双帧确认沿用 `OCR_PAGE_STABLE_OBSERVATIONS`。
+
+### 已验证项
+
+- `CommentLaunchHomeOcrPolicyTest`、`TuningConstantsTest` 通过。
+- **真机 OnePlus NE2210 / b33aa309 / Android 16**：同一条件「室内设计师 / 3 视频 / 每视频 2 评论 / 跳过置顶开启」。`initial_comment_home_nav_ocr [home=true, top_hits=5, bottom_hits=4]` 后 `search_entry_opened [route=bounds_gesture]`。任务 `COMPLETED`，`video_count=3`，六次 `BLANK_PROBE_VERIFIED`。结果：**改善**。
+
+### 几何与安全检查
+
+- 导航带阈值为屏幕比例 `0.16` / `0.86`，不是 px。未新增点击坐标或手势。
+- 不得把中间文案或评论面板 OCR 标成 HOME。
+
+### 交接记录
+
+- [`2026-08-25-waiting-for-home-unknown-diagnosis.md`](docs/2026-08-25-waiting-for-home-unknown-diagnosis.md)
+
+---
+
+## [未发布] 2026-08-25 —— 资料页返回改为早采样有界轮询
+
+### 修改内容
+
+- `USER_PROFILE_BACK_DELAY_MS` 从 700ms 固定等待改为 200ms 首次采样；未识别到目标页时再按 150ms 间隔轮询，最多 4 次（最慢约 650ms）。
+- 只用于 B 端空白探测后回用户列表、跳过不可私信资料页、发送失败返回、切下一组搜索词。启动残留评论面板恢复仍用 2000ms。
+
+### 已验证项
+
+- `TuningConstantsTest` 锁定 200 / 150 / 4。JVM 结果见本轮构建。真机识别稳定性待同一 B 端空白探测路径确认。
+
+### 几何与安全检查
+
+- 未新增 px、点击坐标或手势；确认条件仍是 `USER_RESULTS` / `SEARCH_ENTRY` / `HOME`。
+
+---
+
+## [未发布] 2026-08-25 —— 2000ms 仅限启动恢复，缩短回评论区间隔
+
+### 修改内容
+
+- 再次确认 `INITIAL_SURFACE_RECOVERY_BACK_DELAY_MS = 2000` 只给 `recoverInitialSurface` 用；评论运行时两步返回、B 端资料页返回仍不走这个值。
+- 评论私信空白探测后「后退 2 步回评论区」的 `RETURN_TO_COMMENT_DELAY_MS` 从 250ms 改为 120ms。
+
+### 已验证项
+
+- `TuningConstantsTest` 分别锁定启动恢复 2000ms 与回评论区 120ms。
+
+### 几何与安全检查
+
+- 未新增 px、点击坐标或手势。
+
+### 交接记录
+
+- [`2026-08-25-nested-comment-launch-recovery.md`](docs/2026-08-25-nested-comment-launch-recovery.md)
+
+---
+
+## [未发布] 2026-08-25 —— 加长启动恢复 BACK 间隔
+
+### 修改内容
+
+- `recoverInitialSurface` 两次全局 BACK 之间的等待从 700ms 改为 2000ms。17:25 真机在确认评论面板后约 7 秒内连按 5 次 BACK，页面仍为 `UNKNOWN`，退出了抖音。
+- 其它资料页返回仍用原来的 700ms，不改 BACK 次数上限。
+
+### 已验证项
+
+- `TuningConstantsTest` 锁定 `INITIAL_SURFACE_RECOVERY_BACK_DELAY_MS = 2000`。JVM 结果见本轮构建。
+
+### 几何与安全检查
+
+- 未新增 px、点击坐标或手势；只加长启动恢复的 BACK 间隔。
+
+### 交接记录
+
+- [`2026-08-25-nested-comment-launch-recovery.md`](docs/2026-08-25-nested-comment-launch-recovery.md)
+
+---
+
+## [未发布] 2026-08-25 —— 启动 UNKNOWN 时用 OCR 确认评论面板
+
+### 修改内容
+
+- 评论任务启动仍跳过把 OCR 交给 PageDetector（避免把面板上方搜索图标当成首页去点）。
+- `WAITING_FOR_HOME` 且页面为 `UNKNOWN`、节点未认出评论面板时，最多两次全屏 OCR，只喂给既有 `CommentSurfaceDetector`。
+- OCR 确认面板后，第一次恢复必须 BACK，再走既有首页/搜索栏流程。
+
+### 已验证项
+
+- `NestedLaunchSurfacePolicyTest` 增加：OCR 面板 chrome 可确认、右侧「评论」标签不可确认、OCR 探测门限。JVM / lint 结果见本轮构建。
+
+### 几何与安全检查
+
+- 未新增固定 px 或点击坐标。OCR 区域为既有 `OcrRegion.FULL`；OCR 文本不进日志、不授权点击。
+
+### 交接记录
+
+- [`2026-08-25-nested-comment-launch-recovery.md`](docs/2026-08-25-nested-comment-launch-recovery.md)
+
+---
+
+## [未发布] 2026-08-25 —— 评论面板残留时有界 BACK 启动恢复
+
+### 修改内容
+
+- 评论任务若在 `WAITING_FOR_HOME` 遇到已确认的评论面板，不再把它当成未分类首页而空等 30 秒。
+- 命中后走既有有界全局 BACK；面板关闭后若已是首页或带可编辑搜索栏的页面，继续既有搜索流程。
+- 未使用 force-stop、清栈或「跳转首页」；视频信息流上的评论按钮不能作为嵌套证据。
+
+### 已验证项
+
+- `NestedLaunchSurfacePolicyTest` 覆盖：确认评论面板才恢复、首页「评论」标签不恢复、面板打开时禁止点搜索。
+- `./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug` 通过；`git diff --check` 通过。
+- **真机 OnePlus NE2210 / b33aa309 / Android 16（无变化）**：抖音信息流评论面板保持打开（截图可见「评论 58」、底部输入框）。启动「室内设计师 / 1×1 / 跳过置顶」后无 `initial_nested_comment_surface_recovery`；观测为 `nodes=149`、`ocr_skipped=comment_task`、`node_tree_truncated reason=MAXIMUM_DEPTH`，30 秒后 `poc_paused_for_manual_handoff`。任务 `室内设计师-20260825-171311` 已暂停 0/0/0。超时节点树无 EditText / 「条评论」/ 「AI解析」，因此既有 `CommentSurfaceDetector` 未命中。未 force-stop 抖音。
+
+### 几何与安全检查
+
+- 未新增固定 px、坐标点击或手势时长；BACK 为既有无障碍全局返回。
+
+### 交接记录
+
+- [`2026-08-25-nested-comment-launch-recovery.md`](docs/2026-08-25-nested-comment-launch-recovery.md)
+
+---
+
+## [未发布] 2026-08-25 —— 第二视频 UNKNOWN 动作栏识别
+
+### 修改内容
+
+- 下一视频已经由滑动前后指纹确认发生变化时，允许 `UNKNOWN` 详情页进入既有的两次受限动作栏 OCR / 模板 / 双锚点识别；该条件不修改全局 `PageDetector`，也不直接授权点击。
+- 首次动作栏识别开始前替换从滑动时刻启动的旧看门狗，确保既有双帧验证有完整的有界执行窗口。
+- 页面变化指纹改为在 OCR 丰富前计算，避免新增 OCR 块本身制造“页面已变化”的证据。
+
+### 已验证项
+
+- `NextVideoTransitionProbePolicyTest`、完整 Debug JVM 测试、`lintDebug` 与 `assembleDebug` 通过。
+- **真机 OnePlus NE2210 / b33aa309 / Android 16**：使用“室内设计师 / 视频数 2 / 评论数 3 / 跳过置顶开启”运行空白探测。第二视频首帧为 `page=UNKNOWN, changed=true`，立即记录 `comment_next_video_action_rail_watchdog_replaced`；同一轮 OCR 几何得到 `comment_entry=true`，以 `source=ocr_fallback` 打开评论面板。任务最终 `video_count=2`、已处理 6 / 跳过 0 / 失败 0，六位均为 `BLANK_PROBE_VERIFIED`。
+
+### 几何与安全检查
+
+- 未新增固定 px、坐标点击、手势时长或入口阈值；继续使用既有节点 → 模板 → OCR 几何 → 双锚点顺序和评论面板后验。
+
+### 交接记录
+
+- [`2026-08-25-next-video-unknown-action-rail.md`](docs/2026-08-25-next-video-unknown-action-rail.md)
+
+---
+
+## [未发布] 2026-08-25 —— 评论私信表单文案与任一匹配
+
+### 修改内容
+
+- 评论私信表单：目标用户改为用户昵称；视频上限改为视频数；每视频人数改为评论数；跳过置顶移到表单项最后。
+- 移除匹配方式控件，新建与复用任务一律按任一匹配；匹配词提示为“多个词用，分隔”，解析同时接受中文逗号、英文逗号和历史 `|`。
+- 未改 PageDetector、搜索点击顺序、双锚点优先级或空白探测语义。
+
+### 已验证项
+
+- 中文逗号、英文逗号、历史 `|` 拆分与强制任一匹配的 JVM 用例通过；完整 `testDebugUnitTest`、`lintDebug`、`assembleDebug` 通过。
+- **真机 OnePlus NE2210 / b33aa309 / Android 16**：创建页显示“用户昵称 / 匹配词 / 视频数 / 评论数 / 跳过置顶”，不存在匹配方式控件，跳过置顶位于最后；同一 `2 × 3` 任务最终已处理 6 / 跳过 0 / 失败 0。
+- 调试预置和运行时日志均记录 `skip_pinned=true`；本次目标主页首屏没有可见“置顶”标记，因此自然路径未触发实际跳过分支。已有 JVM 用例继续覆盖开启时排除带“置顶”标记、选择下一视频卡片。
+
+### 几何与安全检查
+
+- 未新增固定 px、自动化坐标或手势时长；首视频选择日志仅记录 0–1 屏幕比例。
+
+### 交接记录
+
+- [`2026-08-25-comment-form-any-match.md`](docs/2026-08-25-comment-form-any-match.md)
+
+---
+
 ## [未发布] 2026-08-25 —— 首页 UNKNOWN 真机诊断与双锚点自然路径再验收
 
 ### 修改内容

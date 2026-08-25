@@ -31,6 +31,11 @@ data class CommentRegressionPreset(
     val skipPinnedVideos: Boolean = false,
     /** Debug-only: inspect the first safe candidate and stop before any profile interaction. */
     val dryRun: Boolean = false,
+    /**
+     * Debug-only default for OPEN_COMMENT_P0: enter the commenter profile, then return to
+     * comments without opening private messages or submitting the blank-space probe.
+     */
+    val skipBlankProbe: Boolean = true,
 )
 
 class MainActivity : ComponentActivity() {
@@ -145,18 +150,12 @@ class MainActivity : ComponentActivity() {
         CommentRegressionPreset(
             targetUser = source.getStringExtra(EXTRA_COMMENT_TARGET_USER)?.takeIf { it.isNotBlank() } ?: "designer",
             matchKeywords = source.getStringExtra(EXTRA_COMMENT_MATCH_KEYWORDS).orEmpty(),
-            matchMode = runCatching {
-                CommentKeywordMatchMode.valueOf(
-                    source.getStringExtra(EXTRA_COMMENT_MATCH_MODE)
-                        ?.trim()
-                        ?.uppercase()
-                        ?: CommentKeywordMatchMode.ANY.name,
-                )
-            }.getOrDefault(CommentKeywordMatchMode.ANY),
+            matchMode = CommentKeywordMatchMode.ANY,
             maxVideos = source.getIntExtra(EXTRA_COMMENT_MAX_VIDEOS, 1).coerceAtLeast(1),
             maxUsersPerVideo = source.getIntExtra(EXTRA_COMMENT_MAX_USERS, 1).coerceAtLeast(1),
             skipPinnedVideos = source.getBooleanExtra(EXTRA_COMMENT_SKIP_PINNED, false),
             dryRun = source.getBooleanExtra(EXTRA_COMMENT_DRY_RUN, false),
+            skipBlankProbe = source.getBooleanExtra(EXTRA_COMMENT_SKIP_BLANK_PROBE, true),
         )
 
     companion object {
@@ -174,11 +173,17 @@ class MainActivity : ComponentActivity() {
         /** M3 parameterized regression extras; only read when OPEN_COMMENT_P0 is set. */
         const val EXTRA_COMMENT_TARGET_USER = "com.example.douyinautomation.COMMENT_TARGET_USER"
         const val EXTRA_COMMENT_MATCH_KEYWORDS = "com.example.douyinautomation.COMMENT_MATCH_KEYWORDS"
+        /** Ignored; comment matching is always ANY. Kept so old ADB extras still parse. */
         const val EXTRA_COMMENT_MATCH_MODE = "com.example.douyinautomation.COMMENT_MATCH_MODE"
         const val EXTRA_COMMENT_MAX_VIDEOS = "com.example.douyinautomation.COMMENT_MAX_VIDEOS"
         const val EXTRA_COMMENT_MAX_USERS = "com.example.douyinautomation.COMMENT_MAX_USERS"
         const val EXTRA_COMMENT_SKIP_PINNED = "com.example.douyinautomation.COMMENT_SKIP_PINNED"
         /** Debug-only candidate inspection; it never taps a commenter or opens private messages. */
         const val EXTRA_COMMENT_DRY_RUN = "com.example.douyinautomation.COMMENT_DRY_RUN"
+        /**
+         * Debug-only. Defaults to true for OPEN_COMMENT_P0: after the commenter profile opens,
+         * return to the comment sheet without the paper-plane entry or blank-space probe.
+         */
+        const val EXTRA_COMMENT_SKIP_BLANK_PROBE = "com.example.douyinautomation.COMMENT_SKIP_BLANK_PROBE"
     }
 }

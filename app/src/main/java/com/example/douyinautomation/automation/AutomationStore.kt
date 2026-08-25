@@ -992,8 +992,14 @@ object AutomationStore {
                 displayName = displayName,
                 status = RemoteTaskRecordStatus.from(outcome),
                 lastAction = page?.name ?: outcome.name,
-                failureCode = reason?.takeIf { outcome != UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED }?.let { outcome.name },
-                failureMessage = reason?.takeIf { outcome != UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED }?.take(512),
+                failureCode = reason?.takeIf {
+                    outcome != UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED &&
+                        outcome != UserTaskRecord.Outcome.PROFILE_OPENED
+                }?.let { outcome.name },
+                failureMessage = reason?.takeIf {
+                    outcome != UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED &&
+                        outcome != UserTaskRecord.Outcome.PROFILE_OPENED
+                }?.take(512),
             ),
         )
     }
@@ -1143,6 +1149,7 @@ object AutomationStore {
         put("max_users_per_video", maxUsersPerVideo)
         put("skip_pinned_videos", skipPinnedVideos)
         put("dry_run", dryRun)
+        put("skip_blank_probe", skipBlankProbe)
     }
 
     private fun JSONObject.toCommentPrivateMessageConfig(): CommentPrivateMessageConfig? = runCatching {
@@ -1168,6 +1175,7 @@ object AutomationStore {
             ),
             skipPinnedVideos = optBoolean("skip_pinned_videos", false),
             dryRun = optBoolean("dry_run", false),
+            skipBlankProbe = optBoolean("skip_blank_probe", false),
         )
     }.getOrNull()
 
@@ -1180,6 +1188,7 @@ object AutomationStore {
         put("max_users_per_video", maxUsersPerVideo)
         put("skip_pinned_videos", skipPinnedVideos)
         put("dry_run", dryRun)
+        put("skip_blank_probe", skipBlankProbe)
     }
 
     private fun JSONObject.toCommentPrivateMessageSnapshot(): CommentPrivateMessageSnapshot? = runCatching {
@@ -1205,6 +1214,7 @@ object AutomationStore {
             ),
             skipPinnedVideos = optBoolean("skip_pinned_videos", false),
             dryRun = optBoolean("dry_run", false),
+            skipBlankProbe = optBoolean("skip_blank_probe", false),
         )
     }.getOrNull()
 

@@ -50,6 +50,16 @@
 - **对照 17:12**：当时是稳定首页 `nodes=71` / `page=UNKNOWN`。本轮稳定首页已是 213 个节点并由既有 `InitialHomeSurfacePolicy`（语义搜索候选，置信度 0.78）判为 `HOME`。17:12 的 `OCR_NOT_TRIGGERED` 假设**未在本轮复现**。
 - **结果**：诊断器可用；启动门改善（进入搜索）。按单假设规则，**不实施**评论任务有界首页 OCR，也不放宽全局 PageDetector。若再次出现稳定首页 `nodes≈71` 且 `cause=OCR_NOT_TRIGGERED`，再单独立项。
 
-## 下一步
+## 第 2 轮最小修改（2026-08-25 17:40 真机复现后）
 
-仅当稳定可见首页再次被判 `UNKNOWN` 且日志为 `OCR_NOT_TRIGGERED` 时，另起一轮：仅对评论任务 `WAITING_FOR_HOME` 的 `UNKNOWN` 增加顶部/底部导航带有界 OCR 双帧确认；OCR 只能把页面归为 `HOME`，搜索入口仍走既有节点/结构/受限兜底顺序。
+- **错误现象**：`室内设计师 / 3×2 / 跳过置顶` 两次均在可见「推荐」首页暂停，`waiting_for_home_unknown [cause=OCR_NOT_TRIGGERED, clickable_nodes=0, ocr_skipped=comment_task]`。
+- **本轮唯一根因假设**：评论任务跳过启动 OCR，自绘首页树没有可点搜索节点，也凑不够两个节点首页标签。
+- **最小修改**：新增 `CommentLaunchHomeOcrPolicy`。仅评论任务、`WAITING_FOR_HOME`、`UNKNOWN`、且不是残留评论面板时，用顶部/底部导航带 OCR 只分类 `HOME`；块不进 `PageDetector`；搜索仍走节点 → 结构 → 既有归一化兜底；双帧沿用 `confirmOcrBackedPage`。
+- **验收**：日志出现 `initial_comment_home_nav_ocr [home=true]`，随后 `search_entry_opened`；不得把评论面板标成 HOME。
+
+### 真机 2026-08-25 17:53（改善）
+
+- **设备**：OnePlus NE2210 / ADB `b33aa309` / Android 16。
+- **操作路径**：覆盖安装后不 force-stop 抖音；推荐首页经 `OPEN_COMMENT_P0` 启动「室内设计师 / 3 视频 / 每视频 2 评论 / 跳过置顶」。
+- **实际**：`initial_comment_home_nav_ocr [home=true, top_hits=5, bottom_hits=4]`，双帧后 `search_entry_opened [route=bounds_gesture]`。`comment_runtime_started [max_videos=3, per_video_cap=2, skip_pinned=true]`。三次视频各 2 次空白探测，全部 `BLANK_PROBE_VERIFIED`，`comment_runtime_terminal COMPLETED`。
+- **结果**：改善。搜索仍走既有节点/结构/归一化兜底，未把 OCR 交给 PageDetector。

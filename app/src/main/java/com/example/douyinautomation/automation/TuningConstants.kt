@@ -29,6 +29,18 @@ object TuningConstants {
         const val INITIAL_OCR_RETRY_EVERY_OBSERVATIONS = 2
         const val INITIAL_OCR_MAX_ATTEMPTS = 6
 
+        /**
+         * Comment tasks skip launch-page OCR so a leftover comment sheet is not promoted to HOME.
+         * A separate, smaller budget may OCR only for [CommentSurfaceDetector] confirmation.
+         */
+        const val NESTED_COMMENT_SURFACE_OCR_MAX_ATTEMPTS = 2
+
+        /**
+         * Comment-task WAITING_FOR_HOME UNKNOWN may OCR top/bottom nav bands to classify HOME.
+         * These blocks are not given to [PageDetector]; search still uses node → structural → fallback.
+         */
+        const val COMMENT_LAUNCH_HOME_NAV_OCR_MAX_ATTEMPTS = 2
+
         /** A detected OCR-backed message page needs this many stable observations. */
         const val OCR_PAGE_STABLE_OBSERVATIONS = 2
     }
@@ -47,10 +59,19 @@ object TuningConstants {
         const val PRIVATE_MESSAGE_ENTRY_ATTEMPTS = 4
         const val PRIVATE_MESSAGE_ENTRY_RETRY_DELAY_MS = 500L
         const val PRIVATE_MESSAGE_ENTRY_POSTCONDITION_TIMEOUT_MS = 3_200L
-        const val RETURN_TO_COMMENT_DELAY_MS = 250L
+        /**
+         * Between the two BACKs that return from a commenter's DM/profile to the comment sheet.
+         * Keep this short; do not reuse [NavigationFlow.INITIAL_SURFACE_RECOVERY_BACK_DELAY_MS].
+         */
+        const val RETURN_TO_COMMENT_DELAY_MS = 120L
         const val WORKS_SORT_SETTLE_MS = 140L
 
-        const val FIRST_VIDEO_TRANSITION_PROBE_ATTEMPTS = 3
+        /**
+         * A profile thumbnail can acknowledge its click before the detail player mounts. This
+         * device exposed the media surface about four seconds later, so keep reading the same
+         * live tree within the existing 18-second video-page watchdog.
+         */
+        const val FIRST_VIDEO_TRANSITION_PROBE_ATTEMPTS = 24
         const val FIRST_VIDEO_TRANSITION_INITIAL_DELAY_MS = 200L
         const val FIRST_VIDEO_TRANSITION_PROBE_INTERVAL_MS = 300L
         const val NEXT_VIDEO_TRANSITION_PROBE_ATTEMPTS = 24
@@ -88,8 +109,25 @@ object TuningConstants {
         const val MAX_LIVE_ROOM_EXITS = 3
         const val MAX_LIVE_ROOM_SWIPES = 3
         const val LIVE_ROOM_SWIPE_DURATION_MS = 460L
+        /**
+         * Profile-player next-work swipe. Restore the 0.84→0.28 travel that completed a 2-video
+         * batch; the upper-canvas 0.38→0.12 path still reopened a continuation list (~0.57).
+         */
+        const val NEXT_VIDEO_SWIPE_START_Y = 0.84f
+        const val NEXT_VIDEO_SWIPE_END_Y = 0.28f
         const val NEXT_VIDEO_SWIPE_DURATION_MS = 520L
         const val NEXT_VIDEO_SETTLE_MS = 700L
+        /**
+         * Close the comment sheet before the next-video swipe. BACK only when the sheet is open;
+         * then poll until it is gone. Do not reuse [RETURN_TO_COMMENT_DELAY_MS].
+         */
+        const val NEXT_VIDEO_SHEET_CLOSE_POLL_ATTEMPTS = 12
+        const val NEXT_VIDEO_SHEET_CLOSE_POLL_INTERVAL_MS = 150L
+        /** Consecutive closed-player frames required before the next-video swipe. */
+        const val NEXT_VIDEO_CLOSED_PLAYER_STABLE_SAMPLES = 3
+        /** First swipe plus one retry only if the comment sheet is still open. */
+        const val NEXT_VIDEO_SWIPE_MAX_ATTEMPTS = 2
+        const val NEXT_VIDEO_SHEET_OPEN_RETRY_THRESHOLD = 2
         const val BLANK_PROBE_NODE_DUMP_DIRECTORY = "diagnostics/nodes"
     }
 
@@ -142,7 +180,20 @@ object TuningConstants {
         const val PRIVATE_MESSAGE_ENTRY_POSTCONDITION_INITIAL_DELAY_MS = 500L
         const val PRIVATE_MESSAGE_ENTRY_POSTCONDITION_INTERVAL_MS = 450L
         const val PRIVATE_MESSAGE_ENTRY_OCR_PROBE_ATTEMPT = 2
-        const val USER_PROFILE_BACK_DELAY_MS = 700L
+        /**
+         * First sample after leaving a profile/DM. Callers poll until the accepted page is
+         * classified or [USER_PROFILE_BACK_POLL_ATTEMPTS] is spent. Do not reuse for startup
+         * leftover-sheet recovery.
+         */
+        const val USER_PROFILE_BACK_DELAY_MS = 200L
+        const val USER_PROFILE_BACK_POLL_INTERVAL_MS = 150L
+        const val USER_PROFILE_BACK_POLL_ATTEMPTS = 4
+        /**
+         * Startup-only. Used exclusively by [DouyinNavigationController.recoverInitialSurface]
+         * when closing a leftover comment sheet. Never reuse this for comment-runtime
+         * return-to-sheet (two BACKs after a blank probe) or B-end profile/results BACK.
+         */
+        const val INITIAL_SURFACE_RECOVERY_BACK_DELAY_MS = 2_000L
         const val MAX_BACK_ACTIONS_TO_SEARCH_ENTRY = 3
         const val MAX_INITIAL_HOME_BACK_ACTIONS = 5
         const val MAX_INITIAL_BLIND_BACK_ACTIONS = 4

@@ -111,6 +111,7 @@ import com.example.douyinautomation.automation.AuthStore
 import com.example.douyinautomation.automation.AutomationTaskType
 import com.example.douyinautomation.automation.CommentPrivateMessageConfig
 import com.example.douyinautomation.automation.CommentPrivateMessageEntryMode
+import com.example.douyinautomation.automation.CommentKeywordMatcher
 import com.example.douyinautomation.automation.CommentKeywordMatchMode
 import com.example.douyinautomation.automation.LicenseStatus
 import com.example.douyinautomation.automation.LocalTaskQueuePolicy
@@ -978,7 +979,6 @@ private fun CommentTaskScreen(
     var targetUser by rememberSaveable { mutableStateOf(if (useP0RegressionDefaults) "designer" else "") }
     var taskName by rememberSaveable { mutableStateOf("") }
     var matchKeywords by rememberSaveable { mutableStateOf("") }
-    var matchMode by rememberSaveable { mutableStateOf(CommentKeywordMatchMode.ANY) }
     var maxVideos by rememberSaveable { mutableStateOf("1") }
     var maxUsers by rememberSaveable { mutableStateOf(if (useP0RegressionDefaults) "1" else "5") }
     var skipPinnedVideos by rememberSaveable { mutableStateOf(false) }
@@ -1000,7 +1000,6 @@ private fun CommentTaskScreen(
             targetUser = preset.targetUser
             taskName = ""
             matchKeywords = preset.matchKeywords
-            matchMode = preset.matchMode
             maxVideos = preset.maxVideos.toString()
             maxUsers = preset.maxUsersPerVideo.toString()
             skipPinnedVideos = preset.skipPinnedVideos
@@ -1035,12 +1034,13 @@ private fun CommentTaskScreen(
     val config = CommentPrivateMessageConfig(
         entryMode = entryMode,
         targetUser = targetUser.trim().takeIf { it.isNotEmpty() },
-        matchKeywords = matchKeywords.split('|'),
-        matchMode = matchMode,
+        matchKeywords = CommentKeywordMatcher.parseOperatorInput(matchKeywords),
+        matchMode = CommentKeywordMatchMode.ANY,
         maxVideos = maxVideos.toIntOrNull() ?: 0,
         maxUsersPerVideo = maxUsers.toIntOrNull() ?: 0,
         skipPinnedVideos = skipPinnedVideos,
         dryRun = regressionPreset?.dryRun == true,
+        skipBlankProbe = regressionPreset?.skipBlankProbe == true,
     )
     val draft = TaskDraft(
         id = java.util.UUID.randomUUID().toString(),
@@ -1095,12 +1095,13 @@ private fun CommentTaskScreen(
         val liveConfig = CommentPrivateMessageConfig(
             entryMode = entryMode,
             targetUser = targetUser.trim().takeIf { it.isNotEmpty() },
-            matchKeywords = matchKeywords.split('|'),
-            matchMode = matchMode,
+            matchKeywords = CommentKeywordMatcher.parseOperatorInput(matchKeywords),
+            matchMode = CommentKeywordMatchMode.ANY,
             maxVideos = maxVideos.toIntOrNull() ?: 0,
             maxUsersPerVideo = maxUsers.toIntOrNull() ?: 0,
             skipPinnedVideos = skipPinnedVideos,
             dryRun = regressionPreset?.dryRun == true,
+            skipBlankProbe = regressionPreset?.skipBlankProbe == true,
         )
         val liveDraft = TaskDraft(
             id = java.util.UUID.randomUUID().toString(),
@@ -1158,21 +1159,12 @@ private fun CommentTaskScreen(
             onValueChange = { targetUser = it },
             modifier = Modifier.fillMaxWidth().height(50.dp),
             textStyle = MaterialTheme.typography.bodyMedium,
-            label = "目标用户",
+            label = "用户昵称",
             placeholder = "用户名或搜索词",
             taskForm = true,
             inlineLabel = true,
             singleLine = true,
         )
-        Row(
-            modifier = Modifier.fillMaxWidth().height(50.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            TaskFormFieldLabel("跳过置顶")
-            Spacer(modifier = Modifier.weight(1f))
-            Switch(checked = skipPinnedVideos, onCheckedChange = { skipPinnedVideos = it })
-        }
         CompactOutlinedTextField(
             value = taskName,
             onValueChange = { taskName = it },
@@ -1190,39 +1182,17 @@ private fun CommentTaskScreen(
             modifier = Modifier.fillMaxWidth().height(50.dp),
             textStyle = MaterialTheme.typography.bodyMedium,
             label = "匹配词",
-            placeholder = "多个词用 | 分隔",
+            placeholder = "多个词用，分隔",
             taskForm = true,
             inlineLabel = true,
             singleLine = true,
         )
-        Row(
-            modifier = Modifier.fillMaxWidth().height(50.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TaskFormFieldLabel("匹配方式")
-            Row(
-                modifier = Modifier.weight(1f),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                FormChoiceChip(
-                    selected = matchMode == CommentKeywordMatchMode.ANY,
-                    onClick = { matchMode = CommentKeywordMatchMode.ANY },
-                    label = "任一匹配",
-                )
-                FormChoiceChip(
-                    selected = matchMode == CommentKeywordMatchMode.ALL,
-                    onClick = { matchMode = CommentKeywordMatchMode.ALL },
-                    label = "全部匹配",
-                )
-            }
-        }
         CompactOutlinedTextField(
             value = maxVideos,
             onValueChange = { maxVideos = it.filter(Char::isDigit) },
             modifier = Modifier.fillMaxWidth().height(50.dp),
             textStyle = MaterialTheme.typography.bodyMedium,
-            label = "视频上限",
+            label = "视频数",
             taskForm = true,
             inlineLabel = true,
             singleLine = true,
@@ -1232,11 +1202,20 @@ private fun CommentTaskScreen(
             onValueChange = { maxUsers = it.filter(Char::isDigit) },
             modifier = Modifier.fillMaxWidth().height(50.dp),
             textStyle = MaterialTheme.typography.bodyMedium,
-            label = "每视频人数",
+            label = "评论数",
             taskForm = true,
             inlineLabel = true,
             singleLine = true,
         )
+        Row(
+            modifier = Modifier.fillMaxWidth().height(50.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            TaskFormFieldLabel("跳过置顶")
+            Spacer(modifier = Modifier.weight(1f))
+            Switch(checked = skipPinnedVideos, onCheckedChange = { skipPinnedVideos = it })
+        }
         if (errors.isNotEmpty()) {
             Text(
                 errors.first(),
@@ -2471,7 +2450,7 @@ private fun TaskHistoryEntry.toReusableDraft(): TaskDraft = TaskDraft(
             entryMode = config.entryMode,
             targetUser = config.targetUser,
             matchKeywords = config.matchKeywords,
-            matchMode = config.matchMode,
+            matchMode = CommentKeywordMatchMode.ANY,
             maxVideos = config.maxVideos,
             maxUsersPerVideo = config.maxUsersPerVideo,
             skipPinnedVideos = config.skipPinnedVideos,
@@ -2504,7 +2483,10 @@ private fun UserTaskResultCard(record: UserTaskRecord) {
                 )
                 Text(
                     recordOutcomeLabel(record.outcome),
-                    color = if (record.outcome == UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED) AutomationSuccess else AutomationError,
+                    color = if (
+                        record.outcome == UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED ||
+                        record.outcome == UserTaskRecord.Outcome.PROFILE_OPENED
+                    ) AutomationSuccess else AutomationError,
                     fontWeight = FontWeight.Medium,
                     style = MaterialTheme.typography.bodySmall,
                     softWrap = true,
@@ -2674,6 +2656,8 @@ private fun recordReasonLabel(record: UserTaskRecord): String {
     return when (record.outcome) {
         UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED ->
             "抖音提示不能发送空白消息，安全探测已完成，未发送真实内容。"
+        UserTaskRecord.Outcome.PROFILE_OPENED ->
+            "已进入评论用户主页并返回评论区，未打开私信、未发送内容。"
         UserTaskRecord.Outcome.MESSAGE_SEND_FAILED -> when {
             raw.contains("setting") || raw.contains("rejected") ->
                 "对方设置了私信权限限制，当前消息无法发送，系统已自动跳过。"
@@ -2723,6 +2707,7 @@ private fun taskErrorLabel(error: String): String {
 private fun recordOutcomeLabel(outcome: UserTaskRecord.Outcome): String = when (outcome) {
     UserTaskRecord.Outcome.IN_PROGRESS -> "处理中"
     UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED -> "模拟发送成功"
+    UserTaskRecord.Outcome.PROFILE_OPENED -> "已进主页（跳过私信）"
     UserTaskRecord.Outcome.PRIVATE_MESSAGE_UNAVAILABLE -> "私信入口不可用"
     UserTaskRecord.Outcome.MESSAGE_SEND_FAILED -> "发送失败"
     UserTaskRecord.Outcome.FOLLOW_BACK_SKIPPED -> "回关用户已跳过"

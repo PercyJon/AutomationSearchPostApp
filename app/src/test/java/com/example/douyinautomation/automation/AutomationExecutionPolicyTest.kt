@@ -56,7 +56,7 @@ class AutomationExecutionPolicyTest {
             ),
         )
 
-        assertEquals("视频数量上限必须在 1-500 之间", AutomationTaskLimitPolicy.taskValidationError(invalid))
+        assertEquals("视频数必须在 1-500 之间", AutomationTaskLimitPolicy.taskValidationError(invalid))
     }
 
     @Test

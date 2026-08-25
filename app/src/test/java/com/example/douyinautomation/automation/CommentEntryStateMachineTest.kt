@@ -337,7 +337,7 @@ class CommentEntryStateMachineTest {
             screenSize = screen,
             packageName = "com.ss.android.ugc.aweme",
             nodes = listOf(
-                NodeSnapshot(text = "作品 33"),
+                NodeSnapshot(text = "作品 33", bounds = ScreenBounds(40, 840, 500, 880)),
                 NodeSnapshot(
                     className = "android.widget.ImageView",
                     bounds = ScreenBounds(40, 900, 520, 1420),
@@ -371,7 +371,7 @@ class CommentEntryStateMachineTest {
             screenSize = screen,
             packageName = "com.ss.android.ugc.aweme",
             nodes = listOf(
-                NodeSnapshot(text = "作品 33"),
+                NodeSnapshot(text = "作品 33", bounds = ScreenBounds(40, 840, 500, 880)),
                 NodeSnapshot(text = "发私信", isClickable = true),
                 NodeSnapshot(text = "抖音号：demo"),
                 second,
@@ -396,7 +396,7 @@ class CommentEntryStateMachineTest {
             screenSize = screen,
             packageName = "com.ss.android.ugc.aweme",
             nodes = listOf(
-                NodeSnapshot(text = "作品 701"),
+                NodeSnapshot(text = "作品 701", bounds = ScreenBounds(40, 1500, 500, 1620)),
                 NodeSnapshot(text = "发私信", isClickable = true),
                 NodeSnapshot(text = "抖音号：designer"),
                 thumbnail,
@@ -424,7 +424,7 @@ class CommentEntryStateMachineTest {
             screenSize = screen,
             packageName = "com.ss.android.ugc.aweme",
             nodes = listOf(
-                NodeSnapshot(text = "作品 41"),
+                NodeSnapshot(text = "作品 41", bounds = ScreenBounds(40, 1500, 500, 1620)),
                 NodeSnapshot(text = "发私信", isClickable = true),
                 NodeSnapshot(text = "抖音号：designer"),
                 pinned,
@@ -436,6 +436,100 @@ class CommentEntryStateMachineTest {
         val observation = CommentEntrySignalDetector.observe(context, skipPinnedVideos = true)
 
         assertEquals(latest.hierarchyPath, observation.firstVideoTarget?.hierarchyPath)
+    }
+
+    @Test
+    fun `store card is never selected as the first video work`() {
+        val store = NodeSnapshot(
+            hierarchyPath = listOf(4, 0, 0),
+            className = "android.widget.ImageView",
+            bounds = ScreenBounds(46, 900, 507, 1361),
+        )
+        val work = store.copy(
+            hierarchyPath = listOf(4, 0, 1),
+            bounds = ScreenBounds(530, 900, 991, 1361),
+        )
+        val context = ScreenContext(
+            screenSize = screen,
+            packageName = "com.ss.android.ugc.aweme",
+            nodes = listOf(
+                NodeSnapshot(text = "作品 41", bounds = ScreenBounds(40, 840, 500, 880)),
+                NodeSnapshot(text = "发私信", isClickable = true),
+                NodeSnapshot(text = "抖音号：designer"),
+                store,
+                work,
+            ),
+            ocrBlocks = listOf(OcrTextBlock("进入店铺", ScreenBounds(52, 920, 180, 980))),
+        )
+
+        val observation = CommentEntrySignalDetector.observe(context, skipPinnedVideos = true)
+
+        assertEquals(work.hierarchyPath, observation.firstVideoTarget?.hierarchyPath)
+    }
+
+    @Test
+    fun `works tab anchor excludes profile cards above the works grid`() {
+        val worksTab = NodeSnapshot(
+            hierarchyPath = listOf(2),
+            className = "androidx.appcompat.app.ActionBar\$Tab",
+            text = "作品 112 ▼",
+            bounds = ScreenBounds(0, 900, 360, 1000),
+            isVisibleToUser = true,
+            isSelected = true,
+        )
+        val profileCard = NodeSnapshot(
+            hierarchyPath = listOf(3, 0),
+            className = "android.widget.ImageView",
+            bounds = ScreenBounds(40, 820, 520, 960),
+        )
+        val work = profileCard.copy(
+            hierarchyPath = listOf(4, 0),
+            bounds = ScreenBounds(40, 1080, 520, 1540),
+        )
+        val context = ScreenContext(
+            screenSize = screen,
+            packageName = "com.ss.android.ugc.aweme",
+            nodes = listOf(
+                worksTab,
+                NodeSnapshot(text = "发私信", isClickable = true),
+                NodeSnapshot(text = "抖音号：designer"),
+                profileCard,
+                work,
+            ),
+        )
+
+        val observation = CommentEntrySignalDetector.observe(context)
+
+        assertEquals(work.hierarchyPath, observation.firstVideoTarget?.hierarchyPath)
+    }
+
+    @Test
+    fun `ocr works label anchors a node-only works grid without using its count`() {
+        val profileCard = NodeSnapshot(
+            hierarchyPath = listOf(3, 0),
+            className = "android.widget.ImageView",
+            bounds = ScreenBounds(40, 820, 520, 960),
+        )
+        val work = profileCard.copy(
+            hierarchyPath = listOf(4, 0),
+            bounds = ScreenBounds(40, 1080, 520, 1540),
+        )
+        val context = ScreenContext(
+            screenSize = screen,
+            packageName = "com.ss.android.ugc.aweme",
+            nodes = listOf(
+                NodeSnapshot(text = "发私信", isClickable = true),
+                NodeSnapshot(text = "抖音号：designer"),
+                profileCard,
+                work,
+            ),
+            ocrBlocks = listOf(OcrTextBlock("作品 112 ▼", ScreenBounds(0, 900, 360, 1000))),
+        )
+
+        val observation = CommentEntrySignalDetector.observe(context)
+
+        assertTrue(CommentEntrySignalDetector.hasWorksGridAnchor(context))
+        assertEquals(work.hierarchyPath, observation.firstVideoTarget?.hierarchyPath)
     }
 
     @Test
@@ -525,7 +619,7 @@ class CommentEntryStateMachineTest {
             screenSize = ScreenSize(1080, 2412),
             packageName = "com.ss.android.ugc.aweme",
             nodes = listOf(
-                NodeSnapshot(text = "作品 4"),
+                NodeSnapshot(text = "作品 4", bounds = ScreenBounds(40, 1000, 500, 1100)),
                 NodeSnapshot(text = "发私信", isClickable = true),
                 NodeSnapshot(text = "抖音号：1178711787"),
                 thumbnail,

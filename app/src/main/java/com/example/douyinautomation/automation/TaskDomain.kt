@@ -109,11 +109,12 @@ data class TaskDraft(
                     entryMode = config.entryMode,
                     targetUser = config.targetUser,
                     matchKeywords = config.matchKeywords,
-                    matchMode = config.matchMode,
+                    matchMode = CommentKeywordMatchMode.ANY,
                     maxVideos = config.maxVideos,
                     maxUsersPerVideo = config.maxUsersPerVideo,
                     skipPinnedVideos = config.skipPinnedVideos,
                     dryRun = config.dryRun,
+                    skipBlankProbe = config.skipBlankProbe,
                 )
             },
         )
