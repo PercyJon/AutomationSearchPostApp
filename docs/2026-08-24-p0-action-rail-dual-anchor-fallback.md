@@ -47,6 +47,15 @@
 - 任务结果：3 个视频均完成，3 位评论用户均为 `BLANK_PROBE_VERIFIED`；日志没有点赞、收藏、分享动作或真实消息发送。最后记录为 `comment_video_batch_completed [video_count=3]` 与 `comment_runtime_terminal [outcome=COMPLETED]`。
 - 本轮结果：**改善**。先前“离线图像命中但真机没有候选日志”的不一致已定位为当时采样帧中动作栏未显现；新诊断显示隐藏帧会得到 `like_available=false`，而右栏显现的稳定帧可在真机匹配两个锚点。尚未在“节点、评论模板和 OCR 均失败”的真实场景中实际点击双锚点推导位置，因此不把它宣告为已实机点击验证。
 
+## 2026-08-25 自然路径再验收
+
+- **设备与路径**：OnePlus NE2210 / `b33aa309` / Android 16；同一 `designer × 3 × 1` 空白消息安全路径。本轮不调整双锚点阈值、时序或优先级。
+- **任务结果**：记录 `designer-20260825-104801` 状态「已完成」，已处理 3 / 跳过 0 / 失败 0；可见用户为 `BLANK_PROBE_VERIFIED`。`comment_runtime_terminal [outcome=COMPLETED]`。
+- **评论入口**：已捕获的 `comment_open_panel` 为 `route=bounds_gesture` 且无 `source=dual_anchor_fallback` / `ocr_fallback` / `template_fallback`，对应更高优先级的无障碍节点路径。
+- **双锚点探测**：过渡帧记录 `action_rail_dual_anchor_probe [like_available=false, collect_attempted=false]`。没有 `action_rail_dual_anchor_candidate`、双帧确认或 `source=dual_anchor_fallback`。
+- **安全**：日志没有点赞、收藏、分享点击，也没有真实私信发送。
+- **本轮结果**：整体路径通过；低优先级双锚点实点击仍为**无变化**。原因是更高优先级入口已打开评论面板，且本轮采样帧点赞锚点不可用，不满足“节点、模板、OCR 均失败但动作栏清晰”的验收前置。不调整阈值。
+
 ## 后续验证边界
 
 若后续遇到“动作栏可见、无障碍/评论模板/OCR 均不能定位评论入口”的真实视频，保持相同安全路径：连续两帧双锚点稳定 → 推导中间评论槽 → 点击后评论面板确认。届时只验证该回退分支，不调整阈值或让其抢占已有高优先级入口。

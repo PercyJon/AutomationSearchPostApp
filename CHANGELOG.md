@@ -4,6 +4,51 @@
 
 ---
 
+## [未发布] 2026-08-25 —— 首页 UNKNOWN 真机诊断与双锚点自然路径再验收
+
+### 修改内容
+
+- 未改 PageDetector、OCR 跳过策略、搜索点击顺序或双锚点优先级。本轮只安装含只读诊断的 Debug APK，在真机上确认 `waiting_for_home_unknown` 的 cause，并沿既有 `designer × 3 × 1` 空白探测观察双锚点分支。
+- 因本轮稳定首页被判为 `HOME`（213 节点，语义搜索候选），17:12 的 `OCR_NOT_TRIGGERED` 未复现，故不实施评论任务有界首页 OCR。
+
+### 已验证项
+
+- **真机 OnePlus NE2210 / b33aa309 / Android 16**：系统「允许打开抖音」弹窗期间 `cause=MISSING_NODES`；弹窗消失后 `page=HOME`、`nodes=213`，随后进入搜索。任务 `designer-20260825-104801` 完成，已处理 3 / 跳过 0 / 失败 0。双锚点探测为 `like_available=false`，无 `source=dual_anchor_fallback`，无点赞/收藏/分享或真实消息。
+- 后端已重启，`ensure_automation_device_menu` 写入已有库。超管打开「自动化管理 → 设备管理」，可见相关内容且有一条记录，操作者确认正常。
+
+### 几何与安全检查
+
+- 未新增固定 px、自动化坐标或手势时长。
+
+### 交接记录
+
+- [`2026-08-25-waiting-for-home-unknown-diagnosis.md`](docs/2026-08-25-waiting-for-home-unknown-diagnosis.md)
+- [`2026-08-24-p0-action-rail-dual-anchor-fallback.md`](docs/2026-08-24-p0-action-rail-dual-anchor-fallback.md)
+
+---
+
+## [未发布] 2026-08-25 —— WAITING_FOR_HOME 稳定首页 UNKNOWN 诊断
+
+### 修改内容
+
+- 仅为 `WAITING_FOR_HOME` 的 `UNKNOWN` 启动帧增加只读诊断：同一帧记录节点类别/数量、首页语义命中、两个搜索选择器拒绝原因、遮罩结果、OCR 是否跳过。
+- `cause` 区分为节点缺失、语义缺失、遮罩拒绝、OCR 未触发、稳定门未通过五类；不改点击、BACK、PageDetector 或 OCR 跳过策略。
+
+### 已验证项
+
+- `WaitingForHomeUnknownDiagnosticsTest` 以及 `./gradlew :app:testDebugUnitTest --tests com.example.douyinautomation.automation.WaitingForHomeUnknownDiagnosticsTest :app:lintDebug :app:assembleDebug` 通过。
+- 对照 2026-08-24 17:12 真机签名（`nodes=71`、`ocr_blocks=0`、评论任务跳过初始 OCR），诊断器归类为 `OCR_NOT_TRIGGERED`。本轮未启动抖音或任务。
+
+### 几何与安全检查
+
+- 未新增固定 px、自动化坐标或手势时长；日志中的选择器/遮罩区域仅为 0–1 屏幕比例。
+
+### 交接记录
+
+- [`2026-08-25-waiting-for-home-unknown-diagnosis.md`](docs/2026-08-25-waiting-for-home-unknown-diagnosis.md)
+
+---
+
 ## [未发布] 2026-08-25 —— 账号设备绑定与服务端退出同步
 
 ### 修改内容

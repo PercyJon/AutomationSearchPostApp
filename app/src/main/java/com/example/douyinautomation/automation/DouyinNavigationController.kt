@@ -164,6 +164,8 @@ class DouyinNavigationController(
     private var initialOcrAttempts = 0
     /** True from normal target launch until initial HOME/search evidence is positively classified. */
     private var initialHomeClassificationPending = false
+    /** One sanitized geometry dump per WAITING_FOR_HOME UNKNOWN session; never includes node text. */
+    private var homeUnknownGeometryDumpSaved = false
     /** Number of bounded blind BACK actions used while the target tree is temporarily unavailable. */
     private var initialBlindBackAttempts = 0
     private var latestContext: ScreenContext? = null
@@ -376,6 +378,14 @@ class DouyinNavigationController(
                 "initial_unknown_deferred",
                 message = "The launch surface is not classified yet; continuing bounded observation without BACK",
             )
+            logWaitingForHomeUnknownDiagnosis(
+                context = context,
+                detectedPage = detection.kind,
+                normalizedPage = detection.kind,
+                observationAttempt = 0,
+                stableObservations = 0,
+                ocrSkippedReason = if (isCommentPrivateMessageTask()) "comment_task" else "none",
+            )
             return
         }
         if (detection.kind == PageKind.HUMAN_INTERVENTION) {
@@ -524,6 +534,7 @@ class DouyinNavigationController(
         pendingSafetyProbe = safetyProbe
         pausedPhase = null
         initialOcrAttempts = 0
+        homeUnknownGeometryDumpSaved = false
         initialBlindBackAttempts = 0
         // A prior POC can leave a profile/result snapshot in memory. Startup normalization must
         // inspect the freshly launched target surface rather than reuse that stale tree.
@@ -985,6 +996,7 @@ class DouyinNavigationController(
         pendingSafetyProbe = checkpoint.snapshot.executionMode == TaskExecutionMode.SAFE_BLANK_PROBE
         pausedPhase = null
         initialOcrAttempts = 0
+        homeUnknownGeometryDumpSaved = false
         initialBlindBackAttempts = 0
         latestContext = null
         latestOcrContext = null
@@ -5300,6 +5312,14 @@ class DouyinNavigationController(
                             message = "The launch surface has no node tree yet; continuing bounded observation without BACK",
                             attributes = mapOf("observation" to observationAttempt + 1),
                         )
+                        logWaitingForHomeUnknownDiagnosis(
+                            context = null,
+                            detectedPage = null,
+                            normalizedPage = null,
+                            observationAttempt = observationAttempt + 1,
+                            stableObservations = 0,
+                            ocrSkippedReason = if (isCommentPrivateMessageTask()) "comment_task" else "none",
+                        )
                         return@repeat
                     }
                     logger.warn(
@@ -5316,6 +5336,7 @@ class DouyinNavigationController(
                     }
                     return@launch
                 }
+                val ocrSkippedReason = initialUnknownOcrSkipReason(context, observationAttempt)
                 val augmentedContext = augmentInitialUnknownWithOcr(context, observationAttempt)
                 val detected = pageDetector.detect(augmentedContext)
                 // Check the launch overlay before trusting the page classifier. An ad can leave
@@ -5360,6 +5381,16 @@ class DouyinNavigationController(
                         "ocr_blocks" to augmentedContext.ocrBlocks.size,
                     ),
                 )
+                if (detection.kind == PageKind.UNKNOWN) {
+                    logWaitingForHomeUnknownDiagnosis(
+                        context = augmentedContext,
+                        detectedPage = detected.kind,
+                        normalizedPage = detection.kind,
+                        observationAttempt = observationAttempt + 1,
+                        stableObservations = 0,
+                        ocrSkippedReason = ocrSkippedReason,
+                    )
+                }
                 if (detection.kind in TuningConstants.NavigationFlow.INITIAL_READY_PAGE_KINDS) {
                     if (detection.kind == lastReadyKind) {
                         readyObservations++
@@ -5430,6 +5461,67 @@ class DouyinNavigationController(
         latestContext
             ?.takeIf { it.packageName == TargetAppLauncher.DOUYIN_PACKAGE }
             ?.takeIf { System.currentTimeMillis() - it.capturedAtMillis <= TuningConstants.NavigationFlow.INITIAL_CONTEXT_MAX_AGE_MS }
+
+    private fun initialUnknownOcrSkipReason(context: ScreenContext, observationAttempt: Int): String {
+        if (pageDetector.detect(context).kind != PageKind.UNKNOWN) return "not_needed"
+        if (isCommentPrivateMessageTask()) return "comment_task"
+        if (observationAttempt % TuningConstants.NavigationLifecycle.INITIAL_OCR_RETRY_EVERY_OBSERVATIONS != 0) {
+            return "not_due"
+        }
+        if (initialOcrAttempts >= TuningConstants.NavigationLifecycle.INITIAL_OCR_MAX_ATTEMPTS) return "max_attempts"
+        if (ocr == null) return "engine_missing"
+        return "none"
+    }
+
+    private fun logWaitingForHomeUnknownDiagnosis(
+        context: ScreenContext?,
+        detectedPage: PageKind?,
+        normalizedPage: PageKind?,
+        observationAttempt: Int,
+        stableObservations: Int,
+        ocrSkippedReason: String,
+    ) {
+        val report = WaitingForHomeUnknownDiagnostics.analyze(
+            context = context,
+            selector = selector,
+            detectedPage = detectedPage,
+            normalizedPage = normalizedPage,
+            stableObservations = stableObservations,
+            ocrSkippedReason = ocrSkippedReason,
+        )
+        logger.info(
+            "waiting_for_home_unknown",
+            message = "Startup UNKNOWN diagnosis; no click or BACK is taken from this record",
+            attributes = report.toLogAttributes() + mapOf("observation" to observationAttempt),
+        )
+        if (!homeUnknownGeometryDumpSaved) {
+            saveSanitizedHomeUnknownDump(report)
+        }
+    }
+
+    private fun saveSanitizedHomeUnknownDump(report: WaitingForHomeUnknownDiagnostics.Report) {
+        val directory = File(service.filesDir, TuningConstants.NavigationFlow.NODE_DUMP_DIRECTORY)
+        if (!directory.exists() && !directory.mkdirs()) {
+            logger.error("node_dump_failed", message = "Could not create private node-dump directory")
+            return
+        }
+        val destination = File(directory, "nodes_${System.currentTimeMillis()}_waiting_for_home_unknown.txt")
+        runCatching { destination.writeText(report.geometrySummary()) }
+            .onSuccess {
+                homeUnknownGeometryDumpSaved = true
+                logger.info(
+                    "waiting_for_home_unknown_dump_saved",
+                    attributes = mapOf("file" to destination.name, "cause" to report.cause.name),
+                )
+            }
+            .onFailure { error ->
+                logger.error(
+                    "waiting_for_home_unknown_dump_failed",
+                    message = "Could not write sanitized home UNKNOWN summary",
+                    throwable = error,
+                )
+            }
+    }
 
     private fun hasInitialSearchSelectorCandidate(context: ScreenContext): Boolean =
         selector.select(context, DouyinSelectors.searchEntry).node != null ||
