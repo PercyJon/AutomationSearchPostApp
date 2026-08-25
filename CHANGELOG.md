@@ -4,6 +4,32 @@
 
 ---
 
+## [未发布] 2026-08-25 —— 换片确认不再被上一条评论滚动挡住
+
+### 修复前记录
+
+- 错误现象：室内设计师 / 3×2 / 不跳过置顶 / 完整私信，前两条各完成 2 人后失败，报「评论流程超时：等待下一视频动作栏验证」。
+- 稳定复现：OnePlus NE2210，先 `am force-stop` 抖音，再跑同一任务。第二条视频为凑满 2 人滚动过一次。
+- 预期：第三条视频被确认并再处理 2 人，任务 `COMPLETED`。
+- 实际：打开过第三条评论区，但 `scroll_count=1` 使确认门被跳过，`video_index` 停在 1，随后空滑超时。
+
+### 本轮唯一根因假设
+
+换片确认门要求 `scrollCount == 0`，但该计数属于刚做完的视频；滚过的视频会把 `1` 带进下一条，导致确认被跳过、旧上限立即再换片。
+
+### 最小修改
+
+开始换片时把评论列表滚动计数清零；确认门改为 `NextVideoAdvancePolicy.shouldEvaluateNextVideoViewportGate`。不改点击、OCR、手势和私信探测。
+
+### 真机验证
+
+- **设备**：OnePlus NE2210 / `b33aa309` / Android 16。
+- **条件**：先 `am force-stop` 抖音；室内设计师 / 3 视频 / 每视频 2 评论 / 不跳过置顶 / 完整私信。
+- 日志：`video_index=1`、`video_index=2` 均确认；`comment_video_batch_completed [video_count=3]`；6 次 `BLANK_PROBE_VERIFIED`；`comment_runtime_terminal [outcome=COMPLETED]`。
+- 结果：**改善**。第二条视频换片后第三条被确认并处理 2 人，未再因旧 `scrollCount` 空滑超时。
+
+---
+
 ## [未发布] 2026-08-25 —— 悬浮窗动态排除且保留显示
 
 ### 修改内容

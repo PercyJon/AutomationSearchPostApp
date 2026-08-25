@@ -1197,7 +1197,12 @@ class CommentPrivateMessageRuntime(
         val matchMode = CommentKeywordMatchMode.ANY
         val extraction = CommentCandidateExtractor.extract(context, terms, matchMode)
         reportMatchStatistics(context, extraction)
-        if (awaitingNextVideoConfirmation && scrollCount == 0) {
+        if (
+            NextVideoAdvancePolicy.shouldEvaluateNextVideoViewportGate(
+                awaitingConfirmation = awaitingNextVideoConfirmation,
+                commentListScrollCount = scrollCount,
+            )
+        ) {
             if (nextVideoPlayerFingerprintConfirmed) {
                 logger.info(
                     "comment_next_video_viewport_gate",
@@ -1570,8 +1575,23 @@ class CommentPrivateMessageRuntime(
                 "video_index" to videoIndex,
                 "close_sheet" to closeCommentSheet,
                 "reason" to reason,
+                "previous_scroll_count" to scrollCount,
             ),
         )
+        // The confirmation gate only inspects the first sheet after the swipe. A leftover
+        // comment-list scroll from the video we just finished would skip that gate and
+        // immediately re-advance because the old per-video cap is still full.
+        val previousScrollCount = scrollCount
+        scrollPending = false
+        scrollCount = NextVideoAdvancePolicy.commentListScrollCountAfterLeavingVideo()
+        staleScrollCount = 0
+        emptyScrollCount = 0
+        if (previousScrollCount != 0) {
+            logger.info(
+                "comment_next_video_scroll_reset",
+                attributes = mapOf("previous_scroll_count" to previousScrollCount),
+            )
+        }
         if (!prepareClosedPlayerForNextVideoSwipe()) {
             terminal(CommentRuntimeTerminal.Outcome.FAILED, "关闭当前视频评论区失败，无法继续下一个视频")
             return

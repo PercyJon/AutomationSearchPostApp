@@ -97,6 +97,18 @@ object NextVideoAdvancePolicy {
         maxSwipeAttempts: Int,
     ): Boolean = !firstScreen && swipeAttempt < maxSwipeAttempts
 
+    /**
+     * Confirm the next video on its first comment sheet. Pagination from the video just
+     * finished must not skip this gate; callers reset that leftover scroll before the swipe.
+     */
+    fun shouldEvaluateNextVideoViewportGate(
+        awaitingConfirmation: Boolean,
+        commentListScrollCount: Int,
+    ): Boolean = awaitingConfirmation && commentListScrollCount == 0
+
+    /** Comment-list pagination belongs to the video being left, not the sheet after the swipe. */
+    fun commentListScrollCountAfterLeavingVideo(): Int = 0
+
     data class ChangedPlayerSignatureSamples(
         val signature: Int?,
         val count: Int,

@@ -177,6 +177,29 @@ class NextVideoAdvancePolicyTest {
     }
 
     @Test
+    fun leftoverCommentScrollFromTheFinishedVideoMustNotSkipTheNextVideoGate() {
+        assertEquals(0, NextVideoAdvancePolicy.commentListScrollCountAfterLeavingVideo())
+        assertTrue(
+            NextVideoAdvancePolicy.shouldEvaluateNextVideoViewportGate(
+                awaitingConfirmation = true,
+                commentListScrollCount = NextVideoAdvancePolicy.commentListScrollCountAfterLeavingVideo(),
+            ),
+        )
+        assertFalse(
+            NextVideoAdvancePolicy.shouldEvaluateNextVideoViewportGate(
+                awaitingConfirmation = true,
+                commentListScrollCount = 1,
+            ),
+        )
+        assertFalse(
+            NextVideoAdvancePolicy.shouldEvaluateNextVideoViewportGate(
+                awaitingConfirmation = false,
+                commentListScrollCount = 0,
+            ),
+        )
+    }
+
+    @Test
     fun continuationViewportRetriesUntilTheSwipeBudgetIsSpent() {
         assertTrue(
             NextVideoAdvancePolicy.shouldRetryAfterContinuationViewport(
