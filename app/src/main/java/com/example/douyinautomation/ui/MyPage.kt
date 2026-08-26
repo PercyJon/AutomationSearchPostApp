@@ -1,5 +1,7 @@
 package com.example.douyinautomation.ui
 
+import android.content.Intent
+import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -35,9 +37,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -46,13 +50,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.example.douyinautomation.automation.AutomationStore
 import com.example.douyinautomation.automation.AuthStore
+import com.example.douyinautomation.automation.FloatingOverlayService
 import com.example.douyinautomation.automation.LicenseStatus
 import com.example.douyinautomation.ui.theme.AutomationBlue
-import com.example.douyinautomation.ui.theme.AutomationBlueLight
 import com.example.douyinautomation.ui.theme.AutomationCard
 import com.example.douyinautomation.ui.theme.AutomationDivider
 import com.example.douyinautomation.ui.theme.AutomationError
@@ -72,8 +80,11 @@ internal fun MyPage(
     onOpenDiagnostics: () -> Unit,
     onSignOut: suspend () -> Unit,
 ) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val licenseState by AuthStore.uiState.collectAsState()
     val automationState by AutomationStore.uiState.collectAsState()
+    var overlayAllowed by remember { mutableStateOf(FloatingOverlayService.canDrawOverlays(context)) }
     val account = licenseState.accountName
         ?: AuthStore.currentConfig()?.accountUsername
         ?: "未登录"
@@ -82,6 +93,25 @@ internal fun MyPage(
     var signOutError by rememberSaveable { mutableStateOf<String?>(null) }
     var signingOut by rememberSaveable { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val openAccessibilitySettings = remember(context) {
+        {
+            context.startActivity(
+                Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }
+    }
+    val openOverlaySettings = remember(context) {
+        { FloatingOverlayService.openPermissionSettings(context) }
+    }
+    DisposableEffect(context, lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                overlayAllowed = FloatingOverlayService.canDrawOverlays(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     if (showSignOutConfirmation) {
         AlertDialog(
@@ -138,8 +168,14 @@ internal fun MyPage(
             account = account,
             status = licenseState.status,
         )
-        AuthorizationNotice(status = licenseState.status, message = licenseState.message)
-        AutomationServiceNotice(connected = automationState.serviceConnected)
+        AutomationServiceNotice(
+            connected = automationState.serviceConnected,
+            onOpenAccessibilitySettings = openAccessibilitySettings,
+        )
+        OverlayFeatureNotice(
+            enabled = overlayAllowed,
+            onOpenOverlaySettings = openOverlaySettings,
+        )
 
         MyMenuSection {
             MyMenuItem(
@@ -147,11 +183,13 @@ internal fun MyPage(
                 title = "账号与设备",
                 value = myStatusLabel(licenseState.status),
                 onClick = onOpenSettings,
+                showDivider = true,
             )
             MyMenuItem(
                 icon = Icons.Default.History,
                 title = "任务记录",
                 onClick = onOpenRecords,
+                showDivider = false,
             )
         }
         MyMenuSection {
@@ -159,25 +197,29 @@ internal fun MyPage(
                 icon = Icons.Default.Settings,
                 title = "自动化设置",
                 onClick = onOpenSettings,
+                showDivider = true,
             )
             MyMenuItem(
                 icon = Icons.Default.Accessibility,
                 title = "服务与诊断",
                 onClick = onOpenDiagnostics,
+                showDivider = true,
             )
             MyMenuItem(
                 icon = Icons.Default.Cloud,
                 title = "远程任务设置",
                 onClick = onOpenSettings,
+                showDivider = false,
             )
         }
         if (signedIn) {
             MyMenuSection {
                 MyMenuItem(
-                icon = Icons.AutoMirrored.Filled.Logout,
+                    icon = Icons.AutoMirrored.Filled.Logout,
                     title = "退出登录",
                     titleColor = AutomationError,
                     trailingIcon = false,
+                    showDivider = false,
                     onClick = { showSignOutConfirmation = true },
                 )
             }
@@ -187,12 +229,15 @@ internal fun MyPage(
 }
 
 @Composable
-private fun AutomationServiceNotice(connected: Boolean) {
+private fun AutomationServiceNotice(
+    connected: Boolean,
+    onOpenAccessibilitySettings: () -> Unit,
+) {
     val tone = if (connected) AutomationSuccess else AutomationWarning
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = if (connected) AutomationSuccessSurface else AutomationWarningSurface,
-        shape = RoundedCornerShape(10.dp),
+        shape = RoundedCornerShape(6.dp),
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
@@ -211,10 +256,76 @@ private fun AutomationServiceNotice(connected: Boolean) {
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface,
             )
+            ServiceEnableAction(
+                enabled = connected,
+                enabledLabel = "已开启",
+                onEnable = onOpenAccessibilitySettings,
+            )
+        }
+    }
+}
+
+@Composable
+private fun OverlayFeatureNotice(
+    enabled: Boolean,
+    onOpenOverlaySettings: () -> Unit,
+) {
+    val tone = if (enabled) AutomationSuccess else AutomationWarning
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = if (enabled) AutomationSuccessSurface else AutomationWarningSurface,
+        shape = RoundedCornerShape(6.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Default.Devices,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = tone,
+            )
+            Spacer(modifier = Modifier.width(9.dp))
             Text(
-                text = if (connected) "正常" else "未开启",
+                text = "悬浮窗功能",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            ServiceEnableAction(
+                enabled = enabled,
+                enabledLabel = "已开启",
+                onEnable = onOpenOverlaySettings,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ServiceEnableAction(
+    enabled: Boolean,
+    enabledLabel: String,
+    onEnable: () -> Unit,
+) {
+    if (enabled) {
+        Text(
+            text = enabledLabel,
+            style = MaterialTheme.typography.labelLarge,
+            color = AutomationSuccess,
+            fontWeight = FontWeight.Medium,
+        )
+    } else {
+        Box(
+            modifier = Modifier
+                .clickable(onClick = onEnable)
+                .padding(horizontal = 4.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = "点击开启",
                 style = MaterialTheme.typography.labelLarge,
-                color = tone,
+                color = AutomationBlue,
                 fontWeight = FontWeight.Medium,
             )
         }
@@ -225,7 +336,7 @@ private fun AutomationServiceNotice(connected: Boolean) {
 private fun AccountHero(account: String, status: LicenseStatus) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(6.dp),
         color = AutomationBlue,
         contentColor = Color.White,
     ) {
@@ -261,7 +372,7 @@ private fun AccountStatusPill(status: LicenseStatus) {
     Surface(
         color = Color.White.copy(alpha = 0.18f),
         contentColor = Color.White,
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(6.dp),
     ) {
         Text(
             text = myStatusLabel(status),
@@ -273,45 +384,11 @@ private fun AccountStatusPill(status: LicenseStatus) {
 }
 
 @Composable
-private fun AuthorizationNotice(status: LicenseStatus, message: String) {
-    val color = when (status) {
-        LicenseStatus.VERIFIED -> AutomationSuccess
-        LicenseStatus.REJECTED -> AutomationError
-        LicenseStatus.TEMPORARILY_UNAVAILABLE -> AutomationWarning
-        LicenseStatus.NOT_CONFIGURED -> AutomationBlue
-    }
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = AutomationBlueLight,
-        shape = RoundedCornerShape(10.dp),
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 11.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(8.dp)
-                    .clip(CircleShape)
-                    .background(color),
-            )
-            Spacer(modifier = Modifier.width(9.dp))
-            Text(
-                text = message,
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-        }
-    }
-}
-
-@Composable
 private fun MyMenuSection(content: @Composable () -> Unit) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = AutomationCard,
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(6.dp),
     ) {
         Column {
             content()
@@ -327,6 +404,7 @@ private fun MyMenuItem(
     value: String? = null,
     titleColor: Color = MaterialTheme.colorScheme.onSurface,
     trailingIcon: Boolean = true,
+    showDivider: Boolean,
 ) {
     Column {
         Row(
@@ -367,7 +445,9 @@ private fun MyMenuItem(
                 )
             }
         }
-        HorizontalDivider(color = AutomationDivider)
+        if (showDivider) {
+            HorizontalDivider(color = AutomationDivider)
+        }
     }
 }
 

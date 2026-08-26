@@ -15,16 +15,21 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.shadow
 import androidx.compose.material.icons.Icons
@@ -46,12 +51,14 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Checkbox
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -64,6 +71,7 @@ import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -91,6 +99,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.foundation.background
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.TextStyle
@@ -171,6 +181,13 @@ private enum class HomeSection {
 }
 
 private const val COMMENT_P0_REGRESSION_SEED = "comment-p0-designer-1-1"
+private const val HOME_TODO_MAX_COUNT = 5
+private val TODO_DELETE_ACTION_WIDTH = 88.dp
+private val TODO_CARD_SHAPE = RoundedCornerShape(6.dp)
+private val HOME_PROFILE_TODO_BACKGROUND = AutomationBlueSurface
+private val HOME_COMMENT_TODO_BACKGROUND = Color(0xFFFFFBEA)
+private val TODO_CHECKBOX_BORDER = Color(0xFFD6DAE1)
+private val TODO_CHECKBOX_CHECKED_FILL = Color(0xFFDCEAFF)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -261,40 +278,32 @@ fun AppHomeScreen(
     Scaffold(
         containerColor = AutomationPage,
         topBar = {
-            if (showCreateTask || showCommentTask || selectedSection == HomeSection.MY || selectedSection == HomeSection.RECORDS || selectedSection == HomeSection.SETTINGS || selectedSection == HomeSection.DIAGNOSTICS) {
+            if (showCreateTask || showCommentTask || selectedSection == HomeSection.RECORDS || selectedSection == HomeSection.SETTINGS || selectedSection == HomeSection.DIAGNOSTICS) {
                 TopAppBar(
                 title = {
-                    if (selectedSection == HomeSection.MY && !showCreateTask && !showCommentTask) {
+                    Column {
                         Text(
-                            text = "我的",
+                            when {
+                                showCommentTask -> "新建评论区私信任务"
+                                showCreateTask -> "新建 B 端获客任务"
+                                selectedSection == HomeSection.TODO -> "待办"
+                                selectedSection == HomeSection.RECORDS -> "任务记录"
+                                selectedSection == HomeSection.SETTINGS -> "自动化设置"
+                                else -> "诊断"
+                            },
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.SemiBold,
                         )
-                    } else {
-                        Column {
+                        val subtitle = when (selectedSection) {
+                            HomeSection.TODO -> "保存的任务按顺序执行"
+                            else -> ""
+                        }
+                        if (subtitle.isNotEmpty()) {
                             Text(
-                                when {
-                                    showCommentTask -> "新建评论区私信任务"
-                                    showCreateTask -> "新建 B 端获客任务"
-                                    selectedSection == HomeSection.TODO -> "待办"
-                                    selectedSection == HomeSection.RECORDS -> "任务记录"
-                                    selectedSection == HomeSection.SETTINGS -> "自动化设置"
-                                    else -> "诊断"
-                                },
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.SemiBold,
+                                text = subtitle,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
-                            val subtitle = when (selectedSection) {
-                                HomeSection.TODO -> "保存的任务按顺序执行"
-                                else -> ""
-                            }
-                            if (subtitle.isNotEmpty()) {
-                                Text(
-                                    text = subtitle,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
                         }
                     }
                 },
@@ -321,24 +330,39 @@ fun AppHomeScreen(
         },
         bottomBar = {
             if (!showCreateTask && !showCommentTask) {
-                NavigationBar(containerColor = AutomationCard, tonalElevation = 0.dp) {
+                val unselectedNavigationColor = Color(0xFF9CA3AF)
+                val navigationItemColors = NavigationBarItemDefaults.colors(
+                    selectedIconColor = AutomationBlue,
+                    selectedTextColor = AutomationBlue,
+                    indicatorColor = Color.Transparent,
+                    unselectedIconColor = unselectedNavigationColor,
+                    unselectedTextColor = unselectedNavigationColor,
+                )
+                NavigationBar(
+                    modifier = Modifier.height(64.dp),
+                    containerColor = AutomationCard,
+                    tonalElevation = 0.dp,
+                ) {
                     NavigationBarItem(
                         selected = selectedSection == HomeSection.HOME,
                         onClick = { section = HomeSection.HOME.name },
-                        icon = { Icon(Icons.Default.Home, contentDescription = null) },
-                        label = { Text("首页") },
+                        icon = { CompactNavigationItem(Icons.Default.Home, "首页") },
+                        alwaysShowLabel = false,
+                        colors = navigationItemColors,
                     )
                     NavigationBarItem(
                         selected = selectedSection == HomeSection.TODO,
                         onClick = { section = HomeSection.TODO.name },
-                        icon = { Icon(Icons.Default.ListAlt, contentDescription = null) },
-                        label = { Text("待办") },
+                        icon = { CompactNavigationItem(Icons.Default.ListAlt, "待办") },
+                        alwaysShowLabel = false,
+                        colors = navigationItemColors,
                     )
                     NavigationBarItem(
                         selected = selectedSection == HomeSection.MY || selectedSection == HomeSection.RECORDS || selectedSection == HomeSection.SETTINGS,
                         onClick = { section = HomeSection.MY.name },
-                        icon = { Icon(Icons.Default.Person, contentDescription = null) },
-                        label = { Text("我的") },
+                        icon = { CompactNavigationItem(Icons.Default.Person, "我的") },
+                        alwaysShowLabel = false,
+                        colors = navigationItemColors,
                     )
                 }
             }
@@ -434,6 +458,27 @@ fun AppHomeScreen(
 }
 
 @Composable
+private fun CompactNavigationItem(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(1.dp),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+        )
+    }
+}
+
+@Composable
 private fun TaskDashboard(
     padding: PaddingValues,
     initialKeyword: String,
@@ -468,6 +513,7 @@ private fun TaskDashboard(
     var remoteRefreshMessage by remember { mutableStateOf<String?>(null) }
     var savedTasks by remember { mutableStateOf<List<TaskDraft>>(emptyList()) }
     var selectedSavedTaskIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var taskPendingDeletion by remember { mutableStateOf<TaskDraft?>(null) }
     var selectedTodoQueueType by rememberSaveable {
         mutableStateOf(LocalTaskQueueType.B_END_PRIVATE_MESSAGE)
     }
@@ -627,6 +673,7 @@ private fun TaskDashboard(
                 TabRow(
                     selectedTabIndex = selectedTodoQueueType.ordinal,
                     modifier = Modifier.fillMaxWidth(),
+                    divider = { HorizontalDivider(color = AutomationDivider) },
                 ) {
                     Tab(
                         selected = selectedTodoQueueType == LocalTaskQueueType.B_END_PRIVATE_MESSAGE,
@@ -657,7 +704,9 @@ private fun TaskDashboard(
                             presetCatalog = presetCatalog,
                             selectedTaskIds = selectedSavedTaskIds,
                             activeState = state,
+                            deleteDialogTaskId = taskPendingDeletion?.id,
                             onToggleTask = toggleTask,
+                            onDeleteTask = { taskPendingDeletion = it },
                         )
                     }
                     Button(
@@ -667,7 +716,7 @@ private fun TaskDashboard(
                             .fillMaxWidth()
                             .padding(horizontal = AutomationSpacing.Page, vertical = 6.dp)
                             .height(46.dp),
-                        shape = RoundedCornerShape(8.dp),
+                        shape = RoundedCornerShape(6.dp),
                     ) {
                         Text("开始任务")
                     }
@@ -677,7 +726,9 @@ private fun TaskDashboard(
                         presetCatalog = presetCatalog,
                         selectedTaskIds = selectedSavedTaskIds,
                         activeState = state,
+                        deleteDialogTaskId = taskPendingDeletion?.id,
                         onToggleTask = toggleTask,
+                        onDeleteTask = { taskPendingDeletion = it },
                     )
                 }
             } else {
@@ -738,6 +789,37 @@ private fun TaskDashboard(
                                 }
                             }
                             remoteStartingTaskId = null
+                        }
+                    },
+                )
+            }
+            taskPendingDeletion?.let { task ->
+                AlertDialog(
+                    onDismissRequest = { taskPendingDeletion = null },
+                    title = { Text("删除待办？") },
+                    text = { Text("删除后该任务将不再显示在待办列表中。") },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                val taskId = task.id
+                                taskPendingDeletion = null
+                                scope.launch {
+                                    withContext(Dispatchers.IO) {
+                                        AutomationStore.deleteSavedTask(taskId)
+                                    }
+                                    savedTasks = withContext(Dispatchers.IO) {
+                                        AutomationStore.loadSavedTasks()
+                                    }
+                                    selectedSavedTaskIds = selectedSavedTaskIds - taskId
+                                }
+                            },
+                        ) {
+                            Text("删除", color = AutomationError)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { taskPendingDeletion = null }) {
+                            Text("取消")
                         }
                     },
                 )
@@ -1304,7 +1386,7 @@ private fun HomeDashboardContent(
                     .padding(horizontal = AutomationSpacing.Page),
                 colors = CardDefaults.cardColors(containerColor = AutomationCard),
                 elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
-                shape = RoundedCornerShape(24.dp),
+                shape = RoundedCornerShape(6.dp),
             ) {
                 Row(
                     modifier = Modifier
@@ -1397,53 +1479,55 @@ private fun HomeDashboardContent(
             modifier = Modifier.padding(horizontal = AutomationSpacing.Page),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("今日待办", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                TextButton(onClick = onOpenTodo, contentPadding = PaddingValues(0.dp)) { Text("查看全部") }
-            }
+            Text("今日待办", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             if (savedTasks.isEmpty()) {
                 EmptyState(title = "今天没有任务", detail = "点击功能中的 B端私信创建任务")
             } else {
-                savedTasks.take(3).forEach { task ->
-                    val query = task.customKeywords.firstOrNull { it.isNotBlank() }
-                        ?: task.presetIds.asSequence()
-                            .mapNotNull { id -> presetCatalog.items.firstOrNull { it.id == id }?.keyword }
-                            .firstOrNull { it.isNotBlank() }
-                        ?: "未设置搜索词"
+                savedTasks
+                    .sortedByDescending(TaskDraft::updatedAtMillis)
+                    .take(HOME_TODO_MAX_COUNT)
+                    .forEach { task ->
+                    val cardBackground = if (task.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE) {
+                        HOME_COMMENT_TODO_BACKGROUND
+                    } else {
+                        HOME_PROFILE_TODO_BACKGROUND
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(AutomationBlueSurface)
+                            .clip(TODO_CARD_SHAPE)
+                            .background(cardBackground)
                             .clickable(onClick = onOpenTodo)
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                            .padding(horizontal = AutomationSpacing.Page, vertical = 14.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        TodoTaskDetails(
+                            task = task,
+                            detailFields = task.todoDetailFields(presetCatalog),
+                            modifier = Modifier.weight(1f),
+                        )
                         Box(
                             modifier = Modifier
-                                .height(42.dp)
-                                .width(4.dp)
-                                .clip(RoundedCornerShape(4.dp))
-                                .background(AutomationBlue),
-                        )
-                        Column(modifier = Modifier.padding(start = 12.dp).weight(1f)) {
-                            Text(task.name.ifBlank { query }, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(
-                                "$query · 上限 ${task.maxUsers}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
+                                .width(40.dp)
+                                .height(40.dp)
+                                .clickable(onClick = onOpenTodo),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Visibility,
+                                contentDescription = "查看待办",
+                                modifier = Modifier.size(20.dp),
+                                tint = AutomationBlue,
                             )
                         }
-                        Checkbox(
-                            checked = false,
-                            onCheckedChange = { onOpenTodo() },
-                        )
+                    }
+                }
+                if (savedTasks.size > HOME_TODO_MAX_COUNT) {
+                    TextButton(
+                        onClick = onOpenTodo,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("查看全部")
                     }
                 }
             }
@@ -1491,7 +1575,7 @@ private fun FunctionEntryCard(
             .height(142.dp)
             .clickable(onClick = onClick),
         colors = CardDefaults.cardColors(containerColor = color),
-        shape = RoundedCornerShape(22.dp),
+        shape = RoundedCornerShape(6.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
     ) {
         Box(modifier = Modifier.fillMaxWidth().fillMaxHeight()) {
@@ -1926,19 +2010,18 @@ private fun TodoTaskCard(
     presetCatalog: SearchPresetCatalog,
     selectedTaskIds: Set<String>,
     activeState: com.example.douyinautomation.automation.AutomationUiState,
+    deleteDialogTaskId: String?,
     onToggleTask: (String) -> Unit,
+    onDeleteTask: (TaskDraft) -> Unit,
 ) {
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = AutomationSpacing.Page),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth(),
     ) {
-        Text("待办任务", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         if (isTaskActivePhase(activeState.phase)) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .padding(horizontal = AutomationSpacing.Page)
                     .background(AutomationBlueSurface, MaterialTheme.shapes.small)
                     .padding(horizontal = 10.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1961,65 +2044,216 @@ private fun TodoTaskCard(
             }
         }
         if (tasks.isEmpty()) {
+            Box(modifier = Modifier.padding(horizontal = AutomationSpacing.Page)) {
                 EmptyState(
                     title = "暂无待办任务",
                     detail = "保存任务后，可在这里勾选多个任务并按顺序执行。",
                 )
+            }
         } else {
-                tasks.forEach { task ->
-                    val taskLabel = task.name.trim().ifBlank { "未命名任务" }
-                    val query = task.customKeywords.firstOrNull { it.isNotBlank() }
-                        ?: task.presetIds.asSequence()
-                            .mapNotNull { id -> presetCatalog.items.firstOrNull { it.id == id }?.keyword }
-                            .firstOrNull { it.isNotBlank() }
-                        ?: "未设置搜索词"
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(AutomationBlueSurface)
-                        .clickable(enabled = !isTaskActivePhase(activeState.phase)) {
-                            onToggleTask(task.id)
-                        }
-                        .padding(horizontal = 8.dp, vertical = 7.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .height(42.dp)
-                            .width(4.dp)
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(AutomationBlue),
-                    )
-                    Column(
-                        modifier = Modifier
-                            .padding(start = 10.dp)
-                            .weight(1f),
-                    ) {
-                        Text(
-                            taskLabel,
-                            style = MaterialTheme.typography.bodyLarge,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Text(
-                            buildString {
-                                append(query)
-                                task.region?.takeIf(String::isNotBlank)?.let { append(" · ").append(it) }
-                                append(" · 上限 ").append(task.maxUsers)
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    Checkbox(
-                        checked = task.id in selectedTaskIds,
-                        onCheckedChange = { onToggleTask(task.id) },
-                        enabled = !isTaskActivePhase(activeState.phase),
+            tasks.forEachIndexed { index, task ->
+                TodoSwipeableTaskRow(
+                    task = task,
+                    presetCatalog = presetCatalog,
+                    checked = task.id in selectedTaskIds,
+                    enabled = !isTaskActivePhase(activeState.phase),
+                    deleteDialogVisible = task.id == deleteDialogTaskId,
+                    onToggleTask = { onToggleTask(task.id) },
+                    onDeleteTask = { onDeleteTask(task) },
+                )
+                if (index < tasks.lastIndex) {
+                    HorizontalDivider(color = AutomationDivider)
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun TodoSwipeableTaskRow(
+    task: TaskDraft,
+    presetCatalog: SearchPresetCatalog,
+    checked: Boolean,
+    enabled: Boolean,
+    deleteDialogVisible: Boolean,
+    onToggleTask: () -> Unit,
+    onDeleteTask: () -> Unit,
+) {
+    val detailFields = task.todoDetailFields(presetCatalog)
+    val density = LocalDensity.current
+    val deleteActionWidthPx = with(density) { TODO_DELETE_ACTION_WIDTH.toPx() }
+    var swipeOffsetPx by remember(task.id) { mutableStateOf(0f) }
+    var deleteActionVisible by remember(task.id) { mutableStateOf(false) }
+    val visibleActionWidth = with(density) {
+        val widthPx = if (deleteActionVisible) {
+            deleteActionWidthPx
+        } else {
+            (-swipeOffsetPx).coerceIn(0f, deleteActionWidthPx)
+        }
+        widthPx.toDp()
+    }
+    LaunchedEffect(deleteDialogVisible) {
+        if (!deleteDialogVisible && deleteActionVisible) {
+            deleteActionVisible = false
+            swipeOffsetPx = 0f
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(TODO_CARD_SHAPE),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(AutomationCard)
+                .pointerInput(deleteActionWidthPx, deleteActionVisible) {
+                    detectHorizontalDragGestures(
+                        onDragStart = {
+                            swipeOffsetPx = if (deleteActionVisible) -deleteActionWidthPx else 0f
+                        },
+                        onHorizontalDrag = { change, dragAmount ->
+                            if (dragAmount < 0f || swipeOffsetPx < 0f) {
+                                change.consume()
+                                swipeOffsetPx = (swipeOffsetPx + dragAmount)
+                                    .coerceIn(-deleteActionWidthPx, 0f)
+                            }
+                        },
+                        onDragCancel = {
+                            deleteActionVisible = swipeOffsetPx <= -deleteActionWidthPx / 3f
+                            swipeOffsetPx = 0f
+                        },
+                        onDragEnd = {
+                            deleteActionVisible = swipeOffsetPx <= -deleteActionWidthPx / 3f
+                            swipeOffsetPx = 0f
+                        },
                     )
                 }
+                .clickable(enabled = enabled) {
+                    if (deleteActionVisible) {
+                        deleteActionVisible = false
+                    } else {
+                        onToggleTask()
+                    }
+                }
+                .padding(horizontal = AutomationSpacing.Page, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TodoTaskDetails(
+                task = task,
+                detailFields = detailFields,
+                modifier = Modifier.weight(1f),
+            )
+            TodoSelectionCheckbox(
+                checked = checked,
+                enabled = enabled,
+                onToggle = onToggleTask,
+            )
+        }
+        if (visibleActionWidth > 0.dp) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize(),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .width(visibleActionWidth)
+                        .fillMaxHeight()
+                        .background(AutomationError)
+                        .clickable(onClick = onDeleteTask),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("删除", color = Color.White, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun TodoTaskDetails(
+    task: TaskDraft,
+    detailFields: List<Pair<String, String>>,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            text = task.name.trim().ifBlank { "未命名任务" },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontWeight = FontWeight.Normal,
+        )
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            detailFields.forEachIndexed { index, (label, value) ->
+                Row(
+                    modifier = Modifier.heightIn(min = 24.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "$label：",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = value,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    if (index < detailFields.lastIndex) {
+                        Text(
+                            text = " |",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TodoSelectionCheckbox(
+    checked: Boolean,
+    enabled: Boolean,
+    onToggle: () -> Unit,
+) {
+    val borderColor = if (!enabled) AutomationDivider else TODO_CHECKBOX_BORDER
+    Box(
+        modifier = Modifier
+            .width(40.dp)
+            .height(40.dp)
+            .clickable(enabled = enabled, onClick = onToggle),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .width(16.dp)
+                .height(16.dp)
+                .background(if (checked) TODO_CHECKBOX_CHECKED_FILL else AutomationCard)
+                .border(1.dp, borderColor),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (checked) {
+                Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .width(12.dp)
+                        .height(12.dp),
+                    tint = AutomationBlueDark,
+                )
             }
         }
     }
@@ -2827,7 +3061,7 @@ private fun SettingsPage(
                 SettingsRow("目标应用", "抖音")
                 SettingsRow("执行方式", "Android 无障碍服务")
                 SettingsRow("安全模式", "空白消息探测")
-                HorizontalDivider()
+                HorizontalDivider(color = AutomationDivider)
                 Text("全局动作间隔", style = MaterialTheme.typography.labelLarge)
                 Text(
                     "留空：不额外节流；填写范围 1000–5000ms，下一次动作生效。",
@@ -2945,7 +3179,7 @@ private fun SettingsPage(
                         onCheckedChange = onShowRemoteTasksChange,
                     )
                 }
-                HorizontalDivider()
+                HorizontalDivider(color = AutomationDivider)
                 Text(
                     "仅清单中的远程任务可以领取、启动或恢复；本机新建任务无需配置。",
                     style = MaterialTheme.typography.bodySmall,

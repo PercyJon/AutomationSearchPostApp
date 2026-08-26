@@ -379,6 +379,15 @@ object AutomationStore {
     /** Load the reusable local task definitions shown in the task-page todo list. */
     fun loadSavedTasks(): List<TaskDraft> = synchronized(recordLock) {
         decodeTaskDrafts(recordPreferences?.getString(SAVED_TASKS_KEY, null))
+            .mapIndexed { index, draft ->
+                if (draft.updatedAtMillis > 0L) {
+                    draft
+                } else {
+                    draft.copy(updatedAtMillis = index + 1L)
+                }
+            }
+            .filterNot(TaskDraft::deleted)
+            .sortedByDescending(TaskDraft::updatedAtMillis)
     }
 
     /** Persist one reusable task definition and return the stored copy with a stable id. */
@@ -402,8 +411,15 @@ object AutomationStore {
     fun deleteSavedTask(taskId: String) {
         synchronized(recordLock) {
             val tasks = decodeTaskDrafts(recordPreferences?.getString(SAVED_TASKS_KEY, null))
-                .filterNot { it.id == taskId }
-            persistSavedTasksLocked(tasks)
+            persistSavedTasksLocked(
+                tasks.map { draft ->
+                    if (draft.id == taskId) {
+                        draft.copy(deleted = true, updatedAtMillis = System.currentTimeMillis())
+                    } else {
+                        draft
+                    }
+                },
+            )
         }
     }
 
@@ -1170,6 +1186,8 @@ object AutomationStore {
         put("execution_mode", draft.executionMode.name)
         put("task_type", draft.taskType.name)
         put("comment_config", draft.commentConfig?.toJson() ?: JSONObject.NULL)
+        put("updated_at", draft.updatedAtMillis)
+        put("deleted", draft.deleted)
     }
 
     private fun CommentPrivateMessageConfig.toJson(): JSONObject = JSONObject().apply {
@@ -1269,23 +1287,26 @@ object AutomationStore {
                 AutomationTaskType.valueOf(root.optString("task_type"))
             }.getOrDefault(AutomationTaskType.PROFILE_PRIVATE_MESSAGE),
             commentConfig = root.optJSONObject("comment_config")?.toCommentPrivateMessageConfig(),
+            updatedAtMillis = root.optLong("updated_at", 0L),
+            deleted = root.optBoolean("deleted", false),
         )
     }.getOrNull()
 
     private fun decodeTaskDrafts(raw: String?): List<TaskDraft> = runCatching {
         if (raw.isNullOrBlank()) return emptyList()
         val json = JSONArray(raw)
-        buildList(minOf(json.length(), MAX_SAVED_TASKS)) {
-            val start = (json.length() - MAX_SAVED_TASKS).coerceAtLeast(0)
-            for (index in start until json.length()) {
+        buildList(json.length()) {
+            for (index in 0 until json.length()) {
                 decodeTaskDraft(json.optJSONObject(index)?.toString())?.let(::add)
             }
         }
     }.getOrDefault(emptyList())
 
     private fun persistSavedTasksLocked(tasks: List<TaskDraft>) {
+        val hidden = tasks.filter { it.deleted }.takeLast(MAX_SAVED_TASKS)
+        val visible = tasks.filterNot { it.deleted }.takeLast(MAX_SAVED_TASKS)
         recordPreferences?.edit()
-            ?.putString(SAVED_TASKS_KEY, JSONArray(tasks.map { encodeTaskDraft(it) }).toString())
+            ?.putString(SAVED_TASKS_KEY, JSONArray((hidden + visible).map { encodeTaskDraft(it) }).toString())
             ?.apply()
     }
 
@@ -1293,11 +1314,12 @@ object AutomationStore {
         val stored = draft.copy(
             id = draft.id.takeIf { it.isNotBlank() && it != "preview" && it != "draft" }
                 ?: UUID.randomUUID().toString(),
+            updatedAtMillis = System.currentTimeMillis(),
+            deleted = false,
         )
         val tasks = decodeTaskDrafts(recordPreferences?.getString(SAVED_TASKS_KEY, null))
             .filterNot { it.id == stored.id }
             .plus(stored)
-            .takeLast(MAX_SAVED_TASKS)
         persistSavedTasksLocked(tasks)
         return stored
     }
@@ -1378,6 +1400,7 @@ object AutomationStore {
                 )
             }
             val saved = decodeTaskDrafts(recordPreferences?.getString(SAVED_TASKS_KEY, null))
+                .filterNot(TaskDraft::deleted)
             for (draft in saved) {
                 if (!MobileTaskPublishMapper.isStableLocalTaskId(draft.id)) continue
                 if (draft.id in historyIds || draft.id in done) continue

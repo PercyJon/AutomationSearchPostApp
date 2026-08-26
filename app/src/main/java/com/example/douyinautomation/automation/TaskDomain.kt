@@ -44,6 +44,9 @@ data class TaskDraft(
     val taskType: AutomationTaskType = AutomationTaskType.PROFILE_PRIVATE_MESSAGE,
     /** Only used when [taskType] is COMMENT_PRIVATE_MESSAGE. */
     val commentConfig: CommentPrivateMessageConfig? = null,
+    val updatedAtMillis: Long = 0L,
+    /** Soft-hidden from todo lists; the persisted record is kept. */
+    val deleted: Boolean = false,
 ) {
     fun validationErrors(): List<String> = buildList {
         val usesCurrentProfile = taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE &&
@@ -65,6 +68,24 @@ data class TaskDraft(
                 addAll(config.validationErrors())
             }
         }
+    }
+
+    fun resolvedSearchKeyword(presets: SearchPresetCatalog): String? {
+        customKeywords.firstOrNull { it.isNotBlank() }?.trim()?.let { return it }
+        presetIds.asSequence()
+            .mapNotNull { id -> presets.items.firstOrNull { it.id == id }?.keyword?.trim() }
+            .firstOrNull { !it.isNullOrBlank() }
+            ?.let { return it }
+        return commentConfig?.targetUser?.trim()?.takeIf { it.isNotEmpty() }
+    }
+
+    /** Filled operator fields only, in display order for todo cards. */
+    fun todoDetailFields(presets: SearchPresetCatalog): List<Pair<String, String>> = buildList {
+        resolvedSearchKeyword(presets)?.let { add("搜索词" to it) }
+        if (maxUsers > 0) add("用户数" to maxUsers.toString())
+        val blocked = blockedKeywords.map { it.trim() }.filter { it.isNotEmpty() }
+        if (blocked.isNotEmpty()) add("屏蔽词" to blocked.joinToString("、"))
+        region?.trim()?.takeIf { it.isNotEmpty() }?.let { add("地区" to it) }
     }
 
     fun toSnapshot(

@@ -7,6 +7,50 @@ import kotlin.test.assertTrue
 
 class TaskDomainTest {
     @Test
+    fun `todo detail fields show only configured values in display order`() {
+        val catalog = SearchPresetCatalog(
+            version = "test",
+            items = listOf(SearchPreset("redwood", "红木家具", "红木家具")),
+            updatedAtMillis = 0L,
+        )
+
+        val task = TaskDraft(
+            id = "todo",
+            name = "常用家具客户",
+            presetIds = listOf("redwood"),
+            blockedKeywords = listOf("批发", " 工厂 "),
+            region = "广东",
+            maxUsers = 100,
+        )
+
+        assertEquals(
+            listOf(
+                "搜索词" to "红木家具",
+                "用户数" to "100",
+                "屏蔽词" to "批发、工厂",
+                "地区" to "广东",
+            ),
+            task.todoDetailFields(catalog),
+        )
+    }
+
+    @Test
+    fun `comment todo uses target user when no search keyword is stored`() {
+        val task = TaskDraft(
+            id = "comment",
+            name = "评论私信",
+            taskType = AutomationTaskType.COMMENT_PRIVATE_MESSAGE,
+            commentConfig = CommentPrivateMessageConfig(targetUser = "室内设计师"),
+            maxUsers = 5,
+        )
+
+        assertEquals(
+            listOf("搜索词" to "室内设计师", "用户数" to "5"),
+            task.todoDetailFields(SearchPresetCatalog("test", emptyList(), 0L)),
+        )
+    }
+
+    @Test
     fun `blocked keyword input accepts English comma Chinese comma and new line`() {
         assertEquals(
             listOf("公司", "厂", "门店"),
