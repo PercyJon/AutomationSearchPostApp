@@ -159,6 +159,30 @@ data class RemoteTaskStatusRequest(
     val errorMessage: String? = null,
 )
 
+data class MobileCommentConfigPayload(
+    val entryMode: String,
+    val targetUser: String?,
+    val matchKeywords: List<String>,
+    val maxVideos: Int,
+    val maxUsersPerVideo: Int,
+    val skipPinnedVideos: Boolean,
+)
+
+data class MobileTaskCreateRequest(
+    val localTaskId: String,
+    val name: String,
+    val taskType: String,
+    val keyword: String,
+    val regionName: String? = null,
+    val regionPrefix: String? = null,
+    val blockedKeywords: List<String> = emptyList(),
+    val sendMode: String = "simulate_empty",
+    val catalogVersion: Int = 0,
+    val maxUsers: Int = 0,
+    val deviceIdHash: String? = null,
+    val commentConfig: MobileCommentConfigPayload? = null,
+)
+
 object RemoteTaskStatus {
     const val READY = 1
     const val RUNNING = 2
@@ -170,6 +194,7 @@ object RemoteTaskStatus {
 
 interface AutomationTaskGateway {
     suspend fun listTasks(): List<RemoteTask>
+    suspend fun createTask(request: MobileTaskCreateRequest): RemoteTask
     suspend fun claimTask(taskId: Long): RemoteTask
     suspend fun getTaskProgress(taskId: Long): RemoteTaskProgress
     suspend fun submitCheckpoint(taskId: Long, request: RemoteCheckpointRequest): RemoteCheckpointResponse

@@ -107,6 +107,36 @@ class AutomationHttpClient(
         execute("/automation/mobile/tasks", "GET").asArray().toRemoteTasks()
     }
 
+    override suspend fun createTask(request: MobileTaskCreateRequest): RemoteTask = withContext(Dispatchers.IO) {
+        val body = JSONObject().apply {
+            put("local_task_id", request.localTaskId)
+            put("name", request.name)
+            put("task_type", request.taskType)
+            put("keyword", request.keyword)
+            request.regionName?.let { put("region_name", it) }
+            request.regionPrefix?.let { put("region_prefix", it) }
+            put("blocked_keywords", JSONArray(request.blockedKeywords))
+            put("send_mode", request.sendMode)
+            put("catalog_version", request.catalogVersion)
+            put("max_users", request.maxUsers)
+            request.deviceIdHash?.let { put("device_id_hash", it) }
+            request.commentConfig?.let { config ->
+                put(
+                    "comment_config",
+                    JSONObject().apply {
+                        put("entry_mode", config.entryMode)
+                        config.targetUser?.let { put("target_user", it) }
+                        put("match_keywords", JSONArray(config.matchKeywords))
+                        put("max_videos", config.maxVideos)
+                        put("max_users_per_video", config.maxUsersPerVideo)
+                        put("skip_pinned_videos", config.skipPinnedVideos)
+                    },
+                )
+            }
+        }
+        execute("/automation/mobile/tasks", "POST", body).asObject().toRemoteTask()
+    }
+
     override suspend fun claimTask(taskId: Long): RemoteTask = withContext(Dispatchers.IO) {
         execute("/automation/mobile/tasks/$taskId/claim", "POST").asObject().toRemoteTask()
     }

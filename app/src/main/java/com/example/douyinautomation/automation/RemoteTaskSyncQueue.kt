@@ -23,9 +23,27 @@ class RemoteTaskSyncQueue(
     private val onFailure: (String) -> Unit = {},
     private val onSuccess: () -> Unit = {},
     private val onStatusSuccess: (RemoteTask) -> Unit = {},
+    private val onPublishSuccess: (String, RemoteTask) -> Unit = { _, _ -> },
+    private val onBackfillSuccess: (String) -> Unit = {},
 ) {
     private sealed interface Work {
         val taskId: Long
+
+        data class Publish(
+            val request: MobileTaskCreateRequest,
+            val followUpStatus: Int? = null,
+        ) : Work {
+            override val taskId: Long = 0L
+        }
+
+        data class Backfill(
+            val request: MobileTaskCreateRequest,
+            val existingRemoteId: Long? = null,
+            val statusRequest: RemoteTaskStatusRequest?,
+            val records: List<RemoteRecordRequest>,
+        ) : Work {
+            override val taskId: Long = existingRemoteId ?: 0L
+        }
 
         data class Checkpoint(
             override val taskId: Long,
@@ -66,6 +84,19 @@ class RemoteTaskSyncQueue(
         enqueue(Work.Status(taskId, request))
     }
 
+    fun enqueuePublish(request: MobileTaskCreateRequest, followUpStatus: Int? = null) {
+        enqueue(Work.Publish(request, followUpStatus))
+    }
+
+    fun enqueueBackfill(
+        request: MobileTaskCreateRequest,
+        existingRemoteId: Long? = null,
+        statusRequest: RemoteTaskStatusRequest? = null,
+        records: List<RemoteRecordRequest> = emptyList(),
+    ) {
+        enqueue(Work.Backfill(request, existingRemoteId, statusRequest, records))
+    }
+
     fun close() {
         queue.close()
         worker.cancel()
@@ -92,11 +123,86 @@ class RemoteTaskSyncQueue(
         for (attempt in 0 until MAX_ATTEMPTS) {
             try {
                 val response = when (work) {
+                    is Work.Publish -> {
+                        val created = gateway.createTask(work.request)
+                        onPublishSuccess(work.request.localTaskId, created)
+                        if (work.followUpStatus != null) {
+                            gateway.updateTaskStatus(
+                                created.id,
+                                RemoteTaskStatusRequest(status = work.followUpStatus),
+                            )
+                        } else {
+                            created
+                        }
+                    }
+                    is Work.Backfill -> {
+                        var last: RemoteTask? = null
+                        val remoteId = if (work.existingRemoteId != null) {
+                            work.existingRemoteId
+                        } else {
+                            gateway.createTask(work.request).also { created ->
+                                last = created
+                                onPublishSuccess(work.request.localTaskId, created)
+                            }.id
+                        }
+                        if (work.records.isNotEmpty()) {
+                            last = runCatching {
+                                gateway.updateTaskStatus(
+                                    remoteId,
+                                    RemoteTaskStatusRequest(status = RemoteTaskStatus.RUNNING),
+                                )
+                            }.getOrNull() ?: last
+                            for (record in work.records) {
+                                gateway.submitRecord(remoteId, record)
+                            }
+                        }
+                        val statusRequest = work.statusRequest
+                        if (statusRequest != null) {
+                            last = try {
+                                gateway.updateTaskStatus(remoteId, statusRequest)
+                            } catch (error: Throwable) {
+                                if (error !is AutomationGatewayException || error.statusCode != 422) {
+                                    throw error
+                                }
+                                runCatching {
+                                    gateway.updateTaskStatus(
+                                        remoteId,
+                                        RemoteTaskStatusRequest(status = RemoteTaskStatus.RUNNING),
+                                    )
+                                }
+                                gateway.updateTaskStatus(remoteId, statusRequest)
+                            }
+                        }
+                        last ?: RemoteTask(
+                            id = remoteId,
+                            code = "",
+                            name = work.request.name,
+                            keyword = work.request.keyword,
+                            regionName = work.request.regionName,
+                            regionPrefix = work.request.regionPrefix,
+                            message = "",
+                            sendMode = work.request.sendMode,
+                            catalogVersion = work.request.catalogVersion,
+                            maxUsers = work.request.maxUsers,
+                            status = work.statusRequest?.status ?: RemoteTaskStatus.READY,
+                            licenseId = null,
+                            totalCount = 0,
+                            processedCount = 0,
+                            successCount = 0,
+                            failedCount = 0,
+                            skippedCount = 0,
+                            lastUserKey = null,
+                            lastUserName = null,
+                            lastPageNumber = null,
+                            lastPageFingerprint = null,
+                            checkpointVersion = 0,
+                        )
+                    }
                     is Work.Checkpoint -> gateway.submitCheckpoint(work.taskId, work.request)
                     is Work.Record -> gateway.submitRecord(work.taskId, work.request)
                     is Work.Status -> gateway.updateTaskStatus(work.taskId, work.request)
                 }
-                if (work is Work.Status && response is RemoteTask) {
+                if ((work is Work.Status || work is Work.Publish || work is Work.Backfill) && response is RemoteTask) {
                     onStatusSuccess(response)
                 }
                 logger.info(
@@ -108,6 +214,9 @@ class RemoteTaskSyncQueue(
                     ),
                 )
                 onSuccess()
+                if (work is Work.Backfill) {
+                    onBackfillSuccess(work.request.localTaskId)
+                }
                 return
             } catch (error: Throwable) {
                 if (error is CancellationException) throw error

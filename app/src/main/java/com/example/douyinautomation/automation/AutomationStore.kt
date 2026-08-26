@@ -265,6 +265,7 @@ object AutomationStore {
             )
         }
         refreshRemoteSync()
+        syncExistingLocalTasks()
     }
 
     /** Bring the operator back to the in-app Records tab after any terminal task outcome. */
@@ -382,17 +383,8 @@ object AutomationStore {
 
     /** Persist one reusable task definition and return the stored copy with a stable id. */
     fun saveSavedTask(draft: TaskDraft): TaskDraft {
-        val stored = draft.copy(
-            id = draft.id.takeIf { it.isNotBlank() && it != "preview" && it != "draft" }
-                ?: UUID.randomUUID().toString(),
-        )
-        synchronized(recordLock) {
-            val tasks = decodeTaskDrafts(recordPreferences?.getString(SAVED_TASKS_KEY, null))
-                .filterNot { it.id == stored.id }
-                .plus(stored)
-                .takeLast(MAX_SAVED_TASKS)
-            persistSavedTasksLocked(tasks)
-        }
+        val stored = synchronized(recordLock) { upsertSavedTaskLocked(draft) }
+        publishLocalTask(MobileTaskPublishMapper.fromDraft(stored, currentDeviceIdHash()), followUpStatus = null)
         return stored
     }
 
@@ -471,8 +463,16 @@ object AutomationStore {
 
     /** Starts a new in-memory task and returns its stable id for later task publishing. */
     fun beginTask(keyword: String, snapshot: TaskSnapshot? = null): String {
-        val taskId = UUID.randomUUID().toString()
-        beginTaskInternal(taskId, keyword, snapshot, queryIndex = 0, resetRecords = true)
+        val remoteFromSnapshot = snapshot?.taskId?.toLongOrNull()?.takeIf { it > 0L }
+        val taskId = snapshot?.taskId?.takeIf(MobileTaskPublishMapper::isStableLocalTaskId)
+            ?: UUID.randomUUID().toString()
+        val boundSnapshot = snapshot?.copy(taskId = taskId)
+        if (remoteFromSnapshot == null && boundSnapshot != null) {
+            synchronized(recordLock) {
+                upsertSavedTaskLocked(draftFromSnapshot(boundSnapshot))
+            }
+        }
+        beginTaskInternal(taskId, keyword, boundSnapshot, queryIndex = 0, resetRecords = true)
         return taskId
     }
 
@@ -501,9 +501,12 @@ object AutomationStore {
         refreshRemoteSync()
         val now = System.currentTimeMillis()
         val existingRecords: List<UserTaskRecord>
+        val boundRemoteId: Long?
         synchronized(recordLock) {
             currentTaskId = taskId
-            remoteTaskId = snapshot?.taskId?.toLongOrNull()?.takeIf { it > 0L }
+            boundRemoteId = snapshot?.taskId?.toLongOrNull()?.takeIf { it > 0L }
+                ?: lookupRemoteBindingLocked(taskId)
+            remoteTaskId = boundRemoteId
             lastRemoteStatusSignature = null
             remoteUserKeys.clear()
             remoteDisplayNames.clear()
@@ -608,6 +611,12 @@ object AutomationStore {
             claimRemoteTask(id)
             syncRemoteStatus(RemoteTaskStatus.RUNNING)
         }
+        if (remoteTaskId == null && snapshot != null && MobileTaskPublishMapper.isStableLocalTaskId(taskId)) {
+            publishLocalTask(
+                MobileTaskPublishMapper.fromSnapshot(snapshot, currentDeviceIdHash()),
+                followUpStatus = RemoteTaskStatus.RUNNING,
+            )
+        }
     }
 
     /** Rebuilds the gateway when the encrypted endpoint/token configuration changes. */
@@ -638,6 +647,29 @@ object AutomationStore {
                                 remoteSyncLastError = null,
                             )
                         }
+                    },
+                    onPublishSuccess = { localId, task ->
+                        synchronized(recordLock) {
+                            persistRemoteBindingLocked(localId, task.id)
+                            if (currentTaskId == localId) {
+                                remoteTaskId = task.id
+                            }
+                        }
+                        _uiState.update { state ->
+                            if (state.taskId == localId) {
+                                state.copy(
+                                    remoteTaskId = task.id,
+                                    remoteTaskStatus = task.status,
+                                    remoteTaskStatusUpdatedAtMillis = System.currentTimeMillis(),
+                                    remoteSyncLastError = null,
+                                )
+                            } else {
+                                state.copy(remoteSyncLastError = null)
+                            }
+                        }
+                    },
+                    onBackfillSuccess = { localId ->
+                        synchronized(recordLock) { persistRemoteBackfillDoneLocked(localId) }
                     },
                 )
             }
@@ -1257,6 +1289,184 @@ object AutomationStore {
             ?.apply()
     }
 
+    private fun upsertSavedTaskLocked(draft: TaskDraft): TaskDraft {
+        val stored = draft.copy(
+            id = draft.id.takeIf { it.isNotBlank() && it != "preview" && it != "draft" }
+                ?: UUID.randomUUID().toString(),
+        )
+        val tasks = decodeTaskDrafts(recordPreferences?.getString(SAVED_TASKS_KEY, null))
+            .filterNot { it.id == stored.id }
+            .plus(stored)
+            .takeLast(MAX_SAVED_TASKS)
+        persistSavedTasksLocked(tasks)
+        return stored
+    }
+
+    private fun draftFromSnapshot(snapshot: TaskSnapshot): TaskDraft = TaskDraft(
+        id = snapshot.taskId,
+        name = snapshot.taskName,
+        customKeywords = snapshot.baseKeywords,
+        region = snapshot.region.trim().takeIf { it.isNotEmpty() },
+        blockedKeywords = snapshot.normalizedBlockedKeywords,
+        maxUsers = snapshot.maxUsers,
+        messageTemplate = snapshot.messageTemplate,
+        executionMode = snapshot.executionMode,
+        taskType = snapshot.taskType,
+        commentConfig = snapshot.commentConfig?.let { config ->
+            CommentPrivateMessageConfig(
+                entryMode = config.entryMode,
+                targetUser = config.targetUser,
+                matchKeywords = config.matchKeywords,
+                matchMode = config.matchMode,
+                maxVideos = config.maxVideos,
+                maxUsersPerVideo = config.maxUsersPerVideo,
+                skipPinnedVideos = config.skipPinnedVideos,
+                dryRun = config.dryRun,
+                skipBlankProbe = config.skipBlankProbe,
+            )
+        },
+    )
+
+    private fun currentDeviceIdHash(): String? =
+        AuthStore.currentConfig()?.deviceIdHash?.takeIf { it.isNotBlank() }
+
+    private fun publishLocalTask(request: MobileTaskCreateRequest, followUpStatus: Int?) {
+        if (!MobileTaskPublishMapper.isStableLocalTaskId(request.localTaskId)) return
+        refreshRemoteSync()
+        val existingRemoteId = synchronized(recordLock) { lookupRemoteBindingLocked(request.localTaskId) }
+        if (existingRemoteId != null) {
+            if (followUpStatus != null) {
+                synchronized(recordLock) {
+                    if (currentTaskId == request.localTaskId) {
+                        remoteTaskId = existingRemoteId
+                    }
+                }
+                if (currentTaskId == request.localTaskId) {
+                    syncRemoteStatus(followUpStatus)
+                }
+            }
+            return
+        }
+        val queue = synchronized(recordLock) { remoteSyncQueue } ?: return
+        queue.enqueuePublish(request, followUpStatus)
+    }
+
+    private fun syncExistingLocalTasks() {
+        refreshRemoteSync()
+        val deviceIdHash = currentDeviceIdHash()
+        val queue: RemoteTaskSyncQueue
+        val jobs: List<LocalTaskBackfillJob>
+        synchronized(recordLock) {
+            queue = remoteSyncQueue ?: return
+            val done = loadRemoteBackfillDoneLocked()
+            val historyIds = mutableSetOf<String>()
+            val pending = mutableListOf<LocalTaskBackfillJob>()
+            for (entry in taskHistory) {
+                if (!MobileTaskPublishMapper.isStableLocalTaskId(entry.taskId)) continue
+                if (entry.taskId in done) continue
+                historyIds += entry.taskId
+                val status = MobileTaskPublishMapper.remoteStatus(entry.status)
+                pending += LocalTaskBackfillJob(
+                    request = MobileTaskPublishMapper.fromHistory(entry, deviceIdHash),
+                    existingRemoteId = lookupRemoteBindingLocked(entry.taskId),
+                    statusRequest = RemoteTaskStatusRequest(
+                        status = status,
+                        errorCode = "LOCAL_AUTOMATION_FAILED".takeIf { entry.status == TaskRunStatus.FAILED },
+                        errorMessage = entry.errorMessage?.take(512)?.takeIf { entry.status == TaskRunStatus.FAILED },
+                    ).takeIf { status != RemoteTaskStatus.READY },
+                    records = allTaskRecords.filter { it.taskId == entry.taskId }.mapNotNull { it.toRemoteRequest() },
+                )
+            }
+            val saved = decodeTaskDrafts(recordPreferences?.getString(SAVED_TASKS_KEY, null))
+            for (draft in saved) {
+                if (!MobileTaskPublishMapper.isStableLocalTaskId(draft.id)) continue
+                if (draft.id in historyIds || draft.id in done) continue
+                pending += LocalTaskBackfillJob(
+                    request = MobileTaskPublishMapper.fromDraft(draft, deviceIdHash),
+                    existingRemoteId = lookupRemoteBindingLocked(draft.id),
+                    statusRequest = null,
+                    records = emptyList(),
+                )
+            }
+            jobs = pending
+        }
+        if (jobs.isEmpty()) {
+            logger.info("local_task_backfill_skipped", attributes = mapOf("reason" to "already_bound_or_empty"))
+            return
+        }
+        logger.info(
+            "local_task_backfill_enqueued",
+            attributes = mapOf(
+                "tasks" to jobs.size,
+                "records" to jobs.sumOf { it.records.size },
+            ),
+        )
+        jobs.forEach { job ->
+            queue.enqueueBackfill(
+                request = job.request,
+                existingRemoteId = job.existingRemoteId,
+                statusRequest = job.statusRequest,
+                records = job.records,
+            )
+        }
+    }
+
+    private data class LocalTaskBackfillJob(
+        val request: MobileTaskCreateRequest,
+        val existingRemoteId: Long?,
+        val statusRequest: RemoteTaskStatusRequest?,
+        val records: List<RemoteRecordRequest>,
+    )
+
+    private fun UserTaskRecord.toRemoteRequest(): RemoteRecordRequest? {
+        val key = userKey?.takeIf { it.isNotBlank() }
+            ?: identityFingerprint?.takeIf { it.isNotBlank() }
+            ?: return null
+        val failed = outcome != UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED &&
+            outcome != UserTaskRecord.Outcome.PROFILE_OPENED
+        return RemoteRecordRequest(
+            userKey = key.take(128),
+            displayName = displayName?.take(255),
+            status = RemoteTaskRecordStatus.from(outcome),
+            lastAction = page?.name ?: outcome.name,
+            failureCode = outcome.name.takeIf { failed && !reason.isNullOrBlank() },
+            failureMessage = reason?.take(512)?.takeIf { failed },
+        )
+    }
+
+    private fun lookupRemoteBindingLocked(localTaskId: String): Long? {
+        val raw = recordPreferences?.getString(REMOTE_TASK_BINDINGS_KEY, null) ?: return null
+        return runCatching { JSONObject(raw).optLong(localTaskId, 0L).takeIf { it > 0L } }.getOrNull()
+    }
+
+    private fun persistRemoteBindingLocked(localTaskId: String, remoteId: Long) {
+        val json = runCatching {
+            JSONObject(recordPreferences?.getString(REMOTE_TASK_BINDINGS_KEY, null) ?: "{}")
+        }.getOrDefault(JSONObject())
+        json.put(localTaskId, remoteId)
+        recordPreferences?.edit()?.putString(REMOTE_TASK_BINDINGS_KEY, json.toString())?.apply()
+    }
+
+    private fun loadRemoteBackfillDoneLocked(): Set<String> {
+        val raw = recordPreferences?.getString(REMOTE_TASK_BACKFILL_DONE_KEY, null) ?: return emptySet()
+        return runCatching {
+            val json = JSONArray(raw)
+            buildSet {
+                for (index in 0 until json.length()) {
+                    json.optString(index).takeIf { it.isNotBlank() }?.let(::add)
+                }
+            }
+        }.getOrDefault(emptySet())
+    }
+
+    private fun persistRemoteBackfillDoneLocked(localTaskId: String) {
+        val done = loadRemoteBackfillDoneLocked().toMutableSet()
+        if (!done.add(localTaskId)) return
+        recordPreferences?.edit()
+            ?.putString(REMOTE_TASK_BACKFILL_DONE_KEY, JSONArray(done.toList()).toString())
+            ?.apply()
+    }
+
     private fun TaskSnapshot.toJson(): JSONObject = JSONObject().apply {
         put("task_id", taskId)
         put("task_name", taskName)
@@ -1741,6 +1951,8 @@ object AutomationStore {
     private const val LOCAL_TASK_QUEUE_SESSION_KEY = "local_task_queue_session"
     private const val TASK_DRAFT_KEY = "draft"
     private const val SAVED_TASKS_KEY = "saved_tasks"
+    private const val REMOTE_TASK_BINDINGS_KEY = "remote_task_bindings"
+    private const val REMOTE_TASK_BACKFILL_DONE_KEY = "remote_task_backfill_done"
     private const val MAX_TASK_RECORDS = 2_000
     private const val MAX_TASK_HISTORY = 100
     private const val MAX_SAVED_TASKS = 100
