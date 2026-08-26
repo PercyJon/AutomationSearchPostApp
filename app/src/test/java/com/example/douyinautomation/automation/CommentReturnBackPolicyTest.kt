@@ -106,6 +106,20 @@ class CommentReturnBackPolicyTest {
     }
 
     @Test
+    fun returnSkipsUnknownPageOcrWhileWaitingForTheCommentSheet() {
+        assertTrue(
+            CommentReturnBackPolicy.shouldBypassUnknownPageOcrDuringReturn(
+                awaitingCommentSurfaceReturn = true,
+            ),
+        )
+        assertFalse(
+            CommentReturnBackPolicy.shouldBypassUnknownPageOcrDuringReturn(
+                awaitingCommentSurfaceReturn = false,
+            ),
+        )
+    }
+
+    @Test
     fun dmPathTakesTheSecondBackWithoutAProfileLeavePoll() {
         assertTrue(
             CommentReturnBackPolicy.shouldDispatchAnotherReturnBack(

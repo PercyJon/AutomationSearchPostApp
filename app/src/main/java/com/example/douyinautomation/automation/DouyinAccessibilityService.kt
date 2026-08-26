@@ -235,6 +235,7 @@ class DouyinAccessibilityService : AccessibilityService() {
         // several seconds on physical devices, making an active task appear inert. Keep OCR for
         // every uncertain screen; skip it only when that accepted handoff is immediately usable.
         if (controller.shouldBypassOcrForCurrentProfileCommentEntry(context)) return context
+        if (controller.shouldBypassOcrForCommentSurfaceReturn()) return context
 
         val engine = ocr ?: return context
         val now = SystemClock.uptimeMillis()

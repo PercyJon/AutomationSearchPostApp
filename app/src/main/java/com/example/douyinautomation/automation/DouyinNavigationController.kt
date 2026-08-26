@@ -254,6 +254,17 @@ class DouyinNavigationController(
         )
     }
 
+    /**
+     * Returning from a commenter DM only needs node proof of the comment sheet. A full-screen
+     * UNKNOWN page_probe during that wait blocks the next tree sample without changing BACK
+     * count or sheet confirmation.
+     */
+    fun shouldBypassOcrForCommentSurfaceReturn(): Boolean =
+        taskActive &&
+            CommentReturnBackPolicy.shouldBypassUnknownPageOcrDuringReturn(
+                awaitingCommentSurfaceReturn = commentRuntime.isAwaitingCommentSurfaceReturn,
+            )
+
     /** True while the M2 blank-message result is still being awaited, regardless of OCR state. */
     fun shouldProbeEmptyMessageResult(): Boolean =
         taskActive && phase == AutomationPhase.WAITING_FOR_EMPTY_MESSAGE_RESULT

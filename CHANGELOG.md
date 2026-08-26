@@ -4,6 +4,28 @@
 
 ---
 
+## [未发布] 2026-08-26 —— 返回评论区等待时跳过全屏 page_probe OCR
+
+### 优化前记录
+
+- 现象：室内设计师 / 2×8 / 不跳过置顶 / 完整私信，返回评论区人均 6.72s（4.68–8.87s），合计 107.5s，约占全任务 35%。第二次 BACK 到确认人均 4.43s。
+- 日志：16 次返回中 8 次 `source=current_context`（人均 7.13s）在节点已能证明评论区前先拍 `page_probe` 全屏 OCR；4 次 `profile_leave_after_back` 人均 4.87s。空树等待 0 次。基线总时长 5 分 5 秒，16× `BLANK_PROBE_VERIFIED`。
+- 本轮唯一假设：返回等待期间页面常为 UNKNOWN，无障碍服务的全屏 `page_probe` OCR 不是面板确认所必需，会拖住下一次节点采样。不减 BACK 次数，不减 `CommentSurfaceDetector` 确认。
+
+### 最小修改
+
+`CommentReturnBackPolicy.shouldBypassUnknownPageOcrDuringReturn`：`awaitingCommentSurfaceReturn` 时跳过 `augmentUnknownPageWithOcr`。不改动作栏 OCR 门、BACK 次数、关面板 3 帧。
+
+### 真机验证
+
+- **设备**：OnePlus NE2210 / `b33aa309` / Android 16。先 `am force-stop` 抖音。
+- **条件**：室内设计师 / 2 视频 × 8 评论 / 不跳过置顶 / 完整私信。
+- 结果：`COMPLETED`，16 次 `BLANK_PROBE_VERIFIED`，`video_count=2`。总时长约 4 分 41 秒（基线 5 分 5 秒）。
+- 返回：人均 6.00s（基线 6.72s），合计 96.0s。`current_context` 人均 5.28s（基线 7.13s）。返回期间 `page_probe` 次数 0（基线 7）。`bounded_wait` 仍约 7.70s（动作栏 OCR 未改）。BACK 仍为 2 次。
+- 结论：**改善。** 全屏 page_probe 不再阻塞返回；剩余大头是 `bounded_wait` 的动作栏 OCR。
+
+---
+
 ## [未发布] 2026-08-26 —— 忽略评论区缩进回复用户
 
 ### 修复前记录

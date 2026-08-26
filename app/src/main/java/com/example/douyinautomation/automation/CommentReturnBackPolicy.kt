@@ -46,4 +46,12 @@ internal object CommentReturnBackPolicy {
         missingRetries: Int,
         missingRetryLimit: Int,
     ): Boolean = contextMissing && missingRetries < missingRetryLimit
+
+    /**
+     * After BACK from DM/profile the player is often UNKNOWN. Full-screen page_probe OCR is
+     * for home/search classification; the return path confirms the comment sheet from nodes.
+     */
+    fun shouldBypassUnknownPageOcrDuringReturn(
+        awaitingCommentSurfaceReturn: Boolean,
+    ): Boolean = awaitingCommentSurfaceReturn
 }

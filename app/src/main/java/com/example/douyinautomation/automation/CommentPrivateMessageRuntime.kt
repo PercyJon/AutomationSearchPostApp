@@ -192,6 +192,7 @@ class CommentPrivateMessageRuntime(
     val stage: CommentEntryStage get() = stateMachine.stage
     val candidateCount: Int get() = ledger.size
     val isProbingBlankMessage: Boolean get() = running && probingBlankMessage
+    val isAwaitingCommentSurfaceReturn: Boolean get() = running && awaitingCommentSurfaceReturn
 
     fun start(snapshot: CommentPrivateMessageSnapshot) {
         timeoutJob?.cancel()
@@ -2582,179 +2583,147 @@ class CommentPrivateMessageRuntime(
                     break
                 }
                 var detection = pageDetector.detect(context)
+                if (detection.kind == PageKind.HUMAN_INTERVENTION || detection.kind == PageKind.LOGIN) {
+                    terminal(CommentRuntimeTerminal.Outcome.PAUSED, "返回评论区时出现需要人工处理的页面")
+                    return false
+                }
+                // A direct-message composer can contain reply-like labels and a bottom input,
+                // while a profile can contain “回复” in its visible content. Do not treat either
+                // surface as the comment sheet before performing the required back navigation.
+                var stillInsideNestedSurface = detection.kind in setOf(
+                    PageKind.USER_PROFILE,
+                    PageKind.DIRECT_MESSAGE,
+                    PageKind.MESSAGE_EMPTY_REJECTED,
+                    PageKind.MESSAGE_SEND_FAILED,
+                    PageKind.PRIVATE_MESSAGE_RESTRICTED,
+                )
+
+                if (requiredBackActions == null && stillInsideNestedSurface) {
+                    requiredBackActions = requiredBackActionsFor(detection.kind)
+                }
+                val minimumBackActions = requiredBackActions ?: 0
+                val stillOnUserProfile = detection.kind == PageKind.USER_PROFILE
+                val nodeCommentSurfaceReady = CommentSurfaceDetector.detect(context).isCommentSurface
+
+                // A commenter profile can return directly to a video whose full right rail
+                // is visually present but sparse in accessibility. Take one bounded OCR
+                // sample only when nodes have not already proved the comment sheet.
+                if (
+                    CommentReturnBackPolicy.shouldEnrichReturnWithActionRailOcr(
+                        stillNested = stillInsideNestedSurface,
+                        nodeCommentSurfaceReady = nodeCommentSurfaceReady,
+                        ocrAlreadyAttempted = ocrRecoveryAttempted,
+                    )
+                ) {
+                    ocrRecoveryAttempted = true
+                    context = enrichWithOcr(context)
+                    detection = pageDetector.detect(context)
                     if (detection.kind == PageKind.HUMAN_INTERVENTION || detection.kind == PageKind.LOGIN) {
                         terminal(CommentRuntimeTerminal.Outcome.PAUSED, "返回评论区时出现需要人工处理的页面")
                         return false
                     }
-                    // A direct-message composer can contain reply-like labels and a bottom input,
-                    // while a profile can contain “回复” in its visible content. Do not treat either
-                    // surface as the comment sheet before performing the required back navigation.
-                    var stillInsideNestedSurface = detection.kind in setOf(
+                    stillInsideNestedSurface = detection.kind in setOf(
                         PageKind.USER_PROFILE,
                         PageKind.DIRECT_MESSAGE,
                         PageKind.MESSAGE_EMPTY_REJECTED,
                         PageKind.MESSAGE_SEND_FAILED,
                         PageKind.PRIVATE_MESSAGE_RESTRICTED,
                     )
-
-                    if (requiredBackActions == null && stillInsideNestedSurface) {
-                        requiredBackActions = requiredBackActionsFor(detection.kind)
-                    }
-                    val minimumBackActions = requiredBackActions ?: 0
-                    val stillOnUserProfile = detection.kind == PageKind.USER_PROFILE
-                    val nodeCommentSurfaceReady = CommentSurfaceDetector.detect(context).isCommentSurface
-
-                    // A commenter profile can return directly to a video whose full right rail
-                    // is visually present but sparse in accessibility. Take one bounded OCR
-                    // sample only when nodes have not already proved the comment sheet.
-                    if (
-                        CommentReturnBackPolicy.shouldEnrichReturnWithActionRailOcr(
-                            stillNested = stillInsideNestedSurface,
-                            nodeCommentSurfaceReady = nodeCommentSurfaceReady,
-                            ocrAlreadyAttempted = ocrRecoveryAttempted,
-                        )
-                    ) {
-                        ocrRecoveryAttempted = true
-                        context = enrichWithOcr(context)
-                        detection = pageDetector.detect(context)
-                        if (detection.kind == PageKind.HUMAN_INTERVENTION || detection.kind == PageKind.LOGIN) {
-                            terminal(CommentRuntimeTerminal.Outcome.PAUSED, "返回评论区时出现需要人工处理的页面")
-                            return false
-                        }
-                        stillInsideNestedSurface = detection.kind in setOf(
-                            PageKind.USER_PROFILE,
-                            PageKind.DIRECT_MESSAGE,
-                            PageKind.MESSAGE_EMPTY_REJECTED,
-                            PageKind.MESSAGE_SEND_FAILED,
-                            PageKind.PRIVATE_MESSAGE_RESTRICTED,
-                        )
-                    } else if (!stillInsideNestedSurface && nodeCommentSurfaceReady) {
-                        logger.info(
-                            "comment_return_ocr_skipped",
-                            attributes = mapOf(
-                                "attempt" to attempt,
-                                "back_actions" to returnCommentSurfaceBackActions,
-                                "required_back_actions" to minimumBackActions,
-                            ),
-                        )
-                    }
-
-                    val surfaceDetection = CommentSurfaceDetector.detect(context)
-                    val commentButton = VideoCommentButtonDetector.find(context)
+                } else if (!stillInsideNestedSurface && nodeCommentSurfaceReady) {
                     logger.info(
-                        "comment_return_to_surface_attempt",
+                        "comment_return_ocr_skipped",
                         attributes = mapOf(
                             "attempt" to attempt,
-                            "page" to detection.kind.name,
-                            "nested" to stillInsideNestedSurface,
-                            "surface" to surfaceDetection.isCommentSurface,
-                            "surface_reasons" to surfaceDetection.reasons.joinToString("|"),
-                            "comment_button" to (commentButton != null),
-                            "ocr_blocks" to context.ocrBlocks.size,
                             "back_actions" to returnCommentSurfaceBackActions,
                             "required_back_actions" to minimumBackActions,
                         ),
                     )
-                    if (!stillInsideNestedSurface && surfaceDetection.isCommentSurface) {
-                        logger.info(
-                            "comment_surface_restored",
-                            attributes = mapOf("back_attempts" to attempt, "source" to "current_context"),
-                        )
-                        return true
-                    }
+                }
 
-                    // Never consume a surface event until the current context is outside the
-                    // nested DM/profile route and this return has completed the expected number
-                    // of BACK actions. An old comment event can otherwise arrive after the first
-                    // DM -> profile BACK and incorrectly advance the next candidate.
-                    if (!stillInsideNestedSurface && hasConfirmedReturnCommentSurface(minimumBackActions)) {
-                        logger.info(
-                            "comment_surface_restored",
-                            attributes = mapOf(
-                                "back_attempts" to attempt,
-                                "source" to "accessibility_event_after_final_back",
-                                "back_actions" to returnCommentSurfaceBackActions,
-                            ),
-                        )
-                        return true
-                    }
-
-                    if (!stillInsideNestedSurface) {
-                        // A comment sheet is a toggle surface. If this final video view is still
-                        // ambiguous, do not reopen it automatically: the detector can temporarily
-                        // see comment-row controls as a right rail and GestureEngine may otherwise
-                        // downgrade a failed node action to a coordinate gesture. Waiting for a
-                        // direct confirmation is safe; failing it is preferable to touching a
-                        // heart, address, tab, or other non-requirement control.
-                        if (awaitCommentSurface(minimumBackActions)) {
-                            logger.info(
-                                "comment_surface_restored",
-                                attributes = mapOf("back_attempts" to attempt, "source" to "bounded_wait"),
-                            )
-                            return true
-                        }
-                        logger.warn(
-                            "comment_reopen_suppressed",
-                            message = "Final video surface is unconfirmed; automatic reopen is disabled for return safety",
-                            attributes = mapOf("attempt" to attempt, "back_actions" to returnCommentSurfaceBackActions),
-                        )
-                        break
-                    }
-                    if (attempt == TuningConstants.CommentRuntime.MAX_RETURN_TO_COMMENT_BACKS) break
-                    val dispatchBack = CommentReturnBackPolicy.shouldDispatchAnotherReturnBack(
-                        stillNested = stillInsideNestedSurface,
-                        backsDispatched = returnCommentSurfaceBackActions,
-                        requiredBacks = minimumBackActions,
-                        stillOnUserProfile = stillOnUserProfile,
-                        profileLeavePollCompleted = profileLeavePollCompleted,
-                    )
-                    if (!dispatchBack) {
-                        if (
-                            CommentReturnBackPolicy.shouldPollForProfileLeave(
-                                stillOnUserProfile = stillOnUserProfile,
-                                backsDispatched = returnCommentSurfaceBackActions,
-                                requiredBacks = minimumBackActions,
-                            )
-                        ) {
-                            when (awaitLeaveUserProfileAfterReturnBack()) {
-                                ProfileLeavePoll.COMMENT_SURFACE -> {
-                                    logger.info(
-                                        "comment_surface_restored",
-                                        attributes = mapOf(
-                                            "back_attempts" to attempt,
-                                            "source" to "profile_leave_poll",
-                                        ),
-                                    )
-                                    return true
-                                }
-                                ProfileLeavePoll.LEFT_PROFILE,
-                                ProfileLeavePoll.STILL_PROFILE,
-                                -> profileLeavePollCompleted = true
-                            }
-                        }
-                        continue
-                    }
-                    val nextBackActionCount = returnCommentSurfaceBackActions + 1
-                    confirmedReturnCommentSurface = null
-                    confirmedReturnCommentSurfaceBackActions = -1
-                    returnCommentSurfaceBackActions = nextBackActionCount
-                    if (!gestures.globalBack().succeeded) {
-                        returnCommentSurfaceBackActions -= 1
-                        break
-                    }
+                val surfaceDetection = CommentSurfaceDetector.detect(context)
+                val commentButton = VideoCommentButtonDetector.find(context)
+                logger.info(
+                    "comment_return_to_surface_attempt",
+                    attributes = mapOf(
+                        "attempt" to attempt,
+                        "page" to detection.kind.name,
+                        "nested" to stillInsideNestedSurface,
+                        "surface" to surfaceDetection.isCommentSurface,
+                        "surface_reasons" to surfaceDetection.reasons.joinToString("|"),
+                        "comment_button" to (commentButton != null),
+                        "ocr_blocks" to context.ocrBlocks.size,
+                        "back_actions" to returnCommentSurfaceBackActions,
+                        "required_back_actions" to minimumBackActions,
+                    ),
+                )
+                if (!stillInsideNestedSurface && surfaceDetection.isCommentSurface) {
                     logger.info(
-                        "comment_return_back_dispatched",
-                        attributes = mapOf("attempt" to attempt, "back_actions" to nextBackActionCount),
+                        "comment_surface_restored",
+                        attributes = mapOf("back_attempts" to attempt, "source" to "current_context"),
                     )
-                    profileLeavePollCompleted = false
-                    if (stillOnUserProfile) {
+                    return true
+                }
+
+                // Never consume a surface event until the current context is outside the
+                // nested DM/profile route and this return has completed the expected number
+                // of BACK actions. An old comment event can otherwise arrive after the first
+                // DM -> profile BACK and incorrectly advance the next candidate.
+                if (!stillInsideNestedSurface && hasConfirmedReturnCommentSurface(minimumBackActions)) {
+                    logger.info(
+                        "comment_surface_restored",
+                        attributes = mapOf(
+                            "back_attempts" to attempt,
+                            "source" to "accessibility_event_after_final_back",
+                            "back_actions" to returnCommentSurfaceBackActions,
+                        ),
+                    )
+                    return true
+                }
+
+                if (!stillInsideNestedSurface) {
+                    // A comment sheet is a toggle surface. If this final video view is still
+                    // ambiguous, do not reopen it automatically: the detector can temporarily
+                    // see comment-row controls as a right rail and GestureEngine may otherwise
+                    // downgrade a failed node action to a coordinate gesture. Waiting for a
+                    // direct confirmation is safe; failing it is preferable to touching a
+                    // heart, address, tab, or other non-requirement control.
+                    if (awaitCommentSurface(minimumBackActions)) {
+                        logger.info(
+                            "comment_surface_restored",
+                            attributes = mapOf("back_attempts" to attempt, "source" to "bounded_wait"),
+                        )
+                        return true
+                    }
+                    logger.warn(
+                        "comment_reopen_suppressed",
+                        message = "Final video surface is unconfirmed; automatic reopen is disabled for return safety",
+                        attributes = mapOf("attempt" to attempt, "back_actions" to returnCommentSurfaceBackActions),
+                    )
+                    break
+                }
+                if (attempt == TuningConstants.CommentRuntime.MAX_RETURN_TO_COMMENT_BACKS) break
+                val dispatchBack = CommentReturnBackPolicy.shouldDispatchAnotherReturnBack(
+                    stillNested = stillInsideNestedSurface,
+                    backsDispatched = returnCommentSurfaceBackActions,
+                    requiredBacks = minimumBackActions,
+                    stillOnUserProfile = stillOnUserProfile,
+                    profileLeavePollCompleted = profileLeavePollCompleted,
+                )
+                if (!dispatchBack) {
+                    if (
+                        CommentReturnBackPolicy.shouldPollForProfileLeave(
+                            stillOnUserProfile = stillOnUserProfile,
+                            backsDispatched = returnCommentSurfaceBackActions,
+                            requiredBacks = minimumBackActions,
+                        )
+                    ) {
                         when (awaitLeaveUserProfileAfterReturnBack()) {
                             ProfileLeavePoll.COMMENT_SURFACE -> {
                                 logger.info(
                                     "comment_surface_restored",
                                     attributes = mapOf(
                                         "back_attempts" to attempt,
-                                        "source" to "profile_leave_after_back",
+                                        "source" to "profile_leave_poll",
                                     ),
                                 )
                                 return true
@@ -2763,9 +2732,41 @@ class CommentPrivateMessageRuntime(
                             ProfileLeavePoll.STILL_PROFILE,
                             -> profileLeavePollCompleted = true
                         }
-                    } else {
-                        delay(TuningConstants.CommentRuntime.RETURN_TO_COMMENT_DELAY_MS)
                     }
+                    continue
+                }
+                val nextBackActionCount = returnCommentSurfaceBackActions + 1
+                confirmedReturnCommentSurface = null
+                confirmedReturnCommentSurfaceBackActions = -1
+                returnCommentSurfaceBackActions = nextBackActionCount
+                if (!gestures.globalBack().succeeded) {
+                    returnCommentSurfaceBackActions -= 1
+                    break
+                }
+                logger.info(
+                    "comment_return_back_dispatched",
+                    attributes = mapOf("attempt" to attempt, "back_actions" to nextBackActionCount),
+                )
+                profileLeavePollCompleted = false
+                if (stillOnUserProfile) {
+                    when (awaitLeaveUserProfileAfterReturnBack()) {
+                        ProfileLeavePoll.COMMENT_SURFACE -> {
+                            logger.info(
+                                "comment_surface_restored",
+                                attributes = mapOf(
+                                    "back_attempts" to attempt,
+                                    "source" to "profile_leave_after_back",
+                                ),
+                            )
+                            return true
+                        }
+                        ProfileLeavePoll.LEFT_PROFILE,
+                        ProfileLeavePoll.STILL_PROFILE,
+                        -> profileLeavePollCompleted = true
+                    }
+                } else {
+                    delay(TuningConstants.CommentRuntime.RETURN_TO_COMMENT_DELAY_MS)
+                }
             }
             terminal(CommentRuntimeTerminal.Outcome.FAILED, "无法在限定次数内返回评论区")
             return false
