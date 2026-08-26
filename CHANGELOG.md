@@ -4,6 +4,179 @@
 
 ---
 
+## [未发布] 2026-08-26 —— 紧凑面板停止按钮可结束评论任务
+
+### 验证前记录
+
+- 现象：紧凑面板改版后暂停/恢复已点通，停止按钮一直未在真机上点到。
+- 预期：运行中展开面板，点红色「停止」应发出 overlay stop，任务进入 `STOPPED`，不再继续评论动作。
+- 本轮：无新根因假设，只复测既有停止按钮。
+
+### 最小修改
+
+无代码修改。
+
+### 真机验证
+
+- **设备**：OnePlus NE2210 / `b33aa309`。室内设计师 / 1×4 / 跳过探测。先 `am force-stop` 抖音。
+- 首个视频后展开面板（`[36,360-624,560]`），点右侧停止（约 `477,530`）：`floating_overlay_command command=stop`，95ms 后 `poc_stopped`。无后续 `OPEN_COMMENTS` / `comment_open_panel`。
+- 结论：**通过。** B 端暂停/恢复仍可单独补测。
+
+### 几何 / dp 检查
+
+- 无新增硬编码 px。未混用 dp 与 0–1 坐标。
+
+### 下一步
+
+- B 端关键词搜用户任务上单独复测悬浮窗暂停/恢复（恢复仍走 `openPrivateMessage`）。
+- 展开面板在左侧可能挡住评论头像 / OCR exclusion，按需再调位置。
+
+---
+
+## [未发布] 2026-08-26 —— 冻结的评论任务可从 UNKNOWN 页恢复
+
+### 修复前记录
+
+- 现象：作品打开过程中或评论区已打开时点悬浮窗暂停，再恢复会 `resume_rejected`（“The current page is not a verified safe resume point”），流程停住。
+- 预期：评论流程冻结后，在抖音视频/评论表面恢复应 `unfreeze` 并从暂停阶段继续。
+- 本轮唯一假设：B 端 `AutomationResumePolicy` 拒绝 `UNKNOWN`；抖音视频页和评论区常被判成 `UNKNOWN`。冻结的评论 runtime 应放行该页，仍拒绝登录/风控。
+
+### 最小修改
+
+`CommentOverlayResumePolicy.resumeDecision`：仅当 `commentRuntime` 已冻结且当前页为 `UNKNOWN` 时允许恢复，相位用 `pausedPhase`。未冻结的 B 端任务仍拒绝 `UNKNOWN`。
+
+### 真机验证
+
+- **设备**：OnePlus NE2210 / `b33aa309`。室内设计师 / 1×4 / 跳过探测。先 `am force-stop` 抖音。
+- 首个视频后暂停：`frozen stage=WAITING_FOR_VIDEO`，立即恢复：`poc_resumed WAITING_FOR_PROFILE`，`unfrozen`，随后 `OPEN_COMMENTS` → `comment_open_panel route=bounds_gesture_posted` 同一毫秒。无 `resume_rejected`。
+- 评论区 `READY_TO_READ` 再暂停恢复：`unfrozen_on_overlay_resume page=UNKNOWN, stage=READY_TO_READ`。无 `resume_rejected`。
+- 结论：**改善。** 停止按钮仍待复测。
+
+### 几何 / dp 检查
+
+- 无新增硬编码 px。未混用 dp 与 0–1 坐标。
+
+### 下一步
+
+- 复测停止按钮。
+- B 端暂停/恢复仍可单独补测。
+
+---
+
+## [未发布] 2026-08-26 —— 评论按钮手势不再等待 OEM callback
+
+### 修复前记录
+
+- 现象：悬浮窗恢复后 `OPEN_COMMENTS` → `node_click` 失败 → `bounds_tap` 取得动作槽后约 12s 无返回，任务失败「等待评论区」。无 `comment_open_panel`。
+- 预期：点评论按钮应在约 1s 内返回，由页面后置条件确认评论区是否打开。
+- 本轮唯一假设：`dispatchGesture` 会收下点击，但 overlay 存在时 OEM 不回调；等 callback 会把当前调度线程卡住，协程/IO/守护线程超时都无法恢复该线程。
+
+### 最小修改
+
+`GestureEngine.dispatchTap` 把 `dispatchGesture` 投到主线程后立即返回 `bounds_gesture_posted`，不再等待 `GestureResultCallback`。完成/取消只记日志。页面后置条件仍负责确认效果。
+
+### 真机验证
+
+- **设备**：OnePlus NE2210 / `b33aa309`。室内设计师 / 1×4 / 跳过探测。先 `am force-stop` 抖音。
+- 搜索点击已走 `bounds_gesture_posted`，约 70ms 内出现 `gesture_dispatch_completed`。
+- `OPEN_COMMENTS`：`gesture_dispatch_posted` 与 `comment_action comment_open_panel route=bounds_gesture_posted success=true` 同一毫秒；72ms 后 `gesture_dispatch_completed`。未再出现 12s「等待评论区」卡住。
+- 结论：**改善。** 点击不再被 callback 卡住。残留：视频未稳定时暂停会 `resume_rejected`；评论已打开后再暂停也会 `resume_rejected`；停止按钮仍待复测。
+
+### 几何 / dp 检查
+
+- 无新增硬编码 px。未混用 dp 与 0–1 坐标。
+
+### 下一步
+
+- 在视频页已稳定、尚未 `OPEN_COMMENTS` 的窗口暂停并恢复，确认 `unfreeze` 后评论按钮仍走 `bounds_gesture_posted`。
+- 复测停止按钮。
+- 若恢复仍被拒，再单独假设「resume 安全页判断过严」。
+
+---
+
+## [未发布] 2026-08-26 —— 悬浮窗运行中可操作并收紧展开面板
+
+### 修复前记录
+
+- 现象：执行期悬浮窗设为 `FLAG_NOT_TOUCHABLE`，收起态贴在右上角搜索附近。展开、暂停、恢复、停止在 B 端/评论任务运行中无法点。展开面板文案偏长、间距偏大。
+- 预期：运行中仍可展开并暂停/停止；暂停后可恢复且不把本 App 拉到前台。展开面板尽量紧凑，按钮按暂停/恢复/停止分色。
+- 本轮假设：触摸穿透应让位给操作按钮；暂停打开记录页会抢走抖音前台。
+
+### 最小修改
+
+- `FloatingOverlayTouchPolicy.shouldDisableTouches` 恒为 false。收起停在左侧 8dp、距顶 168dp。
+- 暂停不再打开记录页（`TaskRecordsOpenPolicy`）。
+- 展开面板：去掉「进度」；「进行中」与 `0/x` 同一行；详情改为「已私信 x」；右上「收起」；面板与收起/收缩按钮半透明；暂停橙、恢复绿、停止红。
+
+### 真机验证
+
+- **设备**：OnePlus NE2210 / `b33aa309` / Android 16。
+- 展开面板：无「进度」，「进行中」与 `0/x` 同行，「已私信 x」，「收起」，半透明。暂停橙、恢复绿、停止红。
+- 室内设计师 1×4 跳过探测：运行中可展开；暂停后抖音仍在前台（`UltraDetailActivity`），未打开记录页。
+
+---
+
+## [未发布] 2026-08-26 —— 悬浮窗恢复评论任务交回 commentRuntime
+
+### 修复前记录
+
+- 现象：评论任务从悬浮窗暂停后再恢复，会走 B 端主页→私信。round5：`poc_resumed WAITING_FOR_PROFILE` 后 `MESSAGE_SEND_FAILED`，再失败「私信失败后回不到用户列表」。
+- 预期：暂停后恢复应重新交给评论流程，不点主页私信按钮。
+- 本轮唯一假设：`pause()` 会 `commentRuntime.stop()`；`resume()` 在 `USER_PROFILE` 上调用 `openPrivateMessage`。应改为 `handoffCommentProfileObservation`。
+
+### 最小修改
+
+`CommentOverlayResumePolicy.shouldHandoffToCommentRuntime`：评论任务 + 用户主页则交回 `commentRuntime`。搜索指定用户任务恢复时补回 `pendingCommentRuntimeSnapshot`。
+
+### 真机验证
+
+- **设备**：OnePlus NE2210 / `b33aa309`。室内设计师 / 1×4 / 跳过探测。先 `am force-stop` 抖音。
+- `comment_runtime_started` 后展开并暂停：`floating_overlay_command pause`，`poc_paused_for_manual_handoff`，焦点仍在抖音。
+- 恢复：`poc_resumed WAITING_FOR_PROFILE`，`comment_runtime_started_at_profile_handoff source=overlay_resume`。无 `openPrivateMessage` / `MESSAGE_SEND_FAILED`。
+- 结论：**改善。** 未再走 B 端私信。残留由下一节 freeze 处理。
+
+---
+
+## [未发布] 2026-08-26 —— 悬浮窗暂停冻结评论流程而不是重置
+
+### 修复前记录
+
+- 现象：点开作品后再从悬浮窗暂停、恢复，`commentRuntime.start()` 把阶段清回 `WAITING_FOR_PROFILE`，约 12s 后「等待用户主页内容稳定」超时。
+- 预期：恢复后从暂停时的阶段继续（例如已在等视频则打开评论区）。
+- 本轮唯一假设：操作员暂停应 `freeze()` 保留 stage/ledger，恢复 `unfreeze()` 而不是 `start()`。
+
+### 最小修改
+
+`CommentPrivateMessageRuntime.freeze/unfreeze`。`pause()` 改为 freeze。overlay resume 优先 unfreeze 再 `onObserved`。
+
+### 真机验证
+
+- **设备**：OnePlus NE2210 / `b33aa309`。室内设计师 / 1×4 / 跳过探测。先 `am force-stop` 抖音。
+- 首个视频点击后暂停：`comment_runtime_frozen stage=WAITING_FOR_VIDEO`。立即恢复：`comment_runtime_unfrozen_on_overlay_resume stage=WAITING_FOR_VIDEO`，随后 `OPEN_COMMENTS`。未再出现「等待用户主页内容稳定」。
+- 结论：**改善。** 残留：unfreeze 时武装的「等待视频页面」看门狗可能在打开评论按钮的点击尚未返回时到期（约 12s），任务仍会 `FAILED`。停止按钮仍待复测。
+
+---
+
+## [未发布] 2026-08-26 —— 打开评论前先替换视频页看门狗
+
+### 修复前记录
+
+- 现象：悬浮窗恢复后出现 `OPEN_COMMENTS`，但点评论按钮未返回时「等待视频页面」到期，任务 FAILED。
+- 预期：一旦决定打开评论区，看门狗应改为等评论区，不再被视频页超时掐掉。
+- 本轮唯一假设：`OPEN_COMMENTS` 在点击成功后才 `armTimeout("等待评论区")`，阻塞点击期间仍跑 unfreeze 的视频页看门狗。应在点击前替换。
+
+### 最小修改
+
+`CommentRuntimeFreezePolicy.shouldReplaceWatchdogBeforeClick(OPEN_COMMENTS)`：打开评论前先 `armTimeout("等待评论区")`。
+
+### 真机验证
+
+- **设备**：OnePlus NE2210 / `b33aa309`。室内设计师 / 1×4 / 跳过探测。首个视频后暂停并立即恢复。
+- `OPEN_COMMENTS` 后不再出现「等待视频页面」。约 12s 后改为「等待评论区」超时（`node_click` 走 `bounds_tap` 未返回、无 `comment_open_panel`）。
+- 结论：**改善。** 视频页看门狗不再误杀。残留：恢复后点评论按钮本身卡住；停止按钮仍待复测。
+
+---
+
 ## [未发布] 2026-08-26 —— 返回评论区等待时跳过全屏 page_probe OCR
 
 ### 优化前记录

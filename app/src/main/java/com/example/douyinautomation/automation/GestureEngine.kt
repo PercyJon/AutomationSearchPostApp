@@ -5,10 +5,21 @@ import android.accessibilityservice.GestureDescription
 import android.graphics.Path
 import android.hardware.display.DisplayManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.Display
 import android.view.accessibility.AccessibilityNodeInfo
 import kotlin.coroutines.resume
 import kotlinx.coroutines.suspendCancellableCoroutine
+
+/**
+ * OEM overlay windows can accept dispatchGesture but never invoke the result callback.
+ * Waiting for that callback on the service thread blocks comment clicks until the watchdog.
+ * Post the gesture and treat it as success; page postconditions confirm the effect.
+ */
+internal object GestureDispatchCallbackPolicy {
+    fun postedTapOutcome(): ActionOutcome = ActionOutcome.success("bounds_gesture_posted")
+}
 
 /**
  * Executes an accessibility-node action first and uses the selected node's bounds only as a
@@ -152,7 +163,7 @@ class GestureEngine(
         )
     }
 
-    private suspend fun dispatchTap(x: Float, y: Float): ActionOutcome = suspendCancellableCoroutine { continuation ->
+    private fun dispatchTap(x: Float, y: Float): ActionOutcome {
         val path = Path().apply { moveTo(x, y) }
         val gesture = GestureDescription.Builder()
             .addStroke(
@@ -163,24 +174,27 @@ class GestureEngine(
                 ),
             )
             .build()
-        val dispatched = service.dispatchGesture(
-            gesture,
-            object : AccessibilityService.GestureResultCallback() {
-                override fun onCompleted(gestureDescription: GestureDescription?) {
-                    if (continuation.isActive) continuation.resume(ActionOutcome.success("bounds_gesture"))
-                }
-
-                override fun onCancelled(gestureDescription: GestureDescription?) {
-                    if (continuation.isActive) {
-                        continuation.resume(ActionOutcome.failure("Gesture was cancelled by the system"))
+        val mainHandler = Handler(Looper.getMainLooper())
+        logger.info("gesture_dispatch_posted")
+        mainHandler.post {
+            val accepted = service.dispatchGesture(
+                gesture,
+                object : AccessibilityService.GestureResultCallback() {
+                    override fun onCompleted(gestureDescription: GestureDescription?) {
+                        logger.info("gesture_dispatch_completed")
                     }
-                }
-            },
-            null,
-        )
-        if (!dispatched && continuation.isActive) {
-            continuation.resume(ActionOutcome.failure("System rejected gesture dispatch"))
+
+                    override fun onCancelled(gestureDescription: GestureDescription?) {
+                        logger.warn("gesture_dispatch_cancelled")
+                    }
+                },
+                mainHandler,
+            )
+            if (!accepted) {
+                logger.warn("gesture_dispatch_rejected")
+            }
         }
+        return GestureDispatchCallbackPolicy.postedTapOutcome()
     }
 
     private suspend fun dispatchSwipe(

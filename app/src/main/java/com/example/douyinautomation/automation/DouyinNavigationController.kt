@@ -1251,7 +1251,11 @@ class DouyinNavigationController(
 
         val detection = pageDetector.detect(context)
         AutomationStore.publishObservation(detection)
-        val decision = AutomationResumePolicy.decide(detection)
+        val decision = CommentOverlayResumePolicy.resumeDecision(
+            commentRuntimeFrozen = commentRuntime.isFrozen,
+            detection = detection,
+            pausedPhase = pausedPhase,
+        )
         if (!decision.allowed || decision.phase == null) {
             AutomationStore.publishManualHandoff(decision.reason)
             logger.warn("resume_rejected", message = decision.reason)
@@ -1263,17 +1267,51 @@ class DouyinNavigationController(
         pausedPhase = null
         AutomationStore.publishPhase(phase)
         logger.info("poc_resumed", attributes = mapOf("phase" to phase.name))
+        // Pause stops the comment runtime. Keep the immutable search-target config so a later
+        // verified profile can hand off again instead of falling through to B-end messaging.
+        if (isSearchTargetProfileCommentTask()) {
+            pendingCommentRuntimeSnapshot =
+                pendingCommentRuntimeSnapshot ?: activeTaskSnapshot?.commentConfig
+        }
         // Resuming does not necessarily produce a new accessibility window event.  The old
         // implementation only changed the phase, which left a verified search/profile page
         // idle until Douyin happened to emit another event.  Continue from the observation that
         // was just validated so Resume has the same post-condition behavior as a fresh event.
         if (!confirmOcrBackedPage(context, detection)) return
+        if (commentRuntime.unfreeze()) {
+            logger.info(
+                "comment_runtime_unfrozen_on_overlay_resume",
+                attributes = mapOf("stage" to commentRuntime.stage.name, "page" to detection.kind.name),
+            )
+            commentRuntime.onObserved(context, detection)
+            return
+        }
         when (detection.kind) {
             PageKind.HOME -> openSearch(context)
             PageKind.SEARCH_ENTRY -> enterKeyword(context)
             PageKind.SEARCH_RESULTS -> selectUserTab(context)
             PageKind.USER_RESULTS -> selectVisibleUser(context)
-            PageKind.USER_PROFILE -> openPrivateMessage(context)
+            PageKind.USER_PROFILE -> {
+                if (CommentOverlayResumePolicy.shouldHandoffToCommentRuntime(
+                        isCommentPrivateMessageTask(),
+                        detection.kind,
+                    )
+                ) {
+                    if (!handoffCommentProfileObservation(
+                            context,
+                            detection,
+                            source = "overlay_resume",
+                        )
+                    ) {
+                        taskActive = false
+                        phase = AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF
+                        AutomationStore.publishManualHandoff("无法将当前主页交回评论私信流程")
+                        logger.warn("comment_overlay_resume_handoff_rejected")
+                    }
+                } else {
+                    openPrivateMessage(context)
+                }
+            }
             PageKind.DIRECT_MESSAGE -> completeAtMessagePage()
             else -> Unit
         }
@@ -2409,13 +2447,20 @@ class DouyinNavigationController(
             return false
         }
         if (!commentRuntime.isRunning) {
-            val snapshot = pendingCommentRuntimeSnapshot ?: commentConfig
-            pendingCommentRuntimeSnapshot = null
-            commentRuntime.start(snapshot)
-            logger.info(
-                "comment_runtime_started_at_profile_handoff",
-                attributes = mapOf("source" to source, "page" to detection.kind.name),
-            )
+            if (commentRuntime.unfreeze()) {
+                logger.info(
+                    "comment_runtime_unfrozen_at_handoff",
+                    attributes = mapOf("source" to source, "page" to detection.kind.name),
+                )
+            } else {
+                val snapshot = pendingCommentRuntimeSnapshot ?: commentConfig
+                pendingCommentRuntimeSnapshot = null
+                commentRuntime.start(snapshot)
+                logger.info(
+                    "comment_runtime_started_at_profile_handoff",
+                    attributes = mapOf("source" to source, "page" to detection.kind.name),
+                )
+            }
         }
 
         timeoutJob?.cancel()
@@ -5397,7 +5442,7 @@ class DouyinNavigationController(
         profilePostconditionJob?.cancel()
         messageEntryPostconditionJob?.cancel()
         messageResultJob?.cancel()
-        commentRuntime.stop()
+        commentRuntime.freeze()
         pausedPhase = phase.takeUnless {
             it == AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF || it == AutomationPhase.STOPPED
         }

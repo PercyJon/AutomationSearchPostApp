@@ -34,4 +34,12 @@ class GestureTimingPolicyTest {
         assertEquals(baseline, GestureTimingPolicy.forRefreshRate(0f))
         assertEquals(baseline, GestureTimingPolicy.forRefreshRate(Float.NaN))
     }
+
+    @Test
+    fun postedTapIsSuccessWithoutWaitingForTheOemCallback() {
+        assertEquals(
+            "bounds_gesture_posted",
+            GestureDispatchCallbackPolicy.postedTapOutcome().route,
+        )
+    }
 }

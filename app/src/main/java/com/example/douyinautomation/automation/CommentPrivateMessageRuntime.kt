@@ -68,6 +68,22 @@ internal object NextVideoTransitionProbePolicy {
     fun shouldMatchVisualTemplatesForRailOcr(): Boolean = false
 }
 
+/** Operator pause must freeze comment progress, not restart from the profile-entry watchdog. */
+internal object CommentRuntimeFreezePolicy {
+    fun watchdogAfterUnfreeze(stage: CommentEntryStage): String = when (stage) {
+        CommentEntryStage.WAITING_FOR_PROFILE -> "等待用户主页内容稳定"
+        CommentEntryStage.WAITING_FOR_VIDEO -> "等待视频页面"
+        CommentEntryStage.WAITING_FOR_COMMENTS -> "等待评论区"
+        CommentEntryStage.READY_TO_READ -> "等待读取评论"
+        CommentEntryStage.PAUSED_FOR_MANUAL_HANDOFF,
+        CommentEntryStage.FAILED,
+        -> "等待评论流程继续"
+    }
+
+    fun shouldReplaceWatchdogBeforeClick(action: CommentEntryAction): Boolean =
+        action == CommentEntryAction.OPEN_COMMENTS
+}
+
 private val NEXT_VIDEO_INTERVENTION_PAGES = setOf(
     PageKind.HUMAN_INTERVENTION,
     PageKind.LOGIN,
@@ -106,6 +122,7 @@ class CommentPrivateMessageRuntime(
     /** Rejects an old watchdog that wakes while a newer action has already re-armed it. */
     private val timeoutGeneration = AtomicLong(0L)
     @Volatile private var running = false
+    @Volatile private var frozen = false
     private var scrollPending = false
     private var lastViewportFingerprint: Int? = null
     private var scrollCount = 0
@@ -189,6 +206,7 @@ class CommentPrivateMessageRuntime(
     @Volatile private var nextVideoCommentsOpenAuthorized = false
 
     val isRunning: Boolean get() = running
+    val isFrozen: Boolean get() = frozen
     val stage: CommentEntryStage get() = stateMachine.stage
     val candidateCount: Int get() = ledger.size
     val isProbingBlankMessage: Boolean get() = running && probingBlankMessage
@@ -200,6 +218,7 @@ class CommentPrivateMessageRuntime(
         stateMachine.reset()
         ledger.clear()
         running = true
+        frozen = false
         scrollPending = false
         lastViewportFingerprint = null
         scrollCount = 0
@@ -283,6 +302,7 @@ class CommentPrivateMessageRuntime(
         nextVideoCommentsOpenAuthorized = false
         pendingViewportContext = null
         running = false
+        frozen = false
         config = null
         ledger.clear()
         processedCandidateKeys.clear()
@@ -292,6 +312,42 @@ class CommentPrivateMessageRuntime(
         observedContextGeneration.incrementAndGet()
         awaitingCommentSurfaceReturn = false
         clearReturnCommentSurfaceConfirmation()
+    }
+
+    /** Stops the watchdog without discarding stage, ledger, or the current video/comment page. */
+    fun freeze() {
+        if (!running && !frozen) return
+        timeoutJob?.cancel()
+        timeoutJob = null
+        viewportMergeJob?.cancel()
+        viewportMergeJob = null
+        firstVideoTransitionProbeJob?.cancel()
+        firstVideoTransitionProbeJob = null
+        commentPanelProbeJob?.cancel()
+        commentPanelProbeJob = null
+        nextVideoTransitionProbeJob?.cancel()
+        nextVideoTransitionProbeJob = null
+        profileSurfaceProbeJob?.cancel()
+        profileSurfaceProbeJob = null
+        running = false
+        frozen = true
+        logger.info(
+            "comment_runtime_frozen",
+            attributes = mapOf("stage" to stateMachine.stage.name),
+        )
+    }
+
+    /** Continues the frozen comment loop from its last stage instead of re-entering the profile. */
+    fun unfreeze(): Boolean {
+        if (!frozen || config == null) return false
+        frozen = false
+        running = true
+        armTimeout(CommentRuntimeFreezePolicy.watchdogAfterUnfreeze(stateMachine.stage))
+        logger.info(
+            "comment_runtime_unfrozen",
+            attributes = mapOf("stage" to stateMachine.stage.name),
+        )
+        return true
     }
 
     /** Restarts profile observation after a search result was skipped without losing the task. */
@@ -612,12 +668,16 @@ class CommentPrivateMessageRuntime(
             CommentEntryAction.OPEN_COMMENTS -> {
                 val target = observation.commentButton
                     ?: return terminal(CommentRuntimeTerminal.Outcome.FAILED, "未找到评论按钮")
+                // Replace the video-page watchdog before the click. Opening comments can block
+                // on node_click/bounds_tap long enough for "等待视频页面" to expire first.
+                if (CommentRuntimeFreezePolicy.shouldReplaceWatchdogBeforeClick(CommentEntryAction.OPEN_COMMENTS)) {
+                    armTimeout("等待评论区")
+                }
                 val outcome = clickCommentButton(target, "comment_open_panel")
                 if (!outcome.succeeded) {
                     terminal(CommentRuntimeTerminal.Outcome.FAILED, "打开评论区失败：${outcome.reason}")
                     return
                 }
-                armTimeout("等待评论区")
                 scheduleCommentPanelProbe()
                 return
             }

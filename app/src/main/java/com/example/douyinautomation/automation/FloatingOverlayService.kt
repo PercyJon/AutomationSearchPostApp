@@ -14,7 +14,6 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import kotlinx.coroutines.CoroutineScope
@@ -45,7 +44,7 @@ class FloatingOverlayService : Service() {
     private var detailText: TextView? = null
     private var progressText: TextView? = null
     private var stageText: TextView? = null
-    private var actionButton: Button? = null
+    private var actionButton: TextView? = null
     private var nonTouchableForAutomation = false
 
     override fun onCreate() {
@@ -76,8 +75,8 @@ class FloatingOverlayService : Service() {
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = (resources.displayMetrics.widthPixels - dp(COLLAPSED_SIZE_DP) - dp(8)).coerceAtLeast(0)
-            y = dp(88)
+            x = collapsedSlotX()
+            y = collapsedSlotY()
         }
         runCatching { windowManager?.addView(view, params) }
             .onFailure { error ->
@@ -133,106 +132,121 @@ class FloatingOverlayService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    private fun compactText(
+        sizeSp: Float,
+        color: Int,
+        extraTopDp: Int = 0,
+        extraBottomDp: Int = 0,
+    ): TextView = TextView(this).apply {
+        textSize = sizeSp
+        setTextColor(color)
+        includeFontPadding = false
+        setPadding(0, dp(extraTopDp), 0, dp(extraBottomDp))
+    }
+
+    private fun compactButton(
+        label: String,
+        backgroundColor: Int,
+        onClick: () -> Unit,
+    ): TextView = TextView(this).apply {
+        text = label
+        textSize = 11f
+        gravity = Gravity.CENTER
+        includeFontPadding = false
+        minHeight = 0
+        minimumHeight = 0
+        minWidth = 0
+        minimumWidth = 0
+        setPadding(0, 0, 0, 0)
+        setTextColor(Color.WHITE)
+        background = roundedBackground(backgroundColor, dp(7))
+        setOnClickListener { onClick() }
+    }
+
     private fun buildOverlay(): LinearLayout {
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(10), dp(14), dp(10))
+            setPadding(dp(6), dp(4), dp(6), dp(4))
             background = GradientDrawable().apply {
-                setColor(Color.WHITE)
-                cornerRadius = dp(16).toFloat()
-                setStroke(dp(1), Color.rgb(220, 226, 236))
+                setColor(COLOR_PANEL)
+                cornerRadius = dp(10).toFloat()
+                setStroke(dp(1), COLOR_PANEL_STROKE)
             }
-            elevation = dp(8).toFloat()
-        }
-        val title = TextView(this).apply {
-            text = "自动化进度"
-            setTextColor(Color.rgb(26, 35, 52))
-            textSize = 15f
-            setPadding(0, 0, 0, dp(4))
-            setOnTouchListener(DragTouchListener())
+            elevation = dp(3).toFloat()
         }
         val collapseButton = TextView(this).apply {
             text = "收起"
-            contentDescription = "收起自动化进度"
+            contentDescription = "收起进度"
             gravity = Gravity.CENTER
+            includeFontPadding = false
             setTextColor(Color.rgb(45, 111, 226))
-            textSize = 11f
-            background = roundedBackground(Color.rgb(238, 244, 255), dp(10))
+            textSize = 10f
+            background = roundedBackground(COLOR_COLLAPSE_BUTTON, dp(8))
             setPadding(dp(8), 0, dp(8), 0)
             setOnClickListener { collapseOverlay() }
         }
-        val header = LinearLayout(this).apply {
+        stageText = compactText(11f, Color.rgb(94, 104, 122))
+        progressText = compactText(12f, Color.rgb(45, 111, 226)).apply {
+            setPadding(dp(6), 0, 0, 0)
+        }
+        detailText = compactText(10f, Color.rgb(105, 112, 126), extraTopDp = 1, extraBottomDp = 2)
+        val statusRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            addView(title, LinearLayout.LayoutParams(0, -1, 1f))
-            addView(collapseButton, LinearLayout.LayoutParams(dp(50), dp(26)))
+            setOnTouchListener(DragTouchListener())
+            addView(stageText, LinearLayout.LayoutParams(-2, dp(18)))
+            addView(progressText, LinearLayout.LayoutParams(-2, dp(18)))
+            addView(View(this@FloatingOverlayService), LinearLayout.LayoutParams(0, 1, 1f))
+            addView(collapseButton, LinearLayout.LayoutParams(-2, dp(20)))
         }
-        stageText = TextView(this).apply {
-            textSize = 12f
-            setTextColor(Color.rgb(94, 104, 122))
+        actionButton = compactButton("暂停", COLOR_PAUSE) {
+            val phase = AutomationStore.uiState.value.phase
+            val action = FloatingOverlayControlPolicy.primaryAction(phase)
+            val canResume = action == FloatingOverlayPrimaryAction.RESUME
+            // Resume must inspect Douyin immediately.  Keeping this expanded application
+            // overlay above the player can temporarily make it the active accessibility
+            // window on some OEM builds, so remove it before queuing the explicit Resume.
+            // The controller performs its own bounded, read-only target revalidation after
+            // this handoff; collapsing here never starts a task by itself.
+            if (canResume) collapseOverlay()
+            AutomationStore.logger.info(
+                "floating_overlay_command",
+                attributes = mapOf("command" to if (canResume) "resume" else "pause"),
+            )
+            AutomationStore.send(
+                if (canResume) AutomationCommand.Resume else AutomationCommand.Pause,
+            )
         }
-        progressText = TextView(this).apply {
-            textSize = 13f
-            setTextColor(Color.rgb(45, 111, 226))
-            setPadding(0, dp(4), 0, 0)
+        val stopButton = compactButton("停止", COLOR_STOP) {
+            AutomationStore.logger.info(
+                "floating_overlay_command",
+                attributes = mapOf("command" to "stop"),
+            )
+            AutomationStore.send(AutomationCommand.Stop)
         }
-        detailText = TextView(this).apply {
-            textSize = 11f
-            setTextColor(Color.rgb(105, 112, 126))
-            setPadding(0, dp(2), 0, dp(6))
-        }
-        actionButton = Button(this).apply {
-            textSize = 12f
-            minHeight = 0
-            minimumHeight = 0
-            setPadding(dp(8), 0, dp(8), 0)
-            setOnClickListener {
-                val phase = AutomationStore.uiState.value.phase
-                val canResume = phase in setOf(
-                    AutomationPhase.SUSPENDED_BEFORE_START,
-                    AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF,
-                )
-                // Resume must inspect Douyin immediately.  Keeping this expanded application
-                // overlay above the player can temporarily make it the active accessibility
-                // window on some OEM builds, so remove it before queuing the explicit Resume.
-                // The controller performs its own bounded, read-only target revalidation after
-                // this handoff; collapsing here never starts a task by itself.
-                if (canResume) collapseOverlay()
-                AutomationStore.send(if (canResume) AutomationCommand.Resume else AutomationCommand.Pause)
-            }
-        }
-        val stopButton = Button(this).apply {
-            text = "停止"
-            textSize = 12f
-            minHeight = 0
-            minimumHeight = 0
-            setPadding(dp(8), 0, dp(8), 0)
-            setOnClickListener { AutomationStore.send(AutomationCommand.Stop) }
-        }
+        val pauseParams = LinearLayout.LayoutParams(0, dp(24), 1f).apply { marginEnd = dp(4) }
         val actions = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.END
-            addView(actionButton, LinearLayout.LayoutParams(0, dp(36), 1f))
-            addView(stopButton, LinearLayout.LayoutParams(0, dp(36), 1f))
+            gravity = Gravity.CENTER_VERTICAL
+            addView(actionButton, pauseParams)
+            addView(stopButton, LinearLayout.LayoutParams(0, dp(24), 1f))
         }
-        card.addView(header, LinearLayout.LayoutParams(-1, dp(28)))
-        card.addView(stageText, LinearLayout.LayoutParams(-1, dp(22)))
-        card.addView(progressText, LinearLayout.LayoutParams(-1, dp(26)))
-        card.addView(detailText, LinearLayout.LayoutParams(-1, dp(24)))
-        card.addView(actions, LinearLayout.LayoutParams(-1, dp(40)))
+        card.addView(statusRow, LinearLayout.LayoutParams(-1, dp(20)))
+        card.addView(detailText, LinearLayout.LayoutParams(-1, -2))
+        card.addView(actions, LinearLayout.LayoutParams(-1, dp(24)))
         return card
     }
 
     private fun buildCollapsedOverlay(): TextView = TextView(this).apply {
         text = "↗"
-        contentDescription = "展开自动化进度"
+        contentDescription = "展开进度"
         gravity = Gravity.CENTER
         setTextColor(Color.WHITE)
         textSize = 21f
         // Sky-blue, semi-transparent, and half the prior side length. Recognition still uses
         // dynamically published actual bounds rather than this visual style.
-        background = roundedBackground(Color.argb(170, 56, 189, 248), dp(10))
-        elevation = dp(8).toFloat()
+        background = roundedBackground(COLOR_COLLAPSED_CHIP, dp(10))
+        elevation = dp(4).toFloat()
         setOnClickListener { expandOverlay() }
     }
 
@@ -255,8 +269,8 @@ class FloatingOverlayService : Service() {
         val collapsedSize = dp(COLLAPSED_SIZE_DP)
         params.width = collapsedSize
         params.height = collapsedSize
-        params.x = (resources.displayMetrics.widthPixels - collapsedSize - dp(8)).coerceAtLeast(0)
-        params.y = expandedY.coerceAtLeast(dp(12))
+        params.x = collapsedSlotX()
+        params.y = collapsedSlotY()
         runCatching {
             manager.removeView(expanded)
             manager.addView(collapsed, params)
@@ -300,6 +314,10 @@ class FloatingOverlayService : Service() {
             isCollapsed = false
             publishOverlayBounds(expanded)
             updateOverlay(AutomationStore.uiState.value)
+            AutomationStore.logger.info(
+                "floating_overlay_expanded",
+                attributes = mapOf("x" to params.x, "y" to params.y),
+            )
         }.onFailure { error ->
             AutomationStore.logger.error(
                 "floating_overlay_expand_failed",
@@ -316,42 +334,36 @@ class FloatingOverlayService : Service() {
 
     private fun updateOverlay(state: AutomationUiState) {
         updateAutomationTouchability(state.phase)
-        val taskName = state.taskName?.takeIf(String::isNotBlank) ?: "当前任务"
         val total = state.taskMaxUsers?.coerceAtLeast(0) ?: 0
         val handled = state.taskHandledUserCount.coerceAtLeast(0)
         val records = state.recordEntries.filter { it.taskId == state.taskId }
-        val success = records.count {
+        val messaged = records.count {
             it.outcome == UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED ||
                 it.outcome == UserTaskRecord.Outcome.PROFILE_OPENED
-        }
-        val failed = records.count {
-            it.outcome in setOf(
-                UserTaskRecord.Outcome.MESSAGE_SEND_FAILED,
-                UserTaskRecord.Outcome.PRIVATE_MESSAGE_UNAVAILABLE,
-                UserTaskRecord.Outcome.IDENTITY_UNAVAILABLE,
-                UserTaskRecord.Outcome.PAUSED,
-                UserTaskRecord.Outcome.STOPPED,
-            )
         }
         val queueLabel = AutomationStore.getLocalTaskQueueSession()
             ?.takeIf { session -> session.status in setOf(LocalTaskQueueStatus.RUNNING, LocalTaskQueueStatus.PAUSED) }
             ?.let { session -> "队列 ${session.activeTaskIndex + 1}/${session.tasks.size}" }
-        stageText?.text = listOfNotNull(taskName.take(20), queueLabel, phaseLabel(state.phase)).joinToString(" · ")
-        progressText?.text = "处理 $handled / ${if (total > 0) total else "—"}"
-        detailText?.text = "成功 $success · 失败 $failed · 总数 ${records.size}"
-        actionButton?.text = when (state.phase) {
-            AutomationPhase.SUSPENDED_BEFORE_START -> "恢复"
-            AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF -> "恢复"
-            else -> "暂停"
+        stageText?.text = FloatingOverlayControlPolicy.stageLabel(phaseLabel(state.phase), queueLabel)
+        progressText?.text = FloatingOverlayControlPolicy.progressLabel(handled, total)
+        detailText?.text = FloatingOverlayControlPolicy.detailLabel(messaged)
+        val action = FloatingOverlayControlPolicy.primaryAction(state.phase)
+        actionButton?.apply {
+            text = when (action) {
+                FloatingOverlayPrimaryAction.RESUME -> "恢复"
+                FloatingOverlayPrimaryAction.PAUSE,
+                FloatingOverlayPrimaryAction.NONE,
+                -> "暂停"
+            }
+            background = roundedBackground(
+                if (action == FloatingOverlayPrimaryAction.RESUME) COLOR_RESUME else COLOR_PAUSE,
+                dp(8),
+            )
+            isEnabled = action != FloatingOverlayPrimaryAction.NONE
         }
-        actionButton?.isEnabled = state.phase !in setOf(
-            AutomationPhase.COMPLETED_TASK,
-            AutomationPhase.FAILED,
-            AutomationPhase.STOPPED,
-        )
     }
 
-    /** Keep the progress window visible but let all active automation touches pass through it. */
+    /** Overlay stays tappable; automation avoids it via published OCR exclusion bounds. */
     private fun updateAutomationTouchability(phase: AutomationPhase) {
         val shouldDisableTouches = FloatingOverlayTouchPolicy.shouldDisableTouches(phase)
         if (nonTouchableForAutomation == shouldDisableTouches) return
@@ -435,15 +447,27 @@ class FloatingOverlayService : Service() {
         AutomationPhase.COMPLETED_TASK -> "已完成"
         AutomationPhase.FAILED -> "执行失败"
         AutomationPhase.STOPPED -> "已停止"
-        else -> "执行中"
+        else -> "进行中"
     }
+
+    private fun collapsedSlotX(): Int = dp(COLLAPSED_EDGE_DP)
+
+    /** Left side, below status/search and above the Douyin tab bar and comment avatar column. */
+    private fun collapsedSlotY(): Int = dp(168)
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     companion object {
-        private const val EXPANDED_WIDTH_DP = 250
-        /** Half the prior collapsed square side length (58dp → 29dp). */
+        private const val EXPANDED_WIDTH_DP = 196
         private const val COLLAPSED_SIZE_DP = 29
+        private const val COLLAPSED_EDGE_DP = 8
+        private val COLOR_PAUSE = Color.argb(210, 217, 119, 6)
+        private val COLOR_RESUME = Color.argb(210, 22, 163, 74)
+        private val COLOR_STOP = Color.argb(210, 220, 38, 38)
+        private val COLOR_PANEL = Color.argb(150, 255, 255, 255)
+        private val COLOR_PANEL_STROKE = Color.argb(110, 220, 226, 236)
+        private val COLOR_COLLAPSE_BUTTON = Color.argb(140, 238, 244, 255)
+        private val COLOR_COLLAPSED_CHIP = Color.argb(130, 56, 189, 248)
 
         fun startIfAllowed(context: Context) {
             if (!canDrawOverlays(context)) {

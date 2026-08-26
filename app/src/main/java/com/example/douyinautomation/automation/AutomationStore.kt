@@ -1642,7 +1642,7 @@ object AutomationStore {
         phase.toRemoteTaskStatus()?.let { status ->
             syncRemoteStatus(status, errorCode = if (phase == AutomationPhase.FAILED) "LOCAL_AUTOMATION_FAILED" else null, errorMessage = error)
         }
-        if (openRecords && phase in TERMINAL_PHASES) openRecordsTab()
+        if (openRecords && TaskRecordsOpenPolicy.shouldOpenRecordsTab(phase)) openRecordsTab()
         if (phase in setOf(AutomationPhase.COMPLETED_TASK, AutomationPhase.FAILED, AutomationPhase.STOPPED)) {
             applicationContext?.let(FloatingOverlayService::stop)
         }
@@ -1745,12 +1745,6 @@ object AutomationStore {
     private const val MAX_TASK_HISTORY = 100
     private const val MAX_SAVED_TASKS = 100
     private const val RECORDS_OPEN_THROTTLE_MS = 1_500L
-    private val TERMINAL_PHASES = setOf(
-        AutomationPhase.COMPLETED_TASK,
-        AutomationPhase.FAILED,
-        AutomationPhase.PAUSED_FOR_MANUAL_HANDOFF,
-        AutomationPhase.STOPPED,
-    )
     private val RETRY_ALLOWED_PHASES = setOf(
         AutomationPhase.IDLE,
         AutomationPhase.SERVICE_READY,
