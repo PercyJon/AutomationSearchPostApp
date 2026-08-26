@@ -180,6 +180,11 @@ class CommentPrivateMessageRuntime(
     private var nextVideoAdvanceReason = ""
     /** First video's first visible comment-row top as a screen-height ratio; not pixels. */
     private var firstScreenCommentRowTopRatio: Float? = null
+    /**
+     * Frozen left edge of top-level comment avatars for the current video, in px derived from
+     * the first viewport's leftmost avatar. Nested replies are indented and must not be tapped.
+     */
+    private var topLevelCommentAvatarLeftPx: Int? = null
     /** Probe-only: allow OPEN_COMMENTS while [awaitingNextVideoConfirmation] is still true. */
     @Volatile private var nextVideoCommentsOpenAuthorized = false
 
@@ -230,6 +235,7 @@ class CommentPrivateMessageRuntime(
         nextVideoSwipeAttempt = 0
         nextVideoAdvanceReason = ""
         firstScreenCommentRowTopRatio = null
+        topLevelCommentAvatarLeftPx = null
         nextVideoCommentsOpenAuthorized = false
         // Search-target mode still traverses the existing launch/search/user-tab flow before the
         // runtime receives a profile observation. Give that bounded entry route a longer guard;
@@ -272,6 +278,7 @@ class CommentPrivateMessageRuntime(
         nextVideoSwipeAttempt = 0
         nextVideoAdvanceReason = ""
         firstScreenCommentRowTopRatio = null
+        topLevelCommentAvatarLeftPx = null
         nextVideoCommentsOpenAuthorized = false
         pendingViewportContext = null
         running = false
@@ -321,6 +328,7 @@ class CommentPrivateMessageRuntime(
         nextVideoSwipeAttempt = 0
         nextVideoAdvanceReason = ""
         firstScreenCommentRowTopRatio = null
+        topLevelCommentAvatarLeftPx = null
         nextVideoCommentsOpenAuthorized = false
         running = true
         armTimeout("等待下一个用户主页")
@@ -1296,8 +1304,61 @@ class CommentPrivateMessageRuntime(
             commitNextVideoAccounting()
             }
         }
-        val firstAvatar = extraction.firstVisibleCommentAvatar
-        val firstCandidate = extraction.candidates.firstOrNull()
+        val density = displayDensity()
+        val rawAvatarCandidates = extraction.candidates.filter { it.avatarBounds != null }
+        val avatarLefts = buildList {
+            extraction.firstVisibleCommentAvatar?.left?.let(::add)
+            for (candidate in rawAvatarCandidates) {
+                candidate.avatarBounds?.left?.let(::add)
+            }
+        }
+        if (topLevelCommentAvatarLeftPx == null) {
+            CommentTopLevelAvatarPolicy.columnLeftPx(avatarLefts)?.let { left ->
+                topLevelCommentAvatarLeftPx = left
+                logger.info(
+                    "comment_toplevel_avatar_column",
+                    attributes = mapOf(
+                        "left" to left,
+                        "density" to density,
+                        "tolerance_px" to CommentTopLevelAvatarPolicy.tolerancePx(density),
+                        "scroll_count" to scrollCount,
+                    ),
+                )
+            }
+        }
+        val columnLeft = topLevelCommentAvatarLeftPx
+        val avatarCandidates: List<CommentUserCandidate>
+        if (columnLeft == null) {
+            avatarCandidates = rawAvatarCandidates
+        } else {
+            val partitioned = CommentTopLevelAvatarPolicy.partition(
+                candidates = rawAvatarCandidates,
+                columnLeft = columnLeft,
+                density = density,
+            )
+            avatarCandidates = partitioned.topLevel
+            for (candidate in partitioned.replies) {
+                logger.info(
+                    "comment_reply_row_skipped",
+                    attributes = mapOf(
+                        "identity_hash" to candidate.identityKey.hashCode(),
+                        "avatar_left" to (candidate.avatarBounds?.left ?: -1),
+                        "column_left" to columnLeft,
+                    ),
+                )
+            }
+        }
+        val firstAvatar = if (columnLeft == null) {
+            extraction.firstVisibleCommentAvatar
+        } else {
+            CommentTopLevelAvatarPolicy.leadingTopLevelAvatar(
+                firstVisible = extraction.firstVisibleCommentAvatar,
+                topLevelCandidates = avatarCandidates,
+                columnLeft = columnLeft,
+                density = density,
+            )
+        }
+        val firstCandidate = avatarCandidates.firstOrNull()
         val leadingRowVerifiedNonMatching = firstAvatar?.let { anchor ->
             CommentCandidateExtractor.hasVerifiedNonMatchingLeadingRow(
                 context = context,
@@ -1357,10 +1418,6 @@ class CommentPrivateMessageRuntime(
                 return
             }
         }
-        val avatarCandidates = extraction.candidates
-            // A real comment candidate must retain a live avatar target. OCR-only text or a
-            // location-card text pair is never actionable and must not enter the profile flow.
-            .filter { it.avatarBounds != null }
         val currentVideoDuplicateCount = avatarCandidates.count { candidate ->
             processedCandidateKeys.contains(candidate.identityKey)
         }
@@ -1377,7 +1434,9 @@ class CommentPrivateMessageRuntime(
             "comment_viewport_read",
             attributes = mapOf(
                 "candidate_count" to extraction.candidates.size,
+                "raw_avatar_candidate_count" to rawAvatarCandidates.size,
                 "actionable_candidate_count" to avatarCandidates.size,
+                "reply_skipped_count" to (rawAvatarCandidates.size - avatarCandidates.size),
                 "eligible_candidate_count" to newCandidates.size,
                 "current_video_duplicate_count" to currentVideoDuplicateCount,
                 "task_ledger_duplicate_count" to taskLedgerDuplicateCount,
@@ -1388,6 +1447,7 @@ class CommentPrivateMessageRuntime(
                 "duplicate_candidate_count" to update.duplicates,
                 "ledger_count" to update.total,
                 "scroll_count" to scrollCount,
+                "toplevel_avatar_left" to (columnLeft ?: -1),
                 "first_avatar_top" to (firstAvatar?.top ?: -1),
                 "first_candidate_top" to (firstCandidate?.let(::candidateTop) ?: -1),
                 "viewport_fingerprint" to viewportFingerprint(context),
@@ -1538,7 +1598,15 @@ class CommentPrivateMessageRuntime(
             }
             val postScrollExtraction = CommentCandidateExtractor.extract(fresh, terms, matchMode)
             reportMatchStatistics(fresh, postScrollExtraction)
-            val added = postScrollExtraction.candidates.count { candidate ->
+            val postScrollAvatars = postScrollExtraction.candidates.filter { it.avatarBounds != null }
+            val postScrollTopLevel = topLevelCommentAvatarLeftPx?.let { frozenLeft ->
+                CommentTopLevelAvatarPolicy.partition(
+                    candidates = postScrollAvatars,
+                    columnLeft = frozenLeft,
+                    density = displayDensity(),
+                ).topLevel
+            } ?: postScrollAvatars
+            val added = postScrollTopLevel.count { candidate ->
                 !processedCandidateKeys.contains(candidate.identityKey) &&
                     !processedTaskCandidateLedger.contains(candidate.identityKey)
             }
@@ -1607,6 +1675,8 @@ class CommentPrivateMessageRuntime(
         scrollCount = NextVideoAdvancePolicy.commentListScrollCountAfterLeavingVideo()
         staleScrollCount = 0
         emptyScrollCount = 0
+        topLevelCommentAvatarLeftPx = null
+        firstScreenCommentRowTopRatio = null
         if (previousScrollCount != 0) {
             logger.info(
                 "comment_next_video_scroll_reset",
@@ -1785,6 +1855,8 @@ class CommentPrivateMessageRuntime(
         initialCandidateReadRetryCount = 0
         reportedMatchStatisticsFingerprints.clear()
         activeCandidate = null
+        topLevelCommentAvatarLeftPx = null
+        firstScreenCommentRowTopRatio = null
         logger.info(
             "comment_next_video_confirmed",
             attributes = mapOf(
@@ -2068,6 +2140,24 @@ class CommentPrivateMessageRuntime(
                 attributes = CommentCandidateExtractor.avatarTargetDiagnostics(context, candidate),
             )
             return ActionOutcome.failure("评论头像节点不可重新定位，拒绝点击名称或其他控件")
+        }
+        val frozenColumnLeft = topLevelCommentAvatarLeftPx
+        if (frozenColumnLeft != null &&
+            !CommentTopLevelAvatarPolicy.isTopLevelAvatar(
+                avatarLeft = target.bounds.left,
+                columnLeft = frozenColumnLeft,
+                density = displayDensity(),
+            )
+        ) {
+            logger.warn(
+                "comment_reply_avatar_click_rejected",
+                message = "拒绝点击缩进回复头像，目标不在顶层评论列",
+                attributes = mapOf(
+                    "avatar_left" to target.bounds.left,
+                    "column_left" to frozenColumnLeft,
+                ),
+            )
+            return ActionOutcome.failure("拒绝点击缩进回复头像")
         }
         logger.info(
             "comment_avatar_target_verified",
@@ -2470,10 +2560,28 @@ class CommentPrivateMessageRuntime(
             var ocrRecoveryAttempted = false
             var requiredBackActions: Int? = null
             var profileLeavePollCompleted = false
+            var missingContextRetries = 0
             for (attempt in 0..TuningConstants.CommentRuntime.MAX_RETURN_TO_COMMENT_BACKS) {
                 var context = currentContext()
-                if (context != null) {
-                    var detection = pageDetector.detect(context)
+                while (
+                    CommentReturnBackPolicy.shouldWaitForReturnContext(
+                        contextMissing = context == null,
+                        missingRetries = missingContextRetries,
+                        missingRetryLimit = TuningConstants.CommentRuntime.RETURN_MISSING_CONTEXT_RETRIES,
+                    )
+                ) {
+                    missingContextRetries += 1
+                    delay(TuningConstants.CommentRuntime.RETURN_TO_COMMENT_DELAY_MS)
+                    context = currentContext()
+                }
+                if (context == null) {
+                    logger.warn(
+                        "comment_return_missing_context",
+                        message = "Active window was unavailable after BACK; stopping return retries",
+                    )
+                    break
+                }
+                var detection = pageDetector.detect(context)
                     if (detection.kind == PageKind.HUMAN_INTERVENTION || detection.kind == PageKind.LOGIN) {
                         terminal(CommentRuntimeTerminal.Outcome.PAUSED, "返回评论区时出现需要人工处理的页面")
                         return false
@@ -2658,7 +2766,6 @@ class CommentPrivateMessageRuntime(
                     } else {
                         delay(TuningConstants.CommentRuntime.RETURN_TO_COMMENT_DELAY_MS)
                     }
-                }
             }
             terminal(CommentRuntimeTerminal.Outcome.FAILED, "无法在限定次数内返回评论区")
             return false
@@ -2776,6 +2883,9 @@ class CommentPrivateMessageRuntime(
             root.recycle()
         }
     }
+
+    private fun displayDensity(): Float =
+        service.resources.displayMetrics.density.coerceAtLeast(0.5f)
 
     private fun candidateTop(candidate: CommentUserCandidate): Int = minOf(
         candidate.avatarBounds?.top ?: Int.MAX_VALUE,

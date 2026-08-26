@@ -95,6 +95,8 @@ object TuningConstants {
         const val INITIAL_COMMENT_CANDIDATE_READ_RETRIES = 3
         const val INITIAL_COMMENT_CANDIDATE_READ_RETRY_DELAY_MS = 300L
         const val MAX_RETURN_TO_COMMENT_BACKS = 3
+        /** Window can be null for a beat after BACK; do not spend the back budget on empty trees. */
+        const val RETURN_MISSING_CONTEXT_RETRIES = 8
         const val COMMENT_SURFACE_POLL_ATTEMPTS = 8
 
         /** Hard bounds that prevent unbounded comment-list or live-room navigation. */

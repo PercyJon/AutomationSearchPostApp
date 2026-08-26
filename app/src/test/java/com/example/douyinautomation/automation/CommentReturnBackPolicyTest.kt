@@ -81,6 +81,31 @@ class CommentReturnBackPolicyTest {
     }
 
     @Test
+    fun missingReturnWindowWaitsInsteadOfConsumingBackBudget() {
+        assertTrue(
+            CommentReturnBackPolicy.shouldWaitForReturnContext(
+                contextMissing = true,
+                missingRetries = 0,
+                missingRetryLimit = 8,
+            ),
+        )
+        assertFalse(
+            CommentReturnBackPolicy.shouldWaitForReturnContext(
+                contextMissing = false,
+                missingRetries = 0,
+                missingRetryLimit = 8,
+            ),
+        )
+        assertFalse(
+            CommentReturnBackPolicy.shouldWaitForReturnContext(
+                contextMissing = true,
+                missingRetries = 8,
+                missingRetryLimit = 8,
+            ),
+        )
+    }
+
+    @Test
     fun dmPathTakesTheSecondBackWithoutAProfileLeavePoll() {
         assertTrue(
             CommentReturnBackPolicy.shouldDispatchAnotherReturnBack(

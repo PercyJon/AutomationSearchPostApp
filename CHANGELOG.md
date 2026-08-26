@@ -4,6 +4,50 @@
 
 ---
 
+## [未发布] 2026-08-26 —— 忽略评论区缩进回复用户
+
+### 修复前记录
+
+- 现象：室内设计师任务首个视频把「自己的小迷弟」当作私信目标。该用户是「阳」的嵌套回复，头像相对顶层评论明显右移。
+- 预期：只私信最左侧顶层评论头像列的用户；忽略回复线程中的用户。
+- 本轮唯一假设：左侧 30% 头像轨道把缩进回复也收成候选。应在每个视频首次打开评论区时冻结最左头像列（dp 容差），后续只保留该列。
+
+### 最小修改
+
+`CommentTopLevelAvatarPolicy`：用首次视口最左 `avatar.left` 作为顶层列，16dp×density 对齐才可入队/点击。换视频时重置。首行安全边界改用该列上最靠上的头像，避免回复行冒充首条。
+
+### 真机验证
+
+- **设备**：OnePlus NE2210 / `b33aa309` / Android 16。先 `am force-stop` 抖音。
+- **条件**：室内设计师 / 不跳过置顶 / 完整私信。
+- 1×4：`COMPLETED`，4 次 `BLANK_PROBE_VERIFIED`。冻结列 `left=24`（density=3，容差 48px）。该次滚动未到缩进行。
+- 1×8：`COMPLETED`，8 次 `BLANK_PROBE_VERIFIED`。滚动 1 后 `comment_reply_row_skipped avatar_left=180 column_left=24`；该视口 `raw_avatar_candidate_count=2`、`reply_skipped_count=1`，只入队 `left=48` 的顶层行。未点击 `left=180`。
+- 结论：**改善。** 缩进回复不再进入私信队列。
+
+---
+
+## [未发布] 2026-08-26 —— 返回评论区时空窗口不消耗 BACK 次数
+
+### 修复前记录
+
+- 现象：室内设计师 / 2×8 / 不跳过置顶 / 完整私信，首屏 3 人队列；第 1 人 `BLANK_PROBE_VERIFIED` 后立即失败「无法在限定次数内返回评论区」。尚未翻页。
+- 日志：`comment_return_back_dispatched attempt=0` 后 123ms 终态，无 attempt=1。BACK 后 `currentContext()` 为空时，剩余 3 次循环瞬间跑完。
+- 本轮唯一假设：空树不应计入返回 BACK 预算，应等待窗口再出现。
+
+### 最小修改
+
+`CommentReturnBackPolicy.shouldWaitForReturnContext`：空树时最多再等 8×120ms，不增加 BACK 次数。
+
+### 真机验证
+
+- **设备**：OnePlus NE2210 / `b33aa309` / Android 16。先 `am force-stop` 抖音。
+- **条件**：室内设计师 / 2 视频 / 每视频 8 评论 / 不跳过置顶 / 完整私信。
+- 第 1 次（修复前）：首屏 3 人；第 1 人探测成功后 BACK，123ms 内失败，未翻页。
+- 第 2 次（修复后）：`COMPLETED`，`video_count=2`，16 次 `BLANK_PROBE_VERIFIED`。视频 1 滚动 4 次凑满 8 人；视频 2 滚动 2 次。总时长约 5 分 8 秒。
+- 结论：**改善。** 翻页可用。返回评论区仍约 4–7s/人，是 8 人规模下的主要耗时。
+
+---
+
 ## [未发布] 2026-08-26 —— 关评论区轮询不再重复走评论入口观察
 
 ### 优化前记录

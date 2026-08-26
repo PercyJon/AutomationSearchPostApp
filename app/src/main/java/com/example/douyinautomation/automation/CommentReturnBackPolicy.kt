@@ -36,4 +36,14 @@ internal object CommentReturnBackPolicy {
         nodeCommentSurfaceReady: Boolean,
         ocrAlreadyAttempted: Boolean,
     ): Boolean = !stillNested && !nodeCommentSurfaceReady && !ocrAlreadyAttempted
+
+    /**
+     * A BACK can detach the active window for a beat. Empty trees must wait, not consume
+     * remaining return attempts.
+     */
+    fun shouldWaitForReturnContext(
+        contextMissing: Boolean,
+        missingRetries: Int,
+        missingRetryLimit: Int,
+    ): Boolean = contextMissing && missingRetries < missingRetryLimit
 }

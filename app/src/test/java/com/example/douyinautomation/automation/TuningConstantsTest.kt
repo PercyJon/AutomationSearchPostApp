@@ -33,6 +33,7 @@ class TuningConstantsTest {
         assertEquals(2, runtime.NEXT_VIDEO_OCR_PROBE_LIMIT)
         assertEquals(120L, runtime.RETURN_TO_COMMENT_DELAY_MS)
         assertEquals(3, runtime.MAX_RETURN_TO_COMMENT_BACKS)
+        assertEquals(8, runtime.RETURN_MISSING_CONTEXT_RETRIES)
         assertEquals(20, runtime.MAX_COMMENT_SCROLLS)
         assertEquals(2, runtime.MAX_STALE_SCROLLS)
         assertEquals(3, runtime.MAX_EMPTY_SCROLLS)
