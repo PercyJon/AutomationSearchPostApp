@@ -4,6 +4,51 @@
 
 ---
 
+## [未发布] 2026-08-26 —— 关评论区轮询不再重复走评论入口观察
+
+### 优化前记录
+
+- 现象：关面板仍要 3 帧，每帧 `currentContext()` 后再跑 `CommentEntrySignalDetector.observe`；稳定判定并不使用 `video_surface` / `comment_entry`。最近一次关面板约 5.6s 与 9.8s。
+- 基线：室内设计师 / 3×2 / 不跳过置顶 / 完整私信，约 3 分 13 秒。
+- 本轮唯一假设：去掉轮询里的评论入口观察能缩短每帧耗时，且不减少 3 帧确认。
+
+### 最小修改
+
+`NextVideoAdvancePolicy.shouldObserveCommentEntryDuringSheetClosePoll` 为 false。仍用 `CommentSurfaceDetector` + 连续 3 帧关闭才上滑。
+
+### 真机验证
+
+- **设备**：OnePlus NE2210 / `b33aa309` / Android 16。先 `am force-stop` 抖音。
+- **条件**：室内设计师 / 3×2 / 不跳过置顶 / 完整私信。
+- 结果：`COMPLETED`，6 次 `BLANK_PROBE_VERIFIED`，`video_count=3`。总时长约 3 分 11 秒（跳过模板后 3 分 13 秒）。
+- 关面板：0→1 约 3.0s（4 帧，间隔约 0.8s）；1→2 约 2.8s（5 帧）。原先约 5.6s / 9.8s。3 帧关闭确认未减少。
+- 结论：**改善。**
+
+---
+
+## [未发布] 2026-08-26 —— 换片动作栏 OCR 前跳过未命中的模板匹配
+
+### 优化前记录
+
+- 现象：3×2 已能完成；换片后动作栏识别仍约 13–21s。日志为 `source=ocr_fallback`，`template_confirmed=false`，`dual_anchor_confirmed=false`。
+- 基线：室内设计师 / 3×2 / 不跳过置顶 / 完整私信，约 3 分 27 秒。
+- 本轮唯一假设：气泡/点赞/收藏模板在 OCR 之前同步执行且从未确认，拖住数字栏几何识别。
+
+### 最小修改
+
+`NextVideoTransitionProbePolicy.shouldMatchVisualTemplatesForRailOcr` 为 false：`comment_next_video_rail` 只做动作栏 OCR。不改点击后验、关面板 3 帧、用户行双 OCR。
+
+### 真机验证
+
+- **设备**：OnePlus NE2210 / `b33aa309` / Android 16。先 `am force-stop` 抖音。
+- **条件**：室内设计师 / 3×2 / 不跳过置顶 / 完整私信。
+- 结果：`COMPLETED`，6 次 `BLANK_PROBE_VERIFIED`，`video_count=3`。总时长约 3 分 13 秒（昨晚 3 分 27 秒）。
+- 换片 0→1：上滑后第 1 次 OCR 即 `comment_entry=true`，约 3.6s 打开评论区（原先约 13s、需 2 次 OCR）。
+- 换片 1→2：节点空帧后 1 次 OCR 命中，约 12s 打开（原先约 21s、2 次 OCR）。
+- 结论：**改善。**
+
+---
+
 ## [未发布] 2026-08-25 —— 评论主页交接后不再等第二帧 OCR 页面
 
 ### 优化前记录

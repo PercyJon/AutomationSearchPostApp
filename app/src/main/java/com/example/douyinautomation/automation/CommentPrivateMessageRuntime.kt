@@ -60,6 +60,12 @@ internal object NextVideoTransitionProbePolicy {
         actionRailProbeWillRun: Boolean,
         watchdogAlreadyReplaced: Boolean,
     ): Boolean = actionRailProbeWillRun && !watchdogAlreadyReplaced
+
+    /**
+     * Visual bubble/like/collect matching runs before rail OCR and has not been the
+     * confirming path on this device. Skip it so digit-geometry OCR can start immediately.
+     */
+    fun shouldMatchVisualTemplatesForRailOcr(): Boolean = false
 }
 
 private val NEXT_VIDEO_INTERVENTION_PAGES = setOf(
@@ -1664,18 +1670,22 @@ class CommentPrivateMessageRuntime(
             }
             val sheetOpen = CommentSurfaceDetector.detect(context).isCommentSurface
             consecutiveClosed = NextVideoAdvancePolicy.nextClosedSampleCount(sheetOpen, consecutiveClosed)
-            val observation = CommentEntrySignalDetector.observe(
-                context,
-                skipPinnedVideos = config?.skipPinnedVideos == true,
-            )
+            val observation = if (NextVideoAdvancePolicy.shouldObserveCommentEntryDuringSheetClosePoll()) {
+                CommentEntrySignalDetector.observe(
+                    context,
+                    skipPinnedVideos = config?.skipPinnedVideos == true,
+                )
+            } else {
+                null
+            }
             logger.info(
                 "comment_next_video_sheet_close_poll",
                 attributes = mapOf(
                     "attempt" to (attempt + 1),
                     "open" to sheetOpen,
                     "closed_samples" to consecutiveClosed,
-                    "video_surface" to observation.hasVideoSurface,
-                    "comment_entry" to observation.hasCommentEntry,
+                    "video_surface" to (observation?.hasVideoSurface ?: "skipped"),
+                    "comment_entry" to (observation?.hasCommentEntry ?: "skipped"),
                     "back_dispatched" to backDispatched,
                 ),
             )
@@ -1684,8 +1694,8 @@ class CommentPrivateMessageRuntime(
                     consecutiveClosedSamples = consecutiveClosed,
                     requiredSamples = TuningConstants.CommentRuntime.NEXT_VIDEO_CLOSED_PLAYER_STABLE_SAMPLES,
                     sheetOpen = sheetOpen,
-                    hasVideoSurface = observation.hasVideoSurface,
-                    hasCommentEntry = observation.hasCommentEntry,
+                    hasVideoSurface = observation?.hasVideoSurface == true,
+                    hasCommentEntry = observation?.hasCommentEntry == true,
                 )
             ) {
                 val fingerprint = videoSurfaceFingerprint(context)

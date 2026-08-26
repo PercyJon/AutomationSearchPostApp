@@ -182,6 +182,11 @@ class NextVideoAdvancePolicyTest {
     }
 
     @Test
+    fun sheetClosePollDoesNotReobserveTheCommentRail() {
+        assertFalse(NextVideoAdvancePolicy.shouldObserveCommentEntryDuringSheetClosePoll())
+    }
+
+    @Test
     fun leftoverCommentScrollFromTheFinishedVideoMustNotSkipTheNextVideoGate() {
         assertEquals(0, NextVideoAdvancePolicy.commentListScrollCountAfterLeavingVideo())
         assertTrue(

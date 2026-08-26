@@ -3898,13 +3898,15 @@ class DouyinNavigationController(
             val bitmap = withContext(Dispatchers.IO) { BitmapFactory.decodeFile(artifact.path) }
                 ?: return@runCatching base
             try {
-                val commentIconTemplateMatch = if (tag == "comment_next_video_rail") {
+                val matchVisualTemplates = tag == "comment_next_video_rail" &&
+                    NextVideoTransitionProbePolicy.shouldMatchVisualTemplatesForRailOcr()
+                val commentIconTemplateMatch = if (matchVisualTemplates) {
                     captureCommentIconTemplateMatch(bitmap, base.screenSize)
                         ?.takeUnless { match -> AppOwnedOverlayExclusion.excludes(match.bounds) }
                 } else {
                     null
                 }
-                val actionRailAnchorTemplateMatch = if (tag == "comment_next_video_rail") {
+                val actionRailAnchorTemplateMatch = if (matchVisualTemplates) {
                     captureActionRailAnchorTemplateMatch(bitmap, base.screenSize)
                         ?.takeUnless { anchors ->
                             AppOwnedOverlayExclusion.excludes(anchors.likeBounds) ||

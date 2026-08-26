@@ -103,6 +103,11 @@ class NextVideoTransitionProbePolicyTest {
     }
 
     @Test
+    fun nextVideoRailOcrSkipsVisualTemplatesThatNeverConfirmed() {
+        assertFalse(NextVideoTransitionProbePolicy.shouldMatchVisualTemplatesForRailOcr())
+    }
+
+    @Test
     fun `swipe watchdog is replaced only once when probing begins`() {
         assertTrue(
             NextVideoTransitionProbePolicy.shouldReplaceSwipeWatchdog(

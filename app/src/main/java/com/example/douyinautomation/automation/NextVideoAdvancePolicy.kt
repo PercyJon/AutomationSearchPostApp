@@ -91,6 +91,12 @@ object NextVideoAdvancePolicy {
         @Suppress("UNUSED_PARAMETER") hasCommentEntry: Boolean,
     ): Boolean = !sheetOpen && consecutiveClosedSamples >= requiredSamples
 
+    /**
+     * Close-poll stability only needs the sheet detector. Walking the comment-entry rail on
+     * every 150ms sample duplicates work the unused video_surface/comment_entry args ignore.
+     */
+    fun shouldObserveCommentEntryDuringSheetClosePoll(): Boolean = false
+
     fun shouldRetryAfterContinuationViewport(
         firstScreen: Boolean,
         swipeAttempt: Int,
