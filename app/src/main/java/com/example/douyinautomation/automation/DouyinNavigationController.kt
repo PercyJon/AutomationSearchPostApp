@@ -2969,13 +2969,14 @@ class DouyinNavigationController(
     private suspend fun selectAfterViewportAnchor(
         initialContext: ScreenContext,
         tag: String,
-    ) {
+        failOnUnresolved: Boolean = true,
+    ): Boolean {
         val previousIdentity = processedUserIdentityRecords.lastOrNull()
         if (previousIdentity == null) {
             phase = AutomationPhase.WAITING_FOR_USER_RESULTS
             AutomationStore.publishPhase(phase)
             selectVisibleUser(initialContext)
-            return
+            return true
         }
 
         var context = initialContext
@@ -3103,7 +3104,7 @@ class DouyinNavigationController(
                         identityContext,
                         minimumAnchorTop = rows[anchorIndex].anchor.bounds.bottom.toFloat(),
                     )
-                    return
+                    return true
                 }
 
                 // The processed anchor is currently the last complete row. New rows may still
@@ -3152,7 +3153,7 @@ class DouyinNavigationController(
                     phase = AutomationPhase.WAITING_FOR_USER_RESULTS
                     AutomationStore.publishPhase(phase)
                     selectVisibleUser(identityContext, minimumAnchorTop = minimumTop)
-                    return
+                    return true
                 }
                 if (!knownDuplicate) {
                     logger.info(
@@ -3163,7 +3164,7 @@ class DouyinNavigationController(
                     phase = AutomationPhase.WAITING_FOR_USER_RESULTS
                     AutomationStore.publishPhase(phase)
                     selectVisibleUser(identityContext)
-                    return
+                    return true
                 }
                 logger.warn(
                     "user_result_anchor_identity_drift_waiting",
@@ -3173,12 +3174,21 @@ class DouyinNavigationController(
             }
         }
 
+        if (!failOnUnresolved) {
+            logger.info(
+                "user_result_anchor_unresolved",
+                message = "The current viewport did not expose a safe OCR-backed continuation; preserving the existing pagination fallback",
+                attributes = mapOf("tag" to tag, "attempts" to TuningConstants.NavigationFlow.VIEWPORT_ANCHOR_PROBE_ATTEMPTS),
+            )
+            return false
+        }
         logger.warn(
             "user_result_anchor_timeout",
             message = "The next viewport did not expose a stable continuation anchor; no row was opened",
             attributes = mapOf("tag" to tag, "attempts" to TuningConstants.NavigationFlow.VIEWPORT_ANCHOR_PROBE_ATTEMPTS),
         )
         failTaskWithoutManualHandoff("The next result page did not expose a stable continuation anchor before timeout")
+        return false
     }
 
     private fun visibleStructuralUserRows(context: ScreenContext): List<StructuralUserRowMatch> {
@@ -4202,7 +4212,8 @@ class DouyinNavigationController(
 
         var resultsContext: ScreenContext? = null
         for (attempt in 0 until TuningConstants.NavigationFlow.MAX_BACK_ACTIONS_FROM_MESSAGE_FAILURE) {
-            val currentContext = currentWindowContext()
+            val currentContext = resultsContext ?: currentWindowContext()
+            resultsContext = null
             if (currentContext != null && pageDetector.detect(currentContext).kind == PageKind.USER_RESULTS) {
                 resultsContext = currentContext
                 break
@@ -4211,8 +4222,12 @@ class DouyinNavigationController(
                 failTaskWithoutManualHandoff("Could not return to user results after the blank-message probe")
                 return
             }
+            // The verified DM route normally lands on the profile before the result list. Return
+            // on that intermediate proof so the next bounded BACK is not delayed by four list
+            // polls that cannot succeed while the profile is still open.
             resultsContext = awaitPageAfterProfileBack(
                 accepted = setOf(PageKind.USER_RESULTS),
+                intermediate = setOf(PageKind.USER_PROFILE),
                 tag = "empty_message_probe",
             )
             if (resultsContext != null && pageDetector.detect(resultsContext!!).kind == PageKind.USER_RESULTS) {
@@ -4244,6 +4259,20 @@ class DouyinNavigationController(
                 phase = AutomationPhase.WAITING_FOR_USER_RESULTS
                 AutomationStore.publishPhase(phase)
                 selectVisibleUser(resultsContext!!, minimumAnchorTop = previousAnchorBottom)
+                return
+            }
+            logger.info(
+                "empty_message_probe_current_viewport_ocr_requested",
+                message = "The next structural row is unavailable; verifying a stable OCR-backed continuation before pagination",
+                attributes = mapOf("anchor_bottom" to previousAnchorBottom),
+            )
+            if (
+                selectAfterViewportAnchor(
+                    initialContext = resultsContext!!,
+                    tag = "empty_message_probe_current_viewport",
+                    failOnUnresolved = false,
+                )
+            ) {
                 return
             }
         }
@@ -5420,6 +5449,7 @@ class DouyinNavigationController(
      */
     private suspend fun awaitPageAfterProfileBack(
         accepted: Set<PageKind>,
+        intermediate: Set<PageKind> = emptySet(),
         tag: String,
     ): ScreenContext? {
         var last: ScreenContext? = null
@@ -5442,7 +5472,7 @@ class DouyinNavigationController(
                     "page" to (kind?.name ?: "NO_CONTEXT"),
                 ),
             )
-            if (kind != null && kind in accepted) {
+            if (kind != null && (kind in accepted || kind in intermediate)) {
                 return context
             }
         }
