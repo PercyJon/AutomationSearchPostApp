@@ -213,7 +213,10 @@ object ProfileDisplayNameResolver {
             normalized.contains('/')
         ) return true
         return normalized == "视频" ||
+            IdentityCountToken.matches(value) ||
             NOISE_MARKERS.any(normalized::contains) ||
+            value.trim().endsWith("：") ||
+            value.trim().endsWith(":") ||
             value.all(Char::isDigit) ||
             value.all { it in "-_./:：· " }
     }
@@ -279,6 +282,7 @@ object ProfileDisplayNameResolver {
         "商家认证",
         "店铺账号",
         "店铺",
+        "组织认证",
         "ip属地",
         "直播",
         "分享",

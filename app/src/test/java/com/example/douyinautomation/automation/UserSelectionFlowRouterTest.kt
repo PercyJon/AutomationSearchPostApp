@@ -75,6 +75,20 @@ class UserSelectionFlowRouterTest {
         )
     }
 
+    @Test
+    fun unsuccessfulRowsDoNotFillTheConfiguredUserCount() {
+        assertEquals(
+            UserSelectionFlowRoute.SELECT_VISIBLE_RESULT,
+            route(
+                maxUsers = 5,
+                processedUserCount = 4,
+                remoteResumePending = false,
+                hasViewportAnchor = false,
+                accountHelpOnly = false,
+            ),
+        )
+    }
+
     private fun route(
         maxUsers: Int?,
         processedUserCount: Int,

@@ -41,7 +41,9 @@ object NestedLaunchSurfacePolicy {
         hasOcrBlocks: Boolean,
         attempts: Int,
         maxAttempts: Int,
-    ): Boolean = phase == AutomationPhase.WAITING_FOR_HOME &&
+        isCommentTask: Boolean = true,
+    ): Boolean = isCommentTask &&
+        phase == AutomationPhase.WAITING_FOR_HOME &&
         pageIsUnknown &&
         !nodeDetectedSheet &&
         !hasOcrBlocks &&

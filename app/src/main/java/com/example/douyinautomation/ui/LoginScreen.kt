@@ -54,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import com.example.douyinautomation.BuildConfig
 import com.example.douyinautomation.CommentRegressionPreset
 import com.example.douyinautomation.automation.AuthStore
+import com.example.douyinautomation.automation.LoginEndpointPolicy
 import com.example.douyinautomation.ui.theme.AutomationBlue
 import com.example.douyinautomation.ui.theme.AutomationBlueLight
 import com.example.douyinautomation.ui.theme.AutomationError
@@ -95,8 +96,17 @@ internal fun AutomationAppSessionGate(
 private fun LoginScreen(endpoint: String) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
-    val normalizedEndpoint = remember(endpoint) { endpoint.trim().trimEnd('/') }
-    val endpointReady = normalizedEndpoint.startsWith("https://")
+    val rememberedEndpoint by AuthStore.lastEndpoint.collectAsState()
+    val showEndpointField = LoginEndpointPolicy.shouldShowEndpointField(endpoint)
+    var typedEndpoint by rememberSaveable {
+        mutableStateOf(LoginEndpointPolicy.normalize(rememberedEndpoint).orEmpty())
+    }
+    val resolvedEndpoint = LoginEndpointPolicy.resolvedEndpoint(
+        buildConfig = endpoint,
+        remembered = rememberedEndpoint,
+        typed = typedEndpoint,
+    )
+    val endpointReady = resolvedEndpoint != null
     var username by rememberSaveable { mutableStateOf("") }
     // Passwords deliberately stay out of SavedState so process restore cannot retain one.
     var password by remember { mutableStateOf("") }
@@ -105,14 +115,15 @@ private fun LoginScreen(endpoint: String) {
     var message by rememberSaveable { mutableStateOf<String?>(null) }
 
     fun submit() {
-        if (!endpointReady || submitting) return
+        val origin = resolvedEndpoint ?: return
+        if (submitting) return
         scope.launch {
             submitting = true
             message = null
             runCatching {
                 AuthStore.login(
                     context = context,
-                    endpoint = normalizedEndpoint,
+                    endpoint = origin,
                     username = username,
                     password = password,
                 )
@@ -170,6 +181,18 @@ private fun LoginScreen(endpoint: String) {
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
+                    if (showEndpointField) {
+                        LoginTextField(
+                            value = typedEndpoint,
+                            onValueChange = {
+                                typedEndpoint = it
+                                message = null
+                            },
+                            label = "服务地址",
+                            leadingIcon = Icons.Default.Lock,
+                            keyboardType = KeyboardType.Uri,
+                        )
+                    }
                     LoginTextField(
                         value = username,
                         onValueChange = {
@@ -207,9 +230,9 @@ private fun LoginScreen(endpoint: String) {
                             }
                         },
                     )
-                    if (!endpointReady) {
+                    if (showEndpointField && !endpointReady) {
                         Text(
-                            "当前安装包尚未配置服务地址，请联系管理员获取受管版本。",
+                            "请填写以 https:// 开头的服务地址后再登录。",
                             style = MaterialTheme.typography.bodySmall,
                             color = AutomationError,
                         )

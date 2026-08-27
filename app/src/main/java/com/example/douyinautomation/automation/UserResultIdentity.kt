@@ -87,7 +87,7 @@ object UserResultIdentityExtractor {
         val distinct = candidates.distinctBy { it.value }
         val values = distinct.map(IdentityCandidate::value)
         val handle = values.firstNotNullOfOrNull(::extractAccountHandle)
-        val stableValues = distinct.filterNot { isVolatileMetadata(it.value) }
+        val stableValues = distinct.filterNot { isVolatileMetadata(it.value) || isChromeLabel(it.value) }
         // The list can expose avatar alt text before the actual name.  Never let a generic image
         // description become the durable account title, even when OCR is unavailable. If there is
         // no handle or meaningful text left, return null so the controller skips the row safely.
@@ -150,14 +150,23 @@ object UserResultIdentityExtractor {
         value.contains("粉丝") ||
             value.contains("获赞") ||
             value.contains("作品") ||
-            value.all(Char::isDigit)
+            value.all(Char::isDigit) ||
+            IdentityCountToken.matches(value)
 
     private fun isLikelyDisplayName(value: String): Boolean {
         if (value.length !in 2..40) return false
         if (isIdentityNoise(value)) return false
-        if (value in setOf("朋友", "商家认证账号", "店铺账号", "发过相关视频")) return false
+        if (IdentityCountToken.matches(value)) return false
+        if (isChromeLabel(value)) return false
         if (value.contains("粉丝") || value.contains("抖音号") || value.contains("获赞")) return false
         return value.any { it.isLetterOrDigit() }
+    }
+
+    private fun isChromeLabel(value: String): Boolean {
+        val compact = value.trim().trimEnd('：', ':')
+        if (compact in CHROME_LABELS) return true
+        if (value.endsWith("：") || value.endsWith(":")) return true
+        return compact.contains("组织认证") || compact.contains("商家认证")
     }
 
     private fun searchableNodeCandidates(node: NodeSnapshot): List<IdentityCandidate> = listOfNotNull(
@@ -246,4 +255,24 @@ object UserResultIdentityExtractor {
         "照片",
         "加载中",
     )
+
+    private val CHROME_LABELS = setOf(
+        "朋友",
+        "商家认证账号",
+        "店铺账号",
+        "发过相关视频",
+        "抖音组织认证",
+    )
+}
+
+/**
+ * Follower/like counters rendered as “16.8万” or OCR-split “8万”. They are not account names.
+ */
+internal object IdentityCountToken {
+    private val COUNT = Regex("""^\d+(?:\.\d+)?万$""")
+
+    fun matches(value: String): Boolean {
+        val compact = value.filterNot(Char::isWhitespace)
+        return compact.length in 2..8 && COUNT.matches(compact)
+    }
 }

@@ -14,6 +14,7 @@ object DisplayNameResolutionPolicy {
     ): Boolean = hasOcrEngine && (
         currentSource == UserResultIdentity.Source.OCR ||
             isClipped(listName) ||
+            isChromeListName(listName) ||
             hasAccessibilityCandidate
         )
 
@@ -27,5 +28,11 @@ object DisplayNameResolutionPolicy {
             candidate.contains("…") ||
             candidate.contains("..") ||
             candidate.trimEnd().endsWith('.')
+    }
+
+    /** Certification pills and trailing-colon labels are chrome, not a usable list identity. */
+    fun isChromeListName(value: String?): Boolean {
+        val name = value?.trim().orEmpty()
+        return name.isNotEmpty() && ProfileDisplayNameResolver.isNoiseCandidate(name)
     }
 }

@@ -158,6 +158,78 @@ class UserResultIdentityTest {
     }
 
     @Test
+    fun `does not use a split fan-count fragment as the display name`() {
+        val context = context(
+            NodeSnapshot(
+                hierarchyPath = listOf(0, 2),
+                text = "8万",
+                bounds = ScreenBounds(220, 500, 320, 560),
+            ),
+            NodeSnapshot(
+                hierarchyPath = listOf(0, 3),
+                text = "关注",
+                contentDescription = "关注按钮",
+                bounds = ScreenBounds(768, 465, 1008, 549),
+            ),
+            ocrBlocks = listOf(
+                OcrTextBlock("悟空室界木作旗舰店", ScreenBounds(220, 420, 760, 490)),
+                OcrTextBlock("16.8万", ScreenBounds(220, 500, 360, 560)),
+                OcrTextBlock("店铺账号", ScreenBounds(220, 560, 420, 610)),
+            ),
+        )
+        val match = StructuralUserRowDetector.find(context)
+
+        val identity = UserResultIdentityExtractor.extract(context, requireNotNull(match))
+
+        assertEquals("悟空室界木作旗舰店", identity?.displayName)
+    }
+
+    @Test
+    fun `does not use organization-certification chrome as the display name`() {
+        val context = context(
+            NodeSnapshot(
+                hierarchyPath = listOf(0, 2),
+                text = "抖音组织认证：",
+                bounds = ScreenBounds(220, 500, 520, 560),
+            ),
+            NodeSnapshot(
+                hierarchyPath = listOf(0, 3),
+                text = "关注",
+                contentDescription = "关注按钮",
+                bounds = ScreenBounds(768, 465, 1008, 549),
+            ),
+            ocrBlocks = listOf(
+                OcrTextBlock("悟空室界木作旗舰店", ScreenBounds(220, 420, 760, 490)),
+            ),
+        )
+        val match = StructuralUserRowDetector.find(context)
+
+        val identity = UserResultIdentityExtractor.extract(context, requireNotNull(match))
+
+        assertEquals("悟空室界木作旗舰店", identity?.displayName)
+    }
+
+    @Test
+    fun `does not create identity from a fan-count token alone`() {
+        val context = context(
+            NodeSnapshot(
+                hierarchyPath = listOf(0, 2),
+                text = "8万",
+                bounds = ScreenBounds(220, 500, 320, 560),
+            ),
+            NodeSnapshot(
+                hierarchyPath = listOf(0, 3),
+                text = "关注",
+                contentDescription = "关注按钮",
+                bounds = ScreenBounds(768, 465, 1008, 549),
+            ),
+        )
+        val match = StructuralUserRowDetector.find(context)
+
+        assertNull(UserResultIdentityExtractor.extract(context, requireNotNull(match)))
+    }
+
+    @Test
     fun `does not create identity from a row action alone`() {
         val context = context(
             NodeSnapshot(

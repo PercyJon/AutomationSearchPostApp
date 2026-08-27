@@ -445,7 +445,7 @@ private fun StateCard(
         ) {
             Text("最新状态", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             DetailRow("任务 ID", taskId)
-            DetailRow("已处理用户", taskHandledUserCount)
+            DetailRow("用户数", taskHandledUserCount)
             DetailRow("跳过重复", taskDuplicateUserCount)
             DetailRow("最近事件", taskLastEvent)
             DetailRow("阶段", phase)

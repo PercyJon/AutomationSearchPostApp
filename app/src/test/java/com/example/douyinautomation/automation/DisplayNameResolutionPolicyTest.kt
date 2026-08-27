@@ -24,6 +24,14 @@ class DisplayNameResolutionPolicyTest {
                 hasAccessibilityCandidate = false,
             ),
         )
+        assertTrue(
+            DisplayNameResolutionPolicy.shouldUseProfileOcr(
+                hasOcrEngine = true,
+                currentSource = UserResultIdentity.Source.ACCESSIBILITY,
+                listName = "抖音组织认证：",
+                hasAccessibilityCandidate = false,
+            ),
+        )
         assertFalse(
             DisplayNameResolutionPolicy.shouldUseProfileOcr(
                 hasOcrEngine = true,

@@ -44,5 +44,9 @@ data class UserTaskRecord(
         fun countsAsMessaged(): Boolean = this == BLANK_PROBE_VERIFIED ||
             this == PROFILE_OPENED ||
             this == MESSAGE_SENT
+
+        /** B-end「用户数」only counts a verified private-message probe or a real send. */
+        fun countsTowardUserQuota(): Boolean = this == BLANK_PROBE_VERIFIED ||
+            this == MESSAGE_SENT
     }
 }

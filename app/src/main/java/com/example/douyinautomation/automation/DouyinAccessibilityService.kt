@@ -236,6 +236,13 @@ class DouyinAccessibilityService : AccessibilityService() {
         // every uncertain screen; skip it only when that accepted handoff is immediately usable.
         if (controller.shouldBypassOcrForCurrentProfileCommentEntry(context)) return context
         if (controller.shouldBypassOcrForCommentSurfaceReturn()) return context
+        if (controller.shouldBypassOcrForProfileOpen() &&
+            detectedKind == PageKind.UNKNOWN &&
+            !probeToastMayBeVisible &&
+            !privateMessageEntryMayBeIncomplete
+        ) {
+            return context
+        }
 
         val engine = ocr ?: return context
         val now = SystemClock.uptimeMillis()

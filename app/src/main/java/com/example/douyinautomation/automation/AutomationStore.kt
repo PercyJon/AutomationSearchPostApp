@@ -122,6 +122,8 @@ data class AutomationUiState(
     val recordEntries: List<UserTaskRecord> = emptyList(),
     val taskHistory: List<TaskHistoryEntry> = emptyList(),
     val diagnosticEntries: List<DiagnosticEntry> = emptyList(),
+    /** Bumped when the local todo list is rewritten so the dashboard can reload visible drafts. */
+    val savedTaskListRevision: Long = 0L,
 )
 
 /**
@@ -156,8 +158,7 @@ object AutomationStore {
     private val remoteDisplayNames = mutableMapOf<String, String>()
 
     private fun List<UserTaskRecord>.handledCount(): Int = count { record ->
-        record.outcome != UserTaskRecord.Outcome.IN_PROGRESS &&
-            record.outcome != UserTaskRecord.Outcome.DUPLICATE_SKIPPED
+        record.outcome.countsTowardUserQuota()
     }
 
     private fun List<UserTaskRecord>.failureCount(): Int = count { record ->
@@ -240,6 +241,7 @@ object AutomationStore {
                     persistTaskHistoryLocked()
                 }
             }
+            discardStartedSavedTasksLocked()
             val latestTaskId = taskHistory.maxByOrNull(TaskHistoryEntry::updatedAtMillis)?.taskId
             val latestTaskRecords = latestTaskId?.let { id -> allTaskRecords.filter { it.taskId == id } }.orEmpty()
             _uiState.update { current ->
@@ -379,6 +381,7 @@ object AutomationStore {
 
     /** Load the reusable local task definitions shown in the task-page todo list. */
     fun loadSavedTasks(): List<TaskDraft> = synchronized(recordLock) {
+        val startedIds = taskHistory.map(TaskHistoryEntry::taskId).toSet()
         decodeTaskDrafts(recordPreferences?.getString(SAVED_TASKS_KEY, null))
             .mapIndexed { index, draft ->
                 if (draft.updatedAtMillis > 0L) {
@@ -387,7 +390,7 @@ object AutomationStore {
                     draft.copy(updatedAtMillis = index + 1L)
                 }
             }
-            .filterNot(TaskDraft::deleted)
+            .filter { draft -> TodoTaskRetentionPolicy.shouldRemainVisible(draft, startedIds) }
             .sortedByDescending(TaskDraft::updatedAtMillis)
     }
 
@@ -411,16 +414,14 @@ object AutomationStore {
 
     fun deleteSavedTask(taskId: String) {
         synchronized(recordLock) {
-            val tasks = decodeTaskDrafts(recordPreferences?.getString(SAVED_TASKS_KEY, null))
-            persistSavedTasksLocked(
-                tasks.map { draft ->
-                    if (draft.id == taskId) {
-                        draft.copy(deleted = true, updatedAtMillis = System.currentTimeMillis())
-                    } else {
-                        draft
-                    }
-                },
-            )
+            discardSavedTasksLocked(listOf(taskId))
+        }
+    }
+
+    /** Removes started local drafts from the todo list. History records stay intact. */
+    fun discardSavedTasks(taskIds: Collection<String>) {
+        synchronized(recordLock) {
+            discardSavedTasksLocked(taskIds)
         }
     }
 
@@ -484,9 +485,11 @@ object AutomationStore {
         val taskId = snapshot?.taskId?.takeIf(MobileTaskPublishMapper::isStableLocalTaskId)
             ?: UUID.randomUUID().toString()
         val boundSnapshot = snapshot?.copy(taskId = taskId)
-        if (remoteFromSnapshot == null && boundSnapshot != null) {
+        if (remoteFromSnapshot == null) {
             synchronized(recordLock) {
-                upsertSavedTaskLocked(draftFromSnapshot(boundSnapshot))
+                discardSavedTasksLocked(
+                    TodoTaskRetentionPolicy.idsToDiscardOnStart(snapshot?.taskId, taskId),
+                )
             }
         }
         beginTaskInternal(taskId, keyword, boundSnapshot, queryIndex = 0, resetRecords = true)
@@ -1306,6 +1309,28 @@ object AutomationStore {
         recordPreferences?.edit()
             ?.putString(SAVED_TASKS_KEY, JSONArray((hidden + visible).map { encodeTaskDraft(it) }).toString())
             ?.apply()
+        val revision = _uiState.value.savedTaskListRevision + 1L
+        _uiState.update { current -> current.copy(savedTaskListRevision = revision) }
+    }
+
+    private fun discardSavedTasksLocked(taskIds: Collection<String>) {
+        val ids = taskIds.filter(MobileTaskPublishMapper::isStableLocalTaskId).toSet()
+        if (ids.isEmpty()) return
+        val tasks = decodeTaskDrafts(recordPreferences?.getString(SAVED_TASKS_KEY, null))
+        var changed = false
+        val next = tasks.map { draft ->
+            if (draft.id in ids && !draft.deleted) {
+                changed = true
+                draft.copy(deleted = true, updatedAtMillis = System.currentTimeMillis())
+            } else {
+                draft
+            }
+        }
+        if (changed) persistSavedTasksLocked(next)
+    }
+
+    private fun discardStartedSavedTasksLocked() {
+        discardSavedTasksLocked(taskHistory.map(TaskHistoryEntry::taskId))
     }
 
     private fun upsertSavedTaskLocked(draft: TaskDraft): TaskDraft {
@@ -1321,31 +1346,6 @@ object AutomationStore {
         persistSavedTasksLocked(tasks)
         return stored
     }
-
-    private fun draftFromSnapshot(snapshot: TaskSnapshot): TaskDraft = TaskDraft(
-        id = snapshot.taskId,
-        name = snapshot.taskName,
-        customKeywords = snapshot.baseKeywords,
-        region = snapshot.region.trim().takeIf { it.isNotEmpty() },
-        blockedKeywords = snapshot.normalizedBlockedKeywords,
-        maxUsers = snapshot.maxUsers,
-        messageTemplate = snapshot.messageTemplate,
-        executionMode = snapshot.executionMode,
-        taskType = snapshot.taskType,
-        commentConfig = snapshot.commentConfig?.let { config ->
-            CommentPrivateMessageConfig(
-                entryMode = config.entryMode,
-                targetUser = config.targetUser,
-                matchKeywords = config.matchKeywords,
-                matchMode = config.matchMode,
-                maxVideos = config.maxVideos,
-                maxUsersPerVideo = config.maxUsersPerVideo,
-                skipPinnedVideos = config.skipPinnedVideos,
-                dryRun = config.dryRun,
-                skipBlankProbe = config.skipBlankProbe,
-            )
-        },
-    )
 
     private fun currentDeviceIdHash(): String? =
         AuthStore.currentConfig()?.deviceIdHash?.takeIf { it.isNotBlank() }

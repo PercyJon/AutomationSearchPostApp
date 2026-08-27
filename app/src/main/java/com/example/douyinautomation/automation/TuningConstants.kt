@@ -8,7 +8,7 @@ package com.example.douyinautomation.automation
  * move here without changing their defaults before any future configuration mechanism is added.
  */
 object TuningConstants {
-    const val VERSION = 5
+    const val VERSION = 7
 
     /** Startup polling and phase watchdog values used by [DouyinNavigationController]. */
     object NavigationLifecycle {
@@ -40,6 +40,12 @@ object TuningConstants {
          * These blocks are not given to [PageDetector]; search still uses node → structural → fallback.
          */
         const val COMMENT_LAUNCH_HOME_NAV_OCR_MAX_ATTEMPTS = 2
+
+        /**
+         * B-end WAITING_FOR_HOME may OCR the top-right search chrome while the tree is missing
+         * or truncated. Search still uses node → structural → the existing normalized fallback.
+         */
+        const val EMPTY_TREE_HOME_SEARCH_CHROME_OCR_MAX_ATTEMPTS = 3
 
         /** A detected OCR-backed message page needs this many stable observations. */
         const val OCR_PAGE_STABLE_OBSERVATIONS = 2
@@ -159,6 +165,11 @@ object TuningConstants {
         const val USER_RESULTS_POSTCONDITION_INTERVAL_MS = 500L
         const val USER_ROW_POSTCONDITION_ATTEMPTS = 8
         const val USER_ROW_POSTCONDITION_INTERVAL_MS = 350L
+        /**
+         * After BACK to USER_RESULTS the first snapshot can predate follow-button anchors.
+         * Poll this many times before the existing OCR identity continuation.
+         */
+        const val EMPTY_MESSAGE_NEXT_ROW_POLL_ATTEMPTS = 5
         const val P0_USER_ROW_POSTCONDITION_ATTEMPTS = 2
         const val P0_USER_ROW_POSTCONDITION_INTERVAL_MS = 120L
         const val P0_USER_RESULTS_VIEWPORT_SETTLE_ATTEMPTS = 3
@@ -175,7 +186,7 @@ object TuningConstants {
         const val MAX_REMOTE_RESUME_SWIPES = 30
         const val MAX_VISIBLE_USER_ROWS = 20
 
-        const val MESSAGE_ENTRY_POSTCONDITION_DELAY_MS = 900L
+        const val MESSAGE_ENTRY_POSTCONDITION_DELAY_MS = 250L
         const val PRIVATE_MESSAGE_ENTRY_ATTEMPTS = 3
         const val PRIVATE_MESSAGE_ENTRY_RETRY_INTERVAL_MS = 450L
         const val PRIVATE_MESSAGE_ENTRY_POSTCONDITION_ATTEMPTS = 7

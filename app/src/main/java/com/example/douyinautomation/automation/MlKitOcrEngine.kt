@@ -141,6 +141,11 @@ enum class OcrRegion {
     PROFILE_ACTION,
     MESSAGE_COMPOSER,
     TOAST,
+    /**
+     * Top-right home chrome (tabs + magnifying glass). Screen ratios only; the crop is evidence
+     * for HOME, not a click rectangle.
+     */
+    HOME_SEARCH_CHROME,
     ;
 
     fun boundsFor(width: Int, height: Int): Rect? = when (this) {
@@ -151,6 +156,7 @@ enum class OcrRegion {
         PROFILE_ACTION -> Rect(0, (height * 0.28f).roundToInt(), width, (height * 0.66f).roundToInt())
         MESSAGE_COMPOSER -> Rect(0, (height * 0.62f).roundToInt(), width, height)
         TOAST -> Rect(0, (height * 0.35f).roundToInt(), width, (height * 0.78f).roundToInt())
+        HOME_SEARCH_CHROME -> OcrRegionGeometry.homeSearchChromeBounds(width, height).toRect()
     }
 }
 
@@ -161,6 +167,13 @@ internal object OcrRegionGeometry {
         top = (height * 0.36f).roundToInt(),
         right = width,
         bottom = (height * 0.96f).roundToInt(),
+    )
+
+    fun homeSearchChromeBounds(width: Int, height: Int): OcrCropBounds = OcrCropBounds(
+        left = (width * EmptyTreeHomeSearchChromePolicy.LEFT).roundToInt(),
+        top = (height * EmptyTreeHomeSearchChromePolicy.TOP).roundToInt(),
+        right = (width * EmptyTreeHomeSearchChromePolicy.RIGHT).roundToInt(),
+        bottom = (height * EmptyTreeHomeSearchChromePolicy.BOTTOM).roundToInt(),
     )
 }
 

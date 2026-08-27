@@ -58,6 +58,17 @@ class DisplayNameResolverTest {
     }
 
     @Test
+    fun `organization chrome does not beat an OCR shop name`() {
+        val resolution = DisplayNameResolver.arbitrate(
+            accessibilityCandidate = "抖音组织认证：",
+            ocrCandidate = "悟空室界木作旗舰店",
+        )
+
+        assertEquals("悟空室界木作旗舰店", resolution?.value)
+        assertEquals(UserResultIdentity.Source.OCR, resolution?.source)
+    }
+
+    @Test
     fun `OCR is selected only when accessibility candidate is absent`() {
         val resolution = DisplayNameResolver.arbitrate(
             accessibilityCandidate = null,

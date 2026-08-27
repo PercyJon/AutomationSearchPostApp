@@ -38,16 +38,21 @@ object DisplayNameResolver {
         Surface.DIRECT_MESSAGE -> DirectMessageDisplayNameResolver.fromOcr(context, previousName)
     }
 
-    /** Accessibility is always selected before OCR once both candidates satisfy page evidence. */
+    /** Accessibility is selected before OCR once both candidates satisfy page evidence. */
     fun arbitrate(
         accessibilityCandidate: String?,
         ocrCandidate: String?,
-    ): Resolution? = accessibilityCandidate
-        ?.takeIf(String::isNotBlank)
-        ?.let { Resolution(it, UserResultIdentity.Source.ACCESSIBILITY) }
-        ?: ocrCandidate
+    ): Resolution? {
+        val accessibility = accessibilityCandidate
             ?.takeIf(String::isNotBlank)
-            ?.let { Resolution(it, UserResultIdentity.Source.OCR) }
+            ?.takeUnless(ProfileDisplayNameResolver::isNoiseCandidate)
+        return accessibility
+            ?.let { Resolution(it, UserResultIdentity.Source.ACCESSIBILITY) }
+            ?: ocrCandidate
+                ?.takeIf(String::isNotBlank)
+                ?.takeUnless(ProfileDisplayNameResolver::isNoiseCandidate)
+                ?.let { Resolution(it, UserResultIdentity.Source.OCR) }
+    }
 
     fun shouldUseOcr(
         surface: Surface,

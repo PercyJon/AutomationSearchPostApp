@@ -54,7 +54,7 @@ data class TaskDraft(
         if (!usesCurrentProfile && presetIds.isEmpty() && customKeywords.none { it.isNotBlank() }) {
             add("至少选择一个预设搜索词或填写自定义搜索词")
         }
-        if (maxUsers !in 1..MAX_USERS) add("用户数量上限必须在 1-$MAX_USERS 之间")
+        if (maxUsers !in 1..MAX_USERS) add("用户数必须在 1-$MAX_USERS 之间")
         if (executionMode == TaskExecutionMode.REAL_SEND_REQUIRES_CONFIRMATION &&
             messageTemplate.isNullOrBlank()
         ) {

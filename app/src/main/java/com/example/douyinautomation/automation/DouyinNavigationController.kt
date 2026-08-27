@@ -166,6 +166,8 @@ class DouyinNavigationController(
     private var nestedCommentSurfaceOcrAttempts = 0
     /** Bounded nav-band OCR used only to classify comment-task launch HOME; never taps search. */
     private var commentLaunchHomeNavOcrAttempts = 0
+    /** Bounded top-right chrome OCR used only while B-end HOME has no search node. */
+    private var emptyTreeHomeSearchChromeOcrAttempts = 0
     /** True from normal target launch until initial HOME/search evidence is positively classified. */
     private var initialHomeClassificationPending = false
     /** One sanitized geometry dump per WAITING_FOR_HOME UNKNOWN session; never includes node text. */
@@ -264,6 +266,9 @@ class DouyinNavigationController(
             CommentReturnBackPolicy.shouldBypassUnknownPageOcrDuringReturn(
                 awaitingCommentSurfaceReturn = commentRuntime.isAwaitingCommentSurfaceReturn,
             )
+
+    fun shouldBypassOcrForProfileOpen(): Boolean =
+        taskActive && ProfileOpenOcrPolicy.shouldBypassUnknownPageOcr(phase)
 
     /** True while the M2 blank-message result is still being awaited, regardless of OCR state. */
     fun shouldProbeEmptyMessageResult(): Boolean =
@@ -392,6 +397,7 @@ class DouyinNavigationController(
                 hasOcrBlocks = nestedSurfaceContext.ocrBlocks.isNotEmpty(),
                 attempts = nestedCommentSurfaceOcrAttempts,
                 maxAttempts = TuningConstants.NavigationLifecycle.NESTED_COMMENT_SURFACE_OCR_MAX_ATTEMPTS,
+                isCommentTask = isCommentPrivateMessageTask(),
             )
         ) {
             nestedCommentSurfaceOcrAttempts++
@@ -667,6 +673,7 @@ class DouyinNavigationController(
         initialOcrAttempts = 0
         nestedCommentSurfaceOcrAttempts = 0
         commentLaunchHomeNavOcrAttempts = 0
+        emptyTreeHomeSearchChromeOcrAttempts = 0
         homeUnknownGeometryDumpSaved = false
         initialBlindBackAttempts = 0
         // A prior POC can leave a profile/result snapshot in memory. Startup normalization must
@@ -817,6 +824,7 @@ class DouyinNavigationController(
             AutomationStore.publishFailure("没有可执行的待办任务")
             return
         }
+        AutomationStore.discardSavedTasks(tasks.map(TaskSnapshot::taskId))
         val session = LocalTaskQueueSession(
             queueId = java.util.UUID.randomUUID().toString(),
             queueType = queueType,
@@ -1131,6 +1139,7 @@ class DouyinNavigationController(
         initialOcrAttempts = 0
         nestedCommentSurfaceOcrAttempts = 0
         commentLaunchHomeNavOcrAttempts = 0
+        emptyTreeHomeSearchChromeOcrAttempts = 0
         homeUnknownGeometryDumpSaved = false
         initialBlindBackAttempts = 0
         latestContext = null
@@ -2026,7 +2035,8 @@ class DouyinNavigationController(
     ) {
         queryTransitionHandled = false
         val maxUsers = activeTaskSnapshot?.maxUsers
-        val userLimitReached = maxUsers != null && processedUserIdentityRecords.size >= maxUsers
+        val successfulUserCount = successfulPrivateMessageCount()
+        val userLimitReached = maxUsers != null && successfulUserCount >= maxUsers
         // Keep marker inspection after the existing higher-precedence terminal cases. This is a
         // screen-content read rather than a route effect, and the router remains pure.
         val accountHelpOnly = !userLimitReached &&
@@ -2037,7 +2047,7 @@ class DouyinNavigationController(
             userSelectionFlow.onSelectionRequested(
                 state = UserSelectionFlowState(
                     maxUsers = maxUsers,
-                    processedUserCount = processedUserIdentityRecords.size,
+                    processedUserCount = successfulUserCount,
                     remoteResumePending = remoteResumePending,
                     hasViewportAnchor = minimumAnchorTop != null,
                     accountHelpOnly = accountHelpOnly,
@@ -2210,8 +2220,8 @@ class DouyinNavigationController(
                         remoteUserKey = identity.key,
                         displayName = identity.displayName,
                     )
-                    // A filtered row is handled too. Retaining its identity makes the next
-                    // viewport anchor continue after it instead of exposing it again.
+                    // A filtered row is skipped for the user-count quota. Retaining its identity
+                    // still makes the next viewport anchor continue after it.
                     processedUserIdentities.add(identity.key)
                     processedUserIdentityRecords += identity
                     processedIdentityFingerprints.add(identityFingerprint)
@@ -3372,6 +3382,14 @@ class DouyinNavigationController(
     private suspend fun enrichCurrentUserDisplayNameFromDirectMessage(context: ScreenContext?) {
         val identityFingerprint = currentUserIdentityFingerprint ?: return
         var directContext = context ?: currentWindowContext() ?: return
+        val pageKind = pageDetector.detect(directContext).kind
+        if (
+            pageKind != PageKind.DIRECT_MESSAGE &&
+            pageKind != PageKind.MESSAGE_EMPTY_REJECTED &&
+            pageKind != PageKind.MESSAGE_SEND_FAILED
+        ) {
+            return
+        }
         val nodeName = DisplayNameResolver.fromAccessibility(
             surface = DisplayNameResolver.Surface.DIRECT_MESSAGE,
             context = directContext,
@@ -3594,7 +3612,13 @@ class DouyinNavigationController(
             ocrPageStableObservations = 0
             return true
         }
-        if (!CommentTaskOcrPageStabilityPolicy.shouldRequireSecondOcrFrame(commentProfileHandoffObserved)) {
+        if (
+            !CommentTaskOcrPageStabilityPolicy.shouldRequireSecondOcrFrame(
+                commentProfileHandoffObserved = commentProfileHandoffObserved,
+                isCommentTask = isCommentPrivateMessageTask(),
+                pageKind = detection.kind,
+            )
+        ) {
             lastOcrPageSignature = null
             ocrPageStableObservations = 0
             logger.info(
@@ -4201,7 +4225,7 @@ class DouyinNavigationController(
     private suspend fun advanceAfterEmptyMessageProbe() {
         if (!taskActive) return
         val maxUsers = activeTaskSnapshot?.maxUsers
-        if (maxUsers != null && processedUserIdentityRecords.size >= maxUsers) {
+        if (maxUsers != null && successfulPrivateMessageCount() >= maxUsers) {
             completeTaskAtUserLimit(maxUsers)
             return
         }
@@ -4244,16 +4268,43 @@ class DouyinNavigationController(
         // the processed anchor is not exposed; this prevents M2 from skipping the first several
         // visible users after every successful blank-message probe.
         if (previousAnchorBottom != null) {
-            val nextVisible = StructuralUserRowDetector.findAfter(
+            var nextVisible = StructuralUserRowDetector.findAfter(
                 resultsContext!!,
                 previousAnchorBottom,
             )
+            var pollAttempt = 0
+            val maxPollAttempts = TuningConstants.NavigationFlow.EMPTY_MESSAGE_NEXT_ROW_POLL_ATTEMPTS
+            while (
+                EmptyMessageNextRowPolicy.shouldPollForNextStructuralRow(
+                    pageKind = pageDetector.detect(resultsContext!!).kind,
+                    nextVisible = nextVisible,
+                    attempt = pollAttempt,
+                    maxAttempts = maxPollAttempts,
+                )
+            ) {
+                pollAttempt += 1
+                logger.info(
+                    "empty_message_probe_next_visible_poll",
+                    attributes = mapOf(
+                        "attempt" to pollAttempt,
+                        "anchor_bottom" to previousAnchorBottom,
+                        "anchor_count" to StructuralUserRowDetector.anchorCount(resultsContext!!),
+                        "nodes" to resultsContext!!.nodes.size,
+                    ),
+                )
+                delay(TuningConstants.NavigationFlow.USER_ROW_POSTCONDITION_INTERVAL_MS)
+                val live = currentWindowContext() ?: break
+                resultsContext = live
+                if (pageDetector.detect(live).kind != PageKind.USER_RESULTS) break
+                nextVisible = StructuralUserRowDetector.findAfter(live, previousAnchorBottom)
+            }
             if (nextVisible != null) {
                 logger.info(
                     "empty_message_probe_next_visible_requested",
                     attributes = mapOf(
                         "anchor_bottom" to previousAnchorBottom,
                         "next_anchor_top" to nextVisible.anchor.bounds.top,
+                        "poll_attempts" to pollAttempt,
                     ),
                 )
                 phase = AutomationPhase.WAITING_FOR_USER_RESULTS
@@ -4264,7 +4315,7 @@ class DouyinNavigationController(
             logger.info(
                 "empty_message_probe_current_viewport_ocr_requested",
                 message = "The next structural row is unavailable; verifying a stable OCR-backed continuation before pagination",
-                attributes = mapOf("anchor_bottom" to previousAnchorBottom),
+                attributes = mapOf("anchor_bottom" to previousAnchorBottom, "poll_attempts" to pollAttempt),
             )
             if (
                 selectAfterViewportAnchor(
@@ -4646,6 +4697,15 @@ class DouyinNavigationController(
         advanceAfterEmptyMessageProbe()
     }
 
+    /** B-end「用户数」counts verified blank probes and real sends only. */
+    private fun successfulPrivateMessageCount(): Int {
+        val state = AutomationStore.uiState.value
+        val taskId = state.taskId ?: return 0
+        return state.recordEntries.count { record ->
+            record.taskId == taskId && record.outcome.countsTowardUserQuota()
+        }
+    }
+
     private fun completeTaskAtUserLimit(maxUsers: Int) {
         timeoutJob?.cancel()
         initialObservationJob?.cancel()
@@ -4656,7 +4716,7 @@ class DouyinNavigationController(
         AutomationStore.clearTaskCheckpoint()
         logger.info(
             "task_completed_user_limit",
-            message = "The configured user limit was reached; no additional profile was opened",
+            message = "The configured successful private-message count was reached; no additional profile was opened",
             attributes = mapOf("max_users" to maxUsers),
         )
         phase = AutomationPhase.COMPLETED_TASK
@@ -4749,6 +4809,76 @@ class DouyinNavigationController(
     }
 
     /**
+     * After returning to USER_RESULTS, keep the current viewport: poll until the next follow
+     * anchor is mounted, then OCR-continue. Pagination is a last resort used by the caller.
+     */
+    private suspend fun selectNextUserInCurrentViewport(
+        initialContext: ScreenContext,
+        previousAnchorBottom: Float?,
+        pollEvent: String,
+        nextVisibleEvent: String,
+        ocrTag: String,
+    ): Boolean {
+        if (previousAnchorBottom == null) return false
+        var resultsContext = initialContext
+        var nextVisible = StructuralUserRowDetector.findAfter(resultsContext, previousAnchorBottom)
+        var pollAttempt = 0
+        val maxPollAttempts = TuningConstants.NavigationFlow.EMPTY_MESSAGE_NEXT_ROW_POLL_ATTEMPTS
+        while (
+            EmptyMessageNextRowPolicy.shouldPollForNextStructuralRow(
+                pageKind = pageDetector.detect(resultsContext).kind,
+                nextVisible = nextVisible,
+                attempt = pollAttempt,
+                maxAttempts = maxPollAttempts,
+            )
+        ) {
+            pollAttempt += 1
+            logger.info(
+                pollEvent,
+                attributes = mapOf(
+                    "attempt" to pollAttempt,
+                    "anchor_bottom" to previousAnchorBottom,
+                    "anchor_count" to StructuralUserRowDetector.anchorCount(resultsContext),
+                    "nodes" to resultsContext.nodes.size,
+                ),
+            )
+            delay(TuningConstants.NavigationFlow.USER_ROW_POSTCONDITION_INTERVAL_MS)
+            val live = currentWindowContext() ?: break
+            resultsContext = live
+            if (pageDetector.detect(live).kind != PageKind.USER_RESULTS) break
+            nextVisible = StructuralUserRowDetector.findAfter(live, previousAnchorBottom)
+        }
+        if (nextVisible != null) {
+            logger.info(
+                nextVisibleEvent,
+                attributes = mapOf(
+                    "anchor_bottom" to previousAnchorBottom,
+                    "next_anchor_top" to nextVisible.anchor.bounds.top,
+                    "poll_attempts" to pollAttempt,
+                ),
+            )
+            phase = AutomationPhase.WAITING_FOR_USER_RESULTS
+            AutomationStore.publishPhase(phase)
+            selectVisibleUser(resultsContext, minimumAnchorTop = previousAnchorBottom)
+            return true
+        }
+        logger.info(
+            "skip_current_viewport_ocr_requested",
+            message = "The next structural row is unavailable; verifying a stable OCR-backed continuation before pagination",
+            attributes = mapOf(
+                "anchor_bottom" to previousAnchorBottom,
+                "poll_attempts" to pollAttempt,
+                "tag" to ocrTag,
+            ),
+        )
+        return selectAfterViewportAnchor(
+            initialContext = resultsContext,
+            tag = ocrTag,
+            failOnUnresolved = false,
+        )
+    }
+
+    /**
      * Returns to the user results and advances the list by a bounded vertical gesture. This is
      * intentionally limited to follow-gated/unavailable profiles; it never follows an account or
      * attempts to bypass the restriction.
@@ -4793,25 +4923,16 @@ class DouyinNavigationController(
 
         // Move to the next visible row without paging through the entire list. The next
         // selection still uses StructuralUserRowDetector and the avatar-excluding tap band.
-        val previousAnchorBottom = lastProcessedUserAnchorBottom
-        if (previousAnchorBottom != null) {
-            val nextVisible = StructuralUserRowDetector.findAfter(
-                resultsContext!!,
-                previousAnchorBottom,
+        if (
+            selectNextUserInCurrentViewport(
+                initialContext = resultsContext!!,
+                previousAnchorBottom = lastProcessedUserAnchorBottom,
+                pollEvent = "private_message_unavailable_next_visible_poll",
+                nextVisibleEvent = "private_message_unavailable_next_visible_requested",
+                ocrTag = "restricted_user_current_viewport",
             )
-            if (nextVisible != null) {
-                logger.info(
-                    "private_message_unavailable_next_visible_requested",
-                    attributes = mapOf(
-                        "anchor_bottom" to previousAnchorBottom,
-                        "next_anchor_top" to nextVisible.anchor.bounds.top,
-                    ),
-                )
-                phase = AutomationPhase.WAITING_FOR_USER_RESULTS
-                AutomationStore.publishPhase(phase)
-                selectVisibleUser(resultsContext!!, minimumAnchorTop = previousAnchorBottom)
-                return
-            }
+        ) {
+            return
         }
 
         val scroll = swipeToNextUserPage("restricted_user_skip")
@@ -4890,22 +5011,16 @@ class DouyinNavigationController(
             return
         }
 
-        val previousAnchorBottom = lastProcessedUserAnchorBottom
-        if (previousAnchorBottom != null) {
-            val nextVisible = StructuralUserRowDetector.findAfter(resultsContext!!, previousAnchorBottom)
-            if (nextVisible != null) {
-                logger.info(
-                    "message_failure_next_visible_requested",
-                    attributes = mapOf(
-                        "anchor_bottom" to previousAnchorBottom,
-                        "next_anchor_top" to nextVisible.anchor.bounds.top,
-                    ),
-                )
-                phase = AutomationPhase.WAITING_FOR_USER_RESULTS
-                AutomationStore.publishPhase(phase)
-                selectVisibleUser(resultsContext!!, minimumAnchorTop = previousAnchorBottom)
-                return
-            }
+        if (
+            selectNextUserInCurrentViewport(
+                initialContext = resultsContext!!,
+                previousAnchorBottom = lastProcessedUserAnchorBottom,
+                pollEvent = "message_failure_next_visible_poll",
+                nextVisibleEvent = "message_failure_next_visible_requested",
+                ocrTag = "message_failure_current_viewport",
+            )
+        ) {
+            return
         }
 
         val scroll = swipeToNextUserPage("message_failure_skip")
@@ -5636,7 +5751,35 @@ class DouyinNavigationController(
                 // A current-root lookup can be transiently shadowed by the optional progress
                 // overlay on some OEM devices.  A short-lived callback snapshot is safe to use,
                 // but a prior task's profile/result tree is never valid startup evidence.
-                val context = currentWindowContext() ?: recentInitialTargetContext()
+                var context = currentWindowContext() ?: recentInitialTargetContext()
+                var chromeProbedThisObservation = false
+                if (
+                    context == null &&
+                    EmptyTreeHomeSearchChromePolicy.shouldProbe(
+                        isCommentTask = isCommentPrivateMessageTask(),
+                        phase = phase,
+                        pageIsUnknown = true,
+                        hasSearchEntryCandidate = false,
+                        hasOcrBlocks = false,
+                        attempts = emptyTreeHomeSearchChromeOcrAttempts,
+                        maxAttempts = TuningConstants.NavigationLifecycle.EMPTY_TREE_HOME_SEARCH_CHROME_OCR_MAX_ATTEMPTS,
+                    )
+                ) {
+                    emptyTreeHomeSearchChromeOcrAttempts++
+                    context = captureEmptyTreeHomeSearchChromeContext()
+                    chromeProbedThisObservation = true
+                    logger.info(
+                        "initial_home_search_chrome_ocr",
+                        attributes = mapOf(
+                            "attempt" to emptyTreeHomeSearchChromeOcrAttempts,
+                            "observation" to observationAttempt + 1,
+                            "ocr_blocks" to (context?.ocrBlocks?.size ?: 0),
+                            "chrome_hits" to (context?.let(EmptyTreeHomeSearchChromePolicy::chromeHits) ?: 0),
+                            "home" to (context?.let(EmptyTreeHomeSearchChromePolicy::classify) != null),
+                            "source" to "missing_tree",
+                        ),
+                    )
+                }
                 if (context == null) {
                     if (
                         InitialHomeSurfacePolicy.shouldDeferMissingContextRecovery(
@@ -5673,8 +5816,16 @@ class DouyinNavigationController(
                     }
                     return@launch
                 }
-                val ocrSkippedReason = initialUnknownOcrSkipReason(context, observationAttempt)
-                val augmentedContext = augmentInitialUnknownWithOcr(context, observationAttempt)
+                val ocrSkippedReason = if (chromeProbedThisObservation) {
+                    "none"
+                } else {
+                    initialUnknownOcrSkipReason(context, observationAttempt)
+                }
+                val augmentedContext = if (chromeProbedThisObservation) {
+                    context
+                } else {
+                    augmentInitialUnknownWithOcr(context, observationAttempt)
+                }
                 val detected = pageDetector.detect(augmentedContext)
                 // Check the launch overlay before trusting the page classifier. An ad can leave
                 // the home navigation tree visible underneath it, so HOME alone is not proof that
@@ -5697,13 +5848,23 @@ class DouyinNavigationController(
                 // no pair of bottom-nav labels. Treat that semantic search candidate as a home
                 // post-condition only after the ad/overlay has cleared; this avoids relying on a
                 // fixed coordinate while still allowing the flow to start on sparse home trees.
-                val detection = InitialHomeSurfacePolicy.normalize(
-                    detected = detected,
-                    hasTransientOverlay = TransientOverlayDetector.find(augmentedContext) != null,
-                    hasSearchEntryCandidate = hasInitialSearchSelectorCandidate(augmentedContext),
-                    reason = InitialHomeSurfacePolicy.OBSERVATION_REASON,
-                )
-                if (detection != detected) {
+                val chromeHome = EmptyTreeHomeSearchChromePolicy.classify(augmentedContext)
+                val detection = when {
+                    detected.kind != PageKind.UNKNOWN -> detected
+                    chromeHome != null -> chromeHome
+                    else -> InitialHomeSurfacePolicy.normalize(
+                        detected = detected,
+                        hasTransientOverlay = TransientOverlayDetector.find(augmentedContext) != null,
+                        hasSearchEntryCandidate = hasInitialSearchSelectorCandidate(augmentedContext),
+                        reason = InitialHomeSurfacePolicy.OBSERVATION_REASON,
+                    )
+                }
+                if (chromeHome != null) {
+                    logger.info(
+                        "initial_home_search_chrome_accepted",
+                        message = "Top-right home chrome OCR classified HOME; search still uses node then structural then the existing normalized fallback",
+                    )
+                } else if (detection != detected) {
                     logger.info(
                         "initial_search_selector_candidate",
                         message = "The semantic search icon is visible after the startup settle window",
@@ -5735,7 +5896,9 @@ class DouyinNavigationController(
                         lastReadyKind = detection.kind
                         readyObservations = 1
                     }
-                    if (readyObservations < TuningConstants.NavigationFlow.INITIAL_READY_STABLE_OBSERVATIONS) {
+                    if (readyObservations < TuningConstants.NavigationFlow.INITIAL_READY_STABLE_OBSERVATIONS &&
+                        chromeHome == null
+                    ) {
                         logger.info(
                             "initial_observation_waiting_stable",
                             message = "The first target page is visible; waiting for one more stable snapshot before acting",
@@ -5761,13 +5924,24 @@ class DouyinNavigationController(
         observationAttempt: Int,
     ): ScreenContext {
         if (pageDetector.detect(context).kind != PageKind.UNKNOWN) return context
+        val chromeContext = augmentEmptyTreeHomeSearchChromeIfNeeded(context, observationAttempt)
+        if (chromeContext !== context) {
+            if (
+                EmptyTreeHomeSearchChromePolicy.classify(chromeContext) != null ||
+                TransientOverlayDetector.findStartupAd(chromeContext) != null
+            ) {
+                return chromeContext
+            }
+        }
         // Comment P0 has a deterministic, node-first recovery path for an already-restored
         // profile/video: bounded Back navigation until HOME/search.  Screenshot OCR cannot
         // improve that decision and needlessly adds seconds to every regression start.
-        if (isCommentPrivateMessageTask()) return context
-        if (observationAttempt % TuningConstants.NavigationLifecycle.INITIAL_OCR_RETRY_EVERY_OBSERVATIONS != 0) return context
-        if (initialOcrAttempts >= TuningConstants.NavigationLifecycle.INITIAL_OCR_MAX_ATTEMPTS) return context
-        val engine = ocr ?: return context
+        if (isCommentPrivateMessageTask()) return chromeContext
+        if (observationAttempt % TuningConstants.NavigationLifecycle.INITIAL_OCR_RETRY_EVERY_OBSERVATIONS != 0) {
+            return chromeContext
+        }
+        if (initialOcrAttempts >= TuningConstants.NavigationLifecycle.INITIAL_OCR_MAX_ATTEMPTS) return chromeContext
+        val engine = ocr ?: return chromeContext
         initialOcrAttempts++
         logger.info(
             "initial_ocr_probe_started",
@@ -5777,13 +5951,13 @@ class DouyinNavigationController(
         return runCatching {
             val artifact = screenshotCapture.capture("initial_page_probe")
             val bitmap = withContext(Dispatchers.IO) { BitmapFactory.decodeFile(artifact.path) }
-                ?: return@runCatching context
+                ?: return@runCatching chromeContext
             try {
                 val result = engine.recognize(bitmap)
                 if (result.isEmpty) {
-                    context
+                    chromeContext
                 } else {
-                    context.copy(
+                    chromeContext.copy(
                         ocrBlocks = AppOwnedOverlayExclusion.filterOcrBlocks(OcrTextBlockMapper.map(result)),
                     )
                 }
@@ -5796,7 +5970,70 @@ class DouyinNavigationController(
                 message = "Initial OCR probe failed; continuing with accessibility nodes",
                 attributes = mapOf("cause" to (error::class.java.simpleName ?: "Throwable")),
             )
-        }.getOrDefault(context)
+        }.getOrDefault(chromeContext)
+    }
+
+    private suspend fun augmentEmptyTreeHomeSearchChromeIfNeeded(
+        context: ScreenContext,
+        observationAttempt: Int,
+    ): ScreenContext {
+        if (
+            !EmptyTreeHomeSearchChromePolicy.shouldProbe(
+                isCommentTask = isCommentPrivateMessageTask(),
+                phase = phase,
+                pageIsUnknown = true,
+                hasSearchEntryCandidate = hasInitialSearchSelectorCandidate(context),
+                hasOcrBlocks = context.ocrBlocks.isNotEmpty(),
+                attempts = emptyTreeHomeSearchChromeOcrAttempts,
+                maxAttempts = TuningConstants.NavigationLifecycle.EMPTY_TREE_HOME_SEARCH_CHROME_OCR_MAX_ATTEMPTS,
+            )
+        ) {
+            return context
+        }
+        emptyTreeHomeSearchChromeOcrAttempts++
+        val captured = captureContextWithOcr(
+            context,
+            "initial_home_search_chrome",
+            OcrRegion.HOME_SEARCH_CHROME,
+        ) ?: context
+        logger.info(
+            "initial_home_search_chrome_ocr",
+            attributes = mapOf(
+                "attempt" to emptyTreeHomeSearchChromeOcrAttempts,
+                "observation" to observationAttempt + 1,
+                "ocr_blocks" to captured.ocrBlocks.size,
+                "chrome_hits" to EmptyTreeHomeSearchChromePolicy.chromeHits(captured),
+                "home" to (EmptyTreeHomeSearchChromePolicy.classify(captured) != null),
+                "source" to "truncated_tree",
+            ),
+        )
+        return captured
+    }
+
+    private suspend fun captureEmptyTreeHomeSearchChromeContext(): ScreenContext? {
+        val engine = ocr ?: return null
+        return runCatching {
+            val artifact = screenshotCapture.capture("initial_home_search_chrome")
+            val bitmap = withContext(Dispatchers.IO) { BitmapFactory.decodeFile(artifact.path) }
+                ?: return@runCatching null
+            try {
+                val result = engine.recognize(bitmap, OcrRegion.HOME_SEARCH_CHROME)
+                ScreenContext(
+                    screenSize = ScreenSize(artifact.width, artifact.height),
+                    packageName = TargetAppLauncher.DOUYIN_PACKAGE,
+                    ocrBlocks = AppOwnedOverlayExclusion.filterOcrBlocks(OcrTextBlockMapper.map(result)),
+                    capturedAtMillis = System.currentTimeMillis(),
+                )
+            } finally {
+                bitmap.recycle()
+            }
+        }.onFailure { error ->
+            logger.warn(
+                "initial_home_search_chrome_ocr_failed",
+                message = "Top-right home chrome OCR failed; continuing bounded observation",
+                attributes = mapOf("cause" to (error::class.java.simpleName ?: "Throwable")),
+            )
+        }.getOrNull()
     }
 
     /** Returns only a recent target snapshot; startup recovery must never act on a stale run. */

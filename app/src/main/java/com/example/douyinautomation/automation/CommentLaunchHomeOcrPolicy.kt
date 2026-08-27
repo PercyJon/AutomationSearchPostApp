@@ -71,6 +71,20 @@ object CommentLaunchHomeOcrPolicy {
  * frame only delays accessibility delivery. Search and home launch still require two frames.
  */
 object CommentTaskOcrPageStabilityPolicy {
-    fun shouldRequireSecondOcrFrame(commentProfileHandoffObserved: Boolean): Boolean =
-        !commentProfileHandoffObserved
+    fun shouldRequireSecondOcrFrame(
+        commentProfileHandoffObserved: Boolean,
+        isCommentTask: Boolean = false,
+        pageKind: PageKind? = null,
+    ): Boolean {
+        if (commentProfileHandoffObserved) return false
+        // Comment launch still requires two OCR frames. B-end already classified HOME/search
+        // pages do not; a second full-frame sample only delays the search tap.
+        if (!isCommentTask &&
+            pageKind != null &&
+            pageKind in TuningConstants.NavigationFlow.INITIAL_READY_PAGE_KINDS
+        ) {
+            return false
+        }
+        return true
+    }
 }

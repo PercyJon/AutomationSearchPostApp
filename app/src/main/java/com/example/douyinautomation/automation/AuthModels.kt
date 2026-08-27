@@ -197,10 +197,14 @@ object AuthStore {
     private var secureStore: SecureAuthStore? = null
     private var coordinator: HeartbeatCoordinator? = null
     private val _session = MutableStateFlow<AuthConfig?>(null)
+    private val _lastEndpoint = MutableStateFlow<String?>(null)
     private val _uiState = MutableStateFlow(LicenseUiState())
 
     /** The current encrypted mobile-license session; no password or raw device ID is retained. */
     val session: StateFlow<AuthConfig?> = _session.asStateFlow()
+
+    /** Last successful HTTPS origin; independent from the license token so logout can still sign in. */
+    val lastEndpoint: StateFlow<String?> = _lastEndpoint.asStateFlow()
 
     val uiState: StateFlow<LicenseUiState> = _uiState.asStateFlow()
 
@@ -208,7 +212,11 @@ object AuthStore {
         if (secureStore != null) return
         val store = SecureAuthStore(context.applicationContext)
         secureStore = store
-        _session.value = store.read()
+        val restored = store.read()
+        _session.value = restored
+        _lastEndpoint.value = store.readLastEndpoint()
+            ?: LoginEndpointPolicy.normalize(restored?.endpoint)
+        rememberEndpoint(restored?.endpoint)
         coordinator = HeartbeatCoordinator(
             configProvider = { _session.value },
             gatewayProvider = {
@@ -238,7 +246,10 @@ object AuthStore {
     fun saveConfig(context: android.content.Context, config: AuthConfig): Boolean {
         initialize(context)
         val saved = secureStore?.save(config) == true
-        if (saved) _session.value = config
+        if (saved) {
+            _session.value = config
+            rememberEndpoint(config.endpoint)
+        }
         return saved
     }
 
@@ -280,6 +291,7 @@ object AuthStore {
         )
         check(secureStore?.save(config) == true) { "登录信息保存失败" }
         _session.value = config
+        rememberEndpoint(normalizedEndpoint)
         // The backend commits the newly issued license as its request transaction closes. An
         // immediate heartbeat can arrive before that commit and be falsely rejected once; wait
         // for the commit boundary instead of exposing a transient "authorization invalid" state.
@@ -300,6 +312,13 @@ object AuthStore {
         secureStore?.clear()
         _session.value = null
         verifyNow()
+    }
+
+    private fun rememberEndpoint(endpoint: String?) {
+        val normalized = LoginEndpointPolicy.normalize(endpoint) ?: return
+        if (secureStore?.saveLastEndpoint(normalized) == true) {
+            _lastEndpoint.value = normalized
+        }
     }
 
     /**

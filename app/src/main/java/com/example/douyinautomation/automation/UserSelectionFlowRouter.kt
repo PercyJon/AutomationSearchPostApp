@@ -23,6 +23,7 @@ object UserSelectionFlowRouter {
 
 data class UserSelectionFlowState(
     val maxUsers: Int?,
+    /** Successful private-message count (blank probe or real send), not every visited row. */
     val processedUserCount: Int,
     val remoteResumePending: Boolean,
     val hasViewportAnchor: Boolean,

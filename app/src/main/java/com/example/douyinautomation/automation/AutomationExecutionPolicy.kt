@@ -67,7 +67,7 @@ object TaskUserLimitInputPolicy {
 object AutomationTaskLimitPolicy {
     fun taskValidationError(snapshot: TaskSnapshot): String? {
         if (snapshot.maxUsers !in 1..AutomationExecutionLimits.MAX_USERS_PER_TASK) {
-            return "单任务用户上限必须在 1-${AutomationExecutionLimits.MAX_USERS_PER_TASK} 之间"
+            return "单任务用户数必须在 1-${AutomationExecutionLimits.MAX_USERS_PER_TASK} 之间"
         }
         val comment = snapshot.commentConfig ?: return null
         if (comment.maxVideos !in 1..CommentPrivateMessageConfig.MAX_VIDEOS) {

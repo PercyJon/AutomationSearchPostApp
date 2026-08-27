@@ -145,8 +145,9 @@ class NestedLaunchSurfacePolicyTest {
                 pageIsUnknown = true,
                 nodeDetectedSheet = false,
                 hasOcrBlocks = false,
-                attempts = 2,
+                attempts = 0,
                 maxAttempts = 2,
+                isCommentTask = false,
             ),
         )
     }

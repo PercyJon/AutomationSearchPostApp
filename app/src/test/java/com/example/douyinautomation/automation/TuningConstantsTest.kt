@@ -9,7 +9,7 @@ class TuningConstantsTest {
     fun navigationLifecycleKeepsTheEstablishedBoundedStartupBudget() {
         val lifecycle = TuningConstants.NavigationLifecycle
 
-        assertEquals(5, TuningConstants.VERSION)
+        assertEquals(7, TuningConstants.VERSION)
         assertEquals(12_000L, lifecycle.STEP_TIMEOUT_MS)
         assertEquals(30_000L, lifecycle.STARTUP_STEP_TIMEOUT_MS)
         assertEquals(1_500L, lifecycle.INITIAL_SCREEN_SETTLE_DELAY_MS)
@@ -19,6 +19,7 @@ class TuningConstantsTest {
         assertEquals(6, lifecycle.INITIAL_OCR_MAX_ATTEMPTS)
         assertEquals(2, lifecycle.NESTED_COMMENT_SURFACE_OCR_MAX_ATTEMPTS)
         assertEquals(2, lifecycle.COMMENT_LAUNCH_HOME_NAV_OCR_MAX_ATTEMPTS)
+        assertEquals(3, lifecycle.EMPTY_TREE_HOME_SEARCH_CHROME_OCR_MAX_ATTEMPTS)
         assertEquals(2, lifecycle.OCR_PAGE_STABLE_OBSERVATIONS)
     }
 
@@ -71,6 +72,9 @@ class TuningConstantsTest {
         assertEquals(200L, flow.USER_PROFILE_BACK_DELAY_MS)
         assertEquals(150L, flow.USER_PROFILE_BACK_POLL_INTERVAL_MS)
         assertEquals(4, flow.USER_PROFILE_BACK_POLL_ATTEMPTS)
+        assertEquals(5, flow.EMPTY_MESSAGE_NEXT_ROW_POLL_ATTEMPTS)
+        assertEquals(250L, flow.MESSAGE_ENTRY_POSTCONDITION_DELAY_MS)
+        assertEquals(500L, flow.PRIVATE_MESSAGE_ENTRY_POSTCONDITION_INITIAL_DELAY_MS)
         assertEquals(2_000L, flow.INITIAL_SURFACE_RECOVERY_BACK_DELAY_MS)
         assertEquals(4, flow.MAX_INITIAL_BLIND_BACK_ACTIONS)
         assertEquals(2, flow.MAX_BACK_ACTIONS_FROM_MESSAGE_FAILURE)

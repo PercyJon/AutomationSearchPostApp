@@ -229,6 +229,80 @@ class ProfileDisplayNameResolverTest {
     }
 
     @Test
+    fun `does not save a split fan-count as the profile name`() {
+        val ocrContext = ScreenContext(
+            screenSize = ScreenSize(1080, 2412),
+            nodes = listOf(
+                NodeSnapshot(
+                    contentDescription = "用户头像",
+                    bounds = ScreenBounds(48, 270, 360, 582),
+                ),
+            ),
+            ocrBlocks = listOf(
+                OcrTextBlock("悟空室界木作旗舰店", ScreenBounds(408, 355, 920, 443)),
+                OcrTextBlock("16.8万", ScreenBounds(408, 620, 560, 680)),
+                OcrTextBlock("店铺账号", ScreenBounds(408, 449, 620, 497)),
+            ),
+        )
+        val accessibilityOnly = ScreenContext(
+            screenSize = ScreenSize(1080, 2412),
+            nodes = listOf(
+                NodeSnapshot(
+                    contentDescription = "用户头像",
+                    bounds = ScreenBounds(48, 270, 360, 582),
+                ),
+                NodeSnapshot(
+                    text = "8万",
+                    bounds = ScreenBounds(408, 500, 520, 560),
+                ),
+                NodeSnapshot(
+                    text = "店铺账号",
+                    bounds = ScreenBounds(408, 449, 620, 497),
+                ),
+            ),
+        )
+
+        assertEquals(
+            "悟空室界木作旗舰店",
+            ProfileDisplayNameResolver.fromOcr(ocrContext, "8万"),
+        )
+        assertNull(ProfileDisplayNameResolver.fromAccessibility(accessibilityOnly, "8万"))
+    }
+
+    @Test
+    fun `does not save organization-certification chrome as the profile name`() {
+        val accessibilityOnly = ScreenContext(
+            screenSize = ScreenSize(1080, 2412),
+            nodes = listOf(
+                NodeSnapshot(
+                    contentDescription = "用户头像",
+                    bounds = ScreenBounds(48, 270, 360, 582),
+                ),
+                NodeSnapshot(
+                    text = "抖音组织认证：",
+                    bounds = ScreenBounds(408, 355, 720, 430),
+                ),
+                NodeSnapshot(
+                    text = "店铺账号",
+                    bounds = ScreenBounds(408, 449, 620, 497),
+                ),
+            ),
+        )
+        val ocrContext = accessibilityOnly.copy(
+            ocrBlocks = listOf(
+                OcrTextBlock("悟空室界木作旗舰店", ScreenBounds(408, 355, 920, 443)),
+                OcrTextBlock("店铺账号", ScreenBounds(408, 449, 620, 497)),
+            ),
+        )
+
+        assertNull(ProfileDisplayNameResolver.fromAccessibility(accessibilityOnly, "悟空室界木作旗舰店"))
+        assertEquals(
+            "悟空室界木作旗舰店",
+            ProfileDisplayNameResolver.fromOcr(ocrContext, "悟空室界木作旗舰店"),
+        )
+    }
+
+    @Test
     fun `corrects a one-character city prefix OCR error conservatively`() {
         assertEquals(
             "杭州世成红木沙发坐垫",

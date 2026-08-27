@@ -13,4 +13,14 @@ class OcrRegionTest {
         assertEquals(1000, bounds.right)
         assertEquals(1920, bounds.bottom)
     }
+
+    @Test
+    fun `home search chrome uses the top-right screen-ratio band`() {
+        val bounds = OcrRegionGeometry.homeSearchChromeBounds(width = 1000, height = 2000)
+
+        assertEquals(500, bounds.left)
+        assertEquals(0, bounds.top)
+        assertEquals(1000, bounds.right)
+        assertEquals(400, bounds.bottom)
+    }
 }

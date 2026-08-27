@@ -534,6 +534,9 @@ private fun TaskDashboard(
             withContext(Dispatchers.IO) { AuthStore.loadBlockKeywordCatalog(context) }
         }.getOrDefault(blockKeywordCatalog)
     }
+    LaunchedEffect(state.savedTaskListRevision) {
+        savedTasks = withContext(Dispatchers.IO) { AutomationStore.loadSavedTasks() }
+    }
     LaunchedEffect(context, licenseState.status, remoteRefreshNonce, showRemoteTasks) {
         if (!showRemoteTasks) {
             remoteTasks = emptyList()
@@ -965,7 +968,7 @@ private fun TaskDashboard(
                         .fillMaxWidth()
                         .height(50.dp),
                     textStyle = MaterialTheme.typography.bodyMedium,
-                    label = "用户上限",
+                    label = "用户数",
                     taskForm = true,
                     inlineLabel = true,
                     singleLine = true,
@@ -1663,7 +1666,7 @@ private fun RemoteTaskCard(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Text(
-                            "已处理 ${task.processedCount}/${task.maxUsers.takeIf { it > 0 } ?: "不限"}",
+                            "用户数 ${task.processedCount}/${task.maxUsers.takeIf { it > 0 } ?: "不限"}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -2042,7 +2045,7 @@ private fun TodoTaskCard(
                     )
                 }
                 Text(
-                    "${activeState.taskHandledUserCount} 已处理",
+                    "用户数 ${activeState.taskHandledUserCount}",
                     style = MaterialTheme.typography.bodySmall,
                     color = AutomationBlueDark,
                 )
@@ -2309,13 +2312,13 @@ private fun CurrentTaskCard(
             }
             HorizontalDivider(color = AutomationDivider)
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                MetricItem("已处理", state.taskHandledUserCount.toString(), AutomationBlue)
+                MetricItem("用户数", state.taskHandledUserCount.toString(), AutomationBlue)
                 MetricItem("已跳过", state.taskDuplicateUserCount.toString(), AutomationWarning)
                 MetricItem("失败", state.taskFailedUserCount.toString(), AutomationError)
             }
             if (state.taskQueryCount > 0 || state.taskMaxUsers != null) {
                 Text(
-                    "搜索词 ${state.taskQueryIndex + 1}/${state.taskQueryCount.coerceAtLeast(1)} · 上限 ${state.taskMaxUsers ?: "未设置"}",
+                    "搜索词 ${state.taskQueryIndex + 1}/${state.taskQueryCount.coerceAtLeast(1)} · 用户数 ${state.taskMaxUsers ?: "未设置"}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -2523,7 +2526,7 @@ private fun TaskHistoryCard(history: TaskHistoryEntry, onClick: () -> Unit) {
                     StatusBadge(taskStatusLabel(history.status), taskStatusTone(history.status))
                 }
                 Text(formatTaskTime(history.updatedAtMillis), color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
-                Text("已处理 ${history.handledCount} · 跳过 ${history.skippedCount} · 失败 ${history.failedCount}")
+                Text("用户数 ${history.handledCount}/${history.maxUsers} · 跳过 ${history.skippedCount} · 失败 ${history.failedCount}")
                 if (history.filteredCount > 0 || history.duplicateCount > 0) {
                     Text(
                         "屏蔽 ${history.filteredCount} · 重复 ${history.duplicateCount}",
@@ -2602,7 +2605,7 @@ private fun TaskRecordDetailScreen(
                     HorizontalDivider(color = AutomationDivider)
                     Text("开始：${formatTaskTime(history.startedAtMillis)}", style = MaterialTheme.typography.bodyMedium)
                     Text("更新：${formatTaskTime(history.updatedAtMillis)}", style = MaterialTheme.typography.bodyMedium)
-                    Text("搜索词组：${history.queryCount} · 用户上限：${history.maxUsers}", style = MaterialTheme.typography.bodyMedium)
+                    Text("搜索词组：${history.queryCount} · 用户数：${history.maxUsers}", style = MaterialTheme.typography.bodyMedium)
                     if (history.searchQueries.isNotEmpty()) {
                         Text("实际搜索词：${history.searchQueries.joinToString("、")}", style = MaterialTheme.typography.bodyMedium)
                     }
@@ -2621,7 +2624,7 @@ private fun TaskRecordDetailScreen(
                         )
                     }
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                        MetricItem("已处理", history.handledCount.toString(), AutomationBlue)
+                        MetricItem("用户数", history.handledCount.toString(), AutomationBlue)
                         MetricItem("已跳过", history.skippedCount.toString(), AutomationWarning)
                         MetricItem("失败", history.failedCount.toString(), AutomationError)
                     }

@@ -149,6 +149,20 @@ class CommentLaunchHomeOcrPolicyTest {
     fun secondOcrPageFrameIsNotRequiredAfterCommentProfileHandoff() {
         assertTrue(CommentTaskOcrPageStabilityPolicy.shouldRequireSecondOcrFrame(false))
         assertFalse(CommentTaskOcrPageStabilityPolicy.shouldRequireSecondOcrFrame(true))
+        assertFalse(
+            CommentTaskOcrPageStabilityPolicy.shouldRequireSecondOcrFrame(
+                commentProfileHandoffObserved = false,
+                isCommentTask = false,
+                pageKind = PageKind.HOME,
+            ),
+        )
+        assertTrue(
+            CommentTaskOcrPageStabilityPolicy.shouldRequireSecondOcrFrame(
+                commentProfileHandoffObserved = false,
+                isCommentTask = true,
+                pageKind = PageKind.HOME,
+            ),
+        )
     }
 
     private fun BandHits(top: Int, bottom: Int) = CommentLaunchHomeOcrPolicy.BandHits(top, bottom)

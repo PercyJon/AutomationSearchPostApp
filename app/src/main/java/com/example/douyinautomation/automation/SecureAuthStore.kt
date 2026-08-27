@@ -80,6 +80,16 @@ class SecureAuthStore(
         preferences.edit().remove(CONFIG_KEY).apply()
     }
 
+    /** Last successful HTTPS origin survives logout so the operator can sign in again. */
+    fun saveLastEndpoint(endpoint: String): Boolean {
+        val normalized = LoginEndpointPolicy.normalize(endpoint) ?: return false
+        return preferences.edit().putString(LAST_ENDPOINT_KEY, normalized).commit()
+    }
+
+    fun readLastEndpoint(): String? = LoginEndpointPolicy.normalize(
+        preferences.getString(LAST_ENDPOINT_KEY, null),
+    )
+
     private fun getOrCreateKey(): SecretKey {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
         val existing = keyStore.getKey(KEY_ALIAS, null)
@@ -110,5 +120,6 @@ class SecureAuthStore(
         const val TRANSFORMATION = "AES/GCM/NoPadding"
         const val GCM_TAG_LENGTH_BITS = 128
         const val CONFIG_KEY = "encrypted_config"
+        const val LAST_ENDPOINT_KEY = "last_https_endpoint"
     }
 }

@@ -152,6 +152,7 @@ object DirectMessageDisplayNameResolver {
             normalized == "搜索" ||
             normalized == "筛选" ||
             normalized == "按钮" ||
+            IdentityCountToken.matches(value) ||
             normalized.contains("关注") ||
             normalized.contains("方便以后找到") ||
             normalized.contains("你已进入咨询会话") ||
