@@ -103,6 +103,30 @@ class AutomationHttpClient(
         )
     }
 
+    suspend fun fetchMarketingContents(): MarketingContentBundle = withContext(Dispatchers.IO) {
+        val payload = execute("/automation/mobile/marketing-contents", "GET").asObject()
+        MarketingContentCodec.decodeBundle(payload).copy(
+            syncedAtMillis = System.currentTimeMillis(),
+            source = MarketingContentBundle.Source.REMOTE,
+        )
+    }
+
+    suspend fun upsertMarketingContent(profile: MarketingContentProfile): MarketingContentProfile =
+        withContext(Dispatchers.IO) {
+            val normalized = profile.normalized()
+            val body = JSONObject().apply {
+                put("slots", JSONArray(normalized.slots))
+                put("selected_index", normalized.selectedIndex)
+                put("random_enabled", normalized.randomEnabled)
+            }
+            val payload = execute(
+                path = "/automation/mobile/marketing-contents/${normalized.contentType.wireName}",
+                method = "PUT",
+                body = body,
+            ).asObject()
+            MarketingContentCodec.decodeProfile(payload, normalized.contentType)
+        }
+
     override suspend fun listTasks(): List<RemoteTask> = withContext(Dispatchers.IO) {
         execute("/automation/mobile/tasks", "GET").asArray().toRemoteTasks()
     }

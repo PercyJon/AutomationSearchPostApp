@@ -111,6 +111,24 @@ class OcrUserResultRowDetectorTest {
     }
 
     @Test
+    fun `accepts an already-followed first card whose right action is send message`() {
+        val context = userResultsContext(
+            block("是小瑜瑜呀~", 276, 406, 590, 450),
+            block("粉丝：1138", 276, 470, 520, 510),
+            block("抖音号：46821855471", 276, 526, 700, 564),
+            block("发私信", 816, 458, 1008, 522),
+        )
+
+        val analysis = OcrUserResultRowDetector.analyzeFirstVisible(context)
+        val match = analysis.match
+
+        assertEquals(1, analysis.accountMarkerCount)
+        assertNotNull(match)
+        val identity = UserResultIdentityExtractor.extract(context, match!!.asStructuralMatch())
+        assertEquals("46821855471", identity?.accountHandle)
+    }
+
+    @Test
     fun `accepts a wide follow-column block that embeds a follow glyph`() {
         // ML Kit may report the right-side follow pill merged with its padding as a single wider
         // block. The strict width cap rejects it, so the detector must fall back to a broader

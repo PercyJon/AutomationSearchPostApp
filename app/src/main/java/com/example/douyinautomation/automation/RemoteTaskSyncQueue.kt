@@ -255,6 +255,7 @@ object RemoteTaskRecordStatus {
         UserTaskRecord.Outcome.IN_PROGRESS -> PROCESSING
         UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED,
         UserTaskRecord.Outcome.PROFILE_OPENED,
+        UserTaskRecord.Outcome.MESSAGE_SENT,
         -> SUCCESS
         UserTaskRecord.Outcome.FILTERED_BY_KEYWORD -> BLOCKED
         UserTaskRecord.Outcome.DUPLICATE_SKIPPED,

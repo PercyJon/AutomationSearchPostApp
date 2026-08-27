@@ -178,6 +178,7 @@ private enum class HomeSection {
     RECORDS,
     SETTINGS,
     DIAGNOSTICS,
+    MARKETING,
 }
 
 private const val COMMENT_P0_REGRESSION_SEED = "comment-p0-designer-1-1"
@@ -243,7 +244,8 @@ fun AppHomeScreen(
             }
             selectedSection == HomeSection.RECORDS ||
                 selectedSection == HomeSection.SETTINGS ||
-                selectedSection == HomeSection.DIAGNOSTICS -> section = HomeSection.MY.name
+                selectedSection == HomeSection.DIAGNOSTICS ||
+                selectedSection == HomeSection.MARKETING -> section = HomeSection.MY.name
             selectedSection == HomeSection.MY || selectedSection == HomeSection.TODO -> section = HomeSection.HOME.name
             else -> Unit
         }
@@ -278,7 +280,7 @@ fun AppHomeScreen(
     Scaffold(
         containerColor = AutomationPage,
         topBar = {
-            if (showCreateTask || showCommentTask || selectedSection == HomeSection.RECORDS || selectedSection == HomeSection.SETTINGS || selectedSection == HomeSection.DIAGNOSTICS) {
+            if (showCreateTask || showCommentTask || selectedSection == HomeSection.RECORDS || selectedSection == HomeSection.SETTINGS || selectedSection == HomeSection.DIAGNOSTICS || selectedSection == HomeSection.MARKETING) {
                 TopAppBar(
                 title = {
                     Column {
@@ -289,6 +291,7 @@ fun AppHomeScreen(
                                 selectedSection == HomeSection.TODO -> "待办"
                                 selectedSection == HomeSection.RECORDS -> "任务记录"
                                 selectedSection == HomeSection.SETTINGS -> "自动化设置"
+                                selectedSection == HomeSection.MARKETING -> "营销内容编辑"
                                 else -> "诊断"
                             },
                             style = MaterialTheme.typography.titleLarge,
@@ -315,7 +318,7 @@ fun AppHomeScreen(
                         }) {
                             Icon(Icons.Default.ArrowBack, contentDescription = "返回首页")
                         }
-                    } else if (selectedSection == HomeSection.RECORDS || selectedSection == HomeSection.SETTINGS) {
+                    } else if (selectedSection == HomeSection.RECORDS || selectedSection == HomeSection.SETTINGS || selectedSection == HomeSection.MARKETING) {
                         IconButton(onClick = { section = HomeSection.MY.name }) {
                             Icon(Icons.Default.ArrowBack, contentDescription = "返回我的")
                         }
@@ -358,7 +361,7 @@ fun AppHomeScreen(
                         colors = navigationItemColors,
                     )
                     NavigationBarItem(
-                        selected = selectedSection == HomeSection.MY || selectedSection == HomeSection.RECORDS || selectedSection == HomeSection.SETTINGS,
+                        selected = selectedSection == HomeSection.MY || selectedSection == HomeSection.RECORDS || selectedSection == HomeSection.SETTINGS || selectedSection == HomeSection.MARKETING,
                         onClick = { section = HomeSection.MY.name },
                         icon = { CompactNavigationItem(Icons.Default.Person, "我的") },
                         alwaysShowLabel = false,
@@ -433,6 +436,7 @@ fun AppHomeScreen(
             HomeSection.MY -> MyPage(
                 padding = padding,
                 onOpenRecords = { section = HomeSection.RECORDS.name },
+                onOpenMarketing = { section = HomeSection.MARKETING.name },
                 onOpenSettings = { section = HomeSection.SETTINGS.name },
                 onOpenDiagnostics = { section = HomeSection.DIAGNOSTICS.name },
                 onSignOut = { AuthStore.logout(context) },
@@ -442,6 +446,7 @@ fun AppHomeScreen(
                 padding = padding,
                 onOpenTask = { taskId -> detailTaskId = taskId },
             )
+            HomeSection.MARKETING -> MarketingContentScreen(padding = padding)
             HomeSection.SETTINGS -> SettingsPage(
                 padding = padding,
                 showRemoteTasks = showRemoteTasks,
@@ -2717,10 +2722,7 @@ private fun UserTaskResultCard(record: UserTaskRecord) {
                 )
                 Text(
                     recordOutcomeLabel(record.outcome),
-                    color = if (
-                        record.outcome == UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED ||
-                        record.outcome == UserTaskRecord.Outcome.PROFILE_OPENED
-                    ) AutomationSuccess else AutomationError,
+                    color = if (record.outcome.countsAsMessaged()) AutomationSuccess else AutomationError,
                     fontWeight = FontWeight.Medium,
                     style = MaterialTheme.typography.bodySmall,
                     softWrap = true,
@@ -2890,6 +2892,8 @@ private fun recordReasonLabel(record: UserTaskRecord): String {
     return when (record.outcome) {
         UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED ->
             "抖音提示不能发送空白消息，安全探测已完成，未发送真实内容。"
+        UserTaskRecord.Outcome.MESSAGE_SENT ->
+            "已在会话中确认发出营销文案。"
         UserTaskRecord.Outcome.PROFILE_OPENED ->
             "已进入评论用户主页并返回评论区，未打开私信、未发送内容。"
         UserTaskRecord.Outcome.MESSAGE_SEND_FAILED -> when {
@@ -2941,6 +2945,7 @@ private fun taskErrorLabel(error: String): String {
 private fun recordOutcomeLabel(outcome: UserTaskRecord.Outcome): String = when (outcome) {
     UserTaskRecord.Outcome.IN_PROGRESS -> "处理中"
     UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED -> "模拟发送成功"
+    UserTaskRecord.Outcome.MESSAGE_SENT -> "发送成功"
     UserTaskRecord.Outcome.PROFILE_OPENED -> "已进主页（跳过私信）"
     UserTaskRecord.Outcome.PRIVATE_MESSAGE_UNAVAILABLE -> "私信入口不可用"
     UserTaskRecord.Outcome.MESSAGE_SEND_FAILED -> "发送失败"

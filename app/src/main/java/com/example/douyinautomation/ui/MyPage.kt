@@ -26,6 +26,7 @@ import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Accessibility
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Devices
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Settings
@@ -76,6 +77,7 @@ import kotlinx.coroutines.launch
 internal fun MyPage(
     padding: PaddingValues,
     onOpenRecords: () -> Unit,
+    onOpenMarketing: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onSignOut: suspend () -> Unit,
@@ -183,6 +185,12 @@ internal fun MyPage(
                 title = "账号与设备",
                 value = myStatusLabel(licenseState.status),
                 onClick = onOpenSettings,
+                showDivider = true,
+            )
+            MyMenuItem(
+                icon = Icons.Default.Edit,
+                title = "营销内容编辑",
+                onClick = onOpenMarketing,
                 showDivider = true,
             )
             MyMenuItem(

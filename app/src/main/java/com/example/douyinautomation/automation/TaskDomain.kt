@@ -91,6 +91,7 @@ data class TaskDraft(
     fun toSnapshot(
         presets: SearchPresetCatalog,
         nowMillis: Long,
+        marketingBundle: MarketingContentBundle = MarketingContentStore.cached(),
     ): TaskSnapshot {
         require(validationErrors().isEmpty()) { validationErrors().joinToString("；") }
         val presetKeywords = presetIds.mapNotNull { id ->
@@ -109,6 +110,8 @@ data class TaskDraft(
             val time = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.getDefault()).format(Date(nowMillis))
             "${queries.firstOrNull()?.query ?: "评论私信"}-$time"
         }
+        val frozen = MarketingContentResolver.freezeForTask(taskType, marketingBundle)
+        val resolvedCopy = frozen.resolvedText?.takeIf { it.isNotBlank() }
         return TaskSnapshot(
             taskId = id,
             taskName = resolvedTaskName,
@@ -118,8 +121,12 @@ data class TaskDraft(
             composedQueries = queries.map { it.query },
             normalizedBlockedKeywords = BlockedKeywordEvaluator.normalizeTerms(blockedKeywords),
             maxUsers = maxUsers,
-            messageTemplate = messageTemplate?.trim()?.takeIf { it.isNotEmpty() },
-            executionMode = executionMode,
+            messageTemplate = resolvedCopy ?: messageTemplate?.trim()?.takeIf { it.isNotEmpty() },
+            executionMode = if (resolvedCopy != null) {
+                TaskExecutionMode.REAL_SEND_REQUIRES_CONFIRMATION
+            } else {
+                TaskExecutionMode.SAFE_BLANK_PROBE
+            },
             createdAtMillis = nowMillis,
             taskType = taskType,
             commentConfig = commentConfig
@@ -138,6 +145,7 @@ data class TaskDraft(
                     skipBlankProbe = config.skipBlankProbe,
                 )
             },
+            frozenMarketingContent = frozen,
         )
     }
 
@@ -162,6 +170,7 @@ data class TaskSnapshot(
     /** Existing snapshots default to the original profile private-message flow. */
     val taskType: AutomationTaskType = AutomationTaskType.PROFILE_PRIVATE_MESSAGE,
     val commentConfig: CommentPrivateMessageSnapshot? = null,
+    val frozenMarketingContent: FrozenMarketingContent? = null,
 )
 
 /**

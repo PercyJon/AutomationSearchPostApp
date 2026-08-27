@@ -263,7 +263,7 @@ object OcrUserResultRowDetector {
     private const val MAX_ROW_HEIGHT_RATIO = 0.20f
     private const val MIN_ACCOUNT_PROOF_LENGTH = 2
 
-    private val FOLLOW_LABELS = setOf("关注", "follow")
+    private val FOLLOW_LABELS = setOf("关注", "follow", "发私信", "私信")
     private val DISPLAY_NAME_EXCLUDED_TERMS = listOf(
         "粉丝",
         "抖音号",

@@ -185,6 +185,7 @@ object AutomationStore {
     fun initialize(context: Context) {
         applicationContext = context.applicationContext
         AuthStore.initialize(context)
+        MarketingContentStore.initialize(context)
         PrivateMessageEntryRuleStore.initialize(context)
         synchronized(recordLock) {
             if (recordPreferences == null) {
@@ -610,6 +611,9 @@ object AutomationStore {
                     put("query_count", it.composedQueries.size)
                     put("blocked_keyword_count", it.normalizedBlockedKeywords.size)
                     put("preset_version_hash", it.presetVersion.hashCode())
+                    it.frozenMarketingContent?.toLogAttributes()?.forEach { (key, value) ->
+                        if (value != null) put("marketing_$key", value)
+                    }
                 }
             },
         )
@@ -1040,14 +1044,8 @@ object AutomationStore {
                 displayName = displayName,
                 status = RemoteTaskRecordStatus.from(outcome),
                 lastAction = page?.name ?: outcome.name,
-                failureCode = reason?.takeIf {
-                    outcome != UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED &&
-                        outcome != UserTaskRecord.Outcome.PROFILE_OPENED
-                }?.let { outcome.name },
-                failureMessage = reason?.takeIf {
-                    outcome != UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED &&
-                        outcome != UserTaskRecord.Outcome.PROFILE_OPENED
-                }?.take(512),
+                failureCode = reason?.takeIf { !outcome.countsAsMessaged() }?.let { outcome.name },
+                failureMessage = reason?.takeIf { !outcome.countsAsMessaged() }?.take(512),
             ),
         )
     }
@@ -1445,8 +1443,7 @@ object AutomationStore {
         val key = userKey?.takeIf { it.isNotBlank() }
             ?: identityFingerprint?.takeIf { it.isNotBlank() }
             ?: return null
-        val failed = outcome != UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED &&
-            outcome != UserTaskRecord.Outcome.PROFILE_OPENED
+        val failed = !outcome.countsAsMessaged()
         return RemoteRecordRequest(
             userKey = key.take(128),
             displayName = displayName?.take(255),
@@ -1504,29 +1501,17 @@ object AutomationStore {
         put("created_at", createdAtMillis)
         put("task_type", taskType.name)
         put("comment_config", commentConfig?.toJson() ?: JSONObject.NULL)
+        put(
+            "frozen_marketing_content",
+            frozenMarketingContent?.let(MarketingContentCodec::encodeFrozen) ?: JSONObject.NULL,
+        )
     }
 
     private fun decodeCheckpoint(raw: String?): TaskCheckpoint? = runCatching {
         if (raw.isNullOrBlank()) return null
         val root = JSONObject(raw)
         val snapshotJson = root.getJSONObject("snapshot")
-        val snapshot = TaskSnapshot(
-            taskId = snapshotJson.getString("task_id"),
-            taskName = snapshotJson.getString("task_name"),
-            presetVersion = snapshotJson.getString("preset_version"),
-            baseKeywords = snapshotJson.getStringList("base_keywords"),
-            region = snapshotJson.getString("region"),
-            composedQueries = snapshotJson.getStringList("composed_queries").ifEmpty { return null },
-            normalizedBlockedKeywords = snapshotJson.getStringList("blocked_keywords"),
-            maxUsers = snapshotJson.getInt("max_users"),
-            messageTemplate = if (snapshotJson.isNull("message_template")) null else snapshotJson.getString("message_template"),
-            executionMode = TaskExecutionMode.valueOf(snapshotJson.getString("execution_mode")),
-            createdAtMillis = snapshotJson.getLong("created_at"),
-            taskType = runCatching {
-                AutomationTaskType.valueOf(snapshotJson.optString("task_type"))
-            }.getOrDefault(AutomationTaskType.PROFILE_PRIVATE_MESSAGE),
-            commentConfig = snapshotJson.optJSONObject("comment_config")?.toCommentPrivateMessageSnapshot(),
-        )
+        val snapshot = snapshotJson.toTaskSnapshot()?.takeIf { it.composedQueries.isNotEmpty() } ?: return null
         val queryIndex = TaskCheckpointQueryIndexPolicy.normalize(
             snapshot = snapshot,
             queryIndex = root.getInt("query_index"),
@@ -1555,24 +1540,7 @@ object AutomationStore {
         val tasks = buildList(tasksJson.length()) {
             for (index in 0 until tasksJson.length()) {
                 val item = tasksJson.optJSONObject(index) ?: return null
-                val snapshot = TaskSnapshot(
-                    taskId = item.getString("task_id"),
-                    taskName = item.getString("task_name"),
-                    presetVersion = item.getString("preset_version"),
-                    baseKeywords = item.getStringList("base_keywords"),
-                    region = item.getString("region"),
-                    composedQueries = item.getStringList("composed_queries"),
-                    normalizedBlockedKeywords = item.getStringList("blocked_keywords"),
-                    maxUsers = item.getInt("max_users"),
-                    messageTemplate = if (item.isNull("message_template")) null else item.getString("message_template"),
-                    executionMode = TaskExecutionMode.valueOf(item.getString("execution_mode")),
-                    createdAtMillis = item.getLong("created_at"),
-                    taskType = runCatching {
-                        AutomationTaskType.valueOf(item.optString("task_type"))
-                    }.getOrDefault(AutomationTaskType.PROFILE_PRIVATE_MESSAGE),
-                    commentConfig = item.optJSONObject("comment_config")?.toCommentPrivateMessageSnapshot(),
-                )
-                if (snapshot.composedQueries.isEmpty()) return null
+                val snapshot = item.toTaskSnapshot()?.takeIf { it.composedQueries.isNotEmpty() } ?: return null
                 add(snapshot)
             }
         }
@@ -1586,6 +1554,27 @@ object AutomationStore {
                 AutomationPhase.valueOf(phase)
             },
             updatedAtMillis = root.getLong("updated_at"),
+        )
+    }.getOrNull()
+
+    private fun JSONObject.toTaskSnapshot(): TaskSnapshot? = runCatching {
+        TaskSnapshot(
+            taskId = getString("task_id"),
+            taskName = getString("task_name"),
+            presetVersion = getString("preset_version"),
+            baseKeywords = getStringList("base_keywords"),
+            region = getString("region"),
+            composedQueries = getStringList("composed_queries"),
+            normalizedBlockedKeywords = getStringList("blocked_keywords"),
+            maxUsers = getInt("max_users"),
+            messageTemplate = if (isNull("message_template")) null else getString("message_template"),
+            executionMode = TaskExecutionMode.valueOf(getString("execution_mode")),
+            createdAtMillis = getLong("created_at"),
+            taskType = runCatching {
+                AutomationTaskType.valueOf(optString("task_type"))
+            }.getOrDefault(AutomationTaskType.PROFILE_PRIVATE_MESSAGE),
+            commentConfig = optJSONObject("comment_config")?.toCommentPrivateMessageSnapshot(),
+            frozenMarketingContent = MarketingContentCodec.decodeFrozen(optJSONObject("frozen_marketing_content")),
         )
     }.getOrNull()
 

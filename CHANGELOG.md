@@ -4,6 +4,135 @@
 
 ---
 
+## [未发布] 2026-08-27 —— B 端营销文案接入真实发送
+
+### 验证前记录
+
+- 现象：营销内容已保存，但 B 端任务仍强制空格探测。
+- 预期：有非空 B 端营销文案时，任务启动冻结该文案并真实发送；无文案时仍走空格探测。
+
+### 最小修改
+
+- `toSnapshot` 按任务类型冻结营销内容：有文案则 `REAL_SEND`，无文案则空格探测。
+- 导航 `start()` 以任务快照的发送模式和冻结文案为准，不再被调用方默认 `safetyProbe=true` 覆盖。
+
+### 验证
+
+- 单测：有文案升级为真实发送，无文案保持探测。
+- 真机：搜索 `46821855471` 启动成功，`task_message_mode [safety_probe=false, marketing_reason=selected, resolved_index=0]`。未进入私信：用户列表可见且 dump 含 `关注按钮`，但 `anchor_count=0`，语义选择失败后 `MESSAGE_SEND_FAILED`。无障碍服务随后重绑，任务卡住。
+
+---
+
+## [未发布] 2026-08-27 —— B 端首行启用 OCR 几何兜底
+
+### 验证前记录
+
+- 现象：B 端用户结果页能看见列表和关注按钮，但 `user_result_row_postcondition [anchor_count=0]`，随后 `private_message_send_failed`，从未打开主页或发送。
+- 复现：B 端搜索 `46821855471`，用户上限 1。
+- 预期：无障碍行结构缺失时，复用已有双次 OCR 校验首行，再点内容区进入主页并真实发送。
+- 差异：OCR 首行兜底仅对 `SEARCH_TARGET_PROFILE` 评论任务开放。
+
+### 最小修改
+
+- `allowsFirstVisibleUserOcrFallback()`：B 端私信与搜索目标评论任务在首个可见行（无上一行锚点）时共用 OCR 几何兜底。
+
+### 验证
+
+- 真机：搜索「是小瑜瑜呀~」后 `anchor_count=0`，OCR 首行 `NO_FOLLOW_LABEL`，随后翻页；截图确认第一行是已关注小号，右侧为「发私信」。
+
+---
+
+## [未发布] 2026-08-27 —— OCR 首行把「发私信」当作合法行锚点
+
+### 验证前记录
+
+- 现象：已关注小号在用户列表第一行，右侧是白底「发私信」；任务短暂停留后滑到第二页，没有点进该行。
+- 复现：B 端搜索「是小瑜瑜呀~」，用户上限 1。日志：`anchor_count=0` → `p0_first_user_ocr_probe [failure_reason=NO_FOLLOW_LABEL]` → `private_message_send_failed` → 翻页。
+- 预期：无障碍看不到行时，OCR 仍能把第一行「发私信」当作行锚点，点内容区进主页再发私信。
+- 差异：OCR `FOLLOW_LABELS` 只有「关注 / follow」，不认「发私信」。
+
+### 最小修改
+
+- OCR 首行检测增加「发私信」「私信」为合法右侧动作标签。
+
+### 验证
+
+- 单测：第一行抖音号 + 「发私信」可匹配。
+- 真机 OnePlus NE2210 `b33aa309`：搜索「是小瑜瑜呀~」，`p0_first_user_ocr_probe [matched=true, stable=true]` → 点第一行内容区 → 主页 → 私信页 → `message_send_submitted` → `message_send_completed`。会话头为「是小瑜瑜呀~」，未再翻到第二页。无障碍仍 `anchor_count=0`，本轮只修 OCR 标签。发送成功后停在聊天页，悬浮窗仍为进行中 0/1、已私信 0。
+
+---
+
+## [未发布] 2026-08-27 —— 真实发送完成后写记录并回到 App
+
+### 验证前记录
+
+- 现象：私信已发出并 `message_send_completed`，但仍停在抖音聊天页；悬浮窗「进行中 0/1」「已私信 0」不变。
+- 复现：B 端真实发送「是小瑜瑜呀~」，用户上限 1。
+- 预期：写成功记录，进度变为 1/1、已私信 1，达上限后结束任务并跳回 App 记录页。
+- 差异：`completeMessageSent()` 只把阶段标成 `COMPLETED_MESSAGE_SENT` 并停掉控制器，不写 `recordUserTaskFinished`，也不走空白探测那条返回列表/结束任务路径；悬浮窗「已私信」只统计空白探测和「已进主页」。
+
+### 最小修改
+
+- 新增 `MESSAGE_SENT` 结局；真实发送完成后写记录，再复用返回用户列表的推进逻辑，上限到达则 `COMPLETED_TASK` 并打开记录页。
+- 「已私信」与远端 SUCCESS 同时计入真实发送。
+
+### 验证
+
+- 单测：`MESSAGE_SENT` 计为已私信且远端 SUCCESS。
+- 真机 OnePlus NE2210 `b33aa309`：`task_user_finished [outcome=MESSAGE_SENT]` 后 BACK 到用户列表，但 `anchor_count=0` 找不到下一行，走了 `empty_message_probe_next` 翻页，随后 `user_result_next_timeout` → 任务失败。悬浮窗计数已有记录，任务未达 `COMPLETED_TASK`，未稳定回到 App。
+
+---
+
+## [未发布] 2026-08-27 —— 达用户上限后不再翻页，直接结束任务
+
+### 验证前记录
+
+- 现象：真实发送已 `MESSAGE_SENT`，上限 1，仍返回列表并翻页，最终分页超时失败；不跳回 App。
+- 复现：B 端真实发送「是小瑜瑜呀~」，用户上限 1。
+- 预期：处理人数已达上限时立即 `COMPLETED_TASK`，打开记录页，悬浮窗结束。
+- 差异：用户上限只在 `selectVisibleUser` 里检查；无障碍找不到下一行时直接 swipe，绕过该检查。
+
+### 最小修改
+
+- `advanceAfterEmptyMessageProbe()` 开头：已处理人数 ≥ 上限则 `completeTaskAtUserLimit`，不再 BACK/翻页。
+
+### 验证
+
+- 真机 OnePlus NE2210 `b33aa309`：`message_send_completed` → `task_user_finished [outcome=MESSAGE_SENT]` → `task_completed_user_limit`，未再翻页。前台回到 `MainActivity` 记录页，最新任务「是小瑜瑜呀~-20260827-112854」为已完成、已处理 1。悬浮窗随 `COMPLETED_TASK` 关闭。无新增像素常量。
+
+---
+
+## [未发布] 2026-08-26 —— 营销内容编辑与后台同步（A-D）
+
+### 验证前记录
+
+- 现象：B 端和评论私信任务仍只做空消息探测，用户没有地方配置营销文案。
+- 预期：我的页面新增「营销内容编辑」；两套各 5 条内容可保存并同步后台；App 打开后以服务端为准覆盖本地；任务启动时冻结当时解析结果。本阶段不改变真实发送。
+
+### 最小修改
+
+- App：「我的」在「任务记录」上方新增「营销内容编辑」；两 Tab 各 5 个输入、自定义单选默认第一项、「随机发送」开关和分 Tab 保存。
+- 本地缓存营销内容；登录/冷启动拉取服务端并覆盖本地；保存先写本地再 PUT。
+- 任务快照增加 `frozenMarketingContent`，启动时按任务类型冻结选中或随机结果，运行中不受后续编辑影响。发送链路仍为空白探测。
+- 后台新增 `automation_marketing_content`、移动端 GET/PUT、管理端 CRUD 与「营销内容」菜单/页面。
+
+### 验证
+
+- 单测：`MarketingContentResolverTest` 覆盖选取、回退、随机非空槽；因 JVM 无完整 `org.json`，编解码单测已跳过。
+- 后台接口测试：`test_api_module_automation_marketing.py` 2 项通过。
+- **真机 UI**：OnePlus NE2210 / `b33aa309`。安装 debug APK 后，「我的」在「任务记录」上方出现「营销内容编辑」；进入后两个 Tab、5 个输入、「随机发送」和「保存」可见，并提示「已从后台同步营销内容」。
+- **真机发送**：本阶段不验证真实私信发送。
+
+### 几何 / dp 检查
+
+- 新增 UI 尺寸均使用 `dp`；自定义单选 20dp / 内点 10dp；未新增 px 判断或点击坐标。
+
+### 下一步
+
+- 阶段 E：在明确允许后，把冻结文案接入真实发送，替换空格探测。
+
+---
+
 ## [未发布] 2026-08-26 —— 待办列表排序、统一卡片和左划软删除
 
 ### 验证前记录

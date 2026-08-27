@@ -28,6 +28,8 @@ data class UserTaskRecord(
         BLANK_PROBE_VERIFIED,
         /** Debug skip: commenter profile was confirmed, then the runtime returned to comments. */
         PROFILE_OPENED,
+        /** Real send: the requested message was verified in the conversation. */
+        MESSAGE_SENT,
         PRIVATE_MESSAGE_UNAVAILABLE,
         MESSAGE_SEND_FAILED,
         FOLLOW_BACK_SKIPPED,
@@ -36,5 +38,11 @@ data class UserTaskRecord(
         IDENTITY_UNAVAILABLE,
         PAUSED,
         STOPPED,
+        ;
+
+        /** Overlay「已私信」and remote SUCCESS share this set. */
+        fun countsAsMessaged(): Boolean = this == BLANK_PROBE_VERIFIED ||
+            this == PROFILE_OPENED ||
+            this == MESSAGE_SENT
     }
 }

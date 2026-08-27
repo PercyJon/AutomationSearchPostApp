@@ -223,6 +223,11 @@ object AuthStore {
             scope.launch { state.collect { _uiState.emit(it) } }
         }
         coordinator?.start(scope)
+        MarketingContentStore.initialize(context)
+        scope.launch {
+            delay(MOBILE_LOGIN_HEARTBEAT_SETTLE_MILLIS)
+            runCatching { MarketingContentStore.syncFromServer() }
+        }
     }
 
     fun verifyNow() {
@@ -281,6 +286,7 @@ object AuthStore {
         scope.launch {
             delay(MOBILE_LOGIN_HEARTBEAT_SETTLE_MILLIS)
             coordinator?.verifyNow()
+            runCatching { MarketingContentStore.syncFromServer() }
         }
         return MobileLoginResult(
             accountName = accountName,
@@ -378,6 +384,12 @@ object AuthStore {
         initialize(context)
         val config = secureStore?.read()?.takeIf(AuthConfig::isUsable) ?: return emptyList()
         return AutomationHttpClient(config).listTasks()
+    }
+
+    suspend fun syncMarketingContents(context: android.content.Context): MarketingContentBundle {
+        initialize(context)
+        MarketingContentStore.initialize(context)
+        return MarketingContentStore.syncFromServer()
     }
 
     /** Claim a task and fetch the authoritative progress in one resume transaction. */

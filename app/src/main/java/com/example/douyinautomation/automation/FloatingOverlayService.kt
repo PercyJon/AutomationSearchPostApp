@@ -337,10 +337,7 @@ class FloatingOverlayService : Service() {
         val total = state.taskMaxUsers?.coerceAtLeast(0) ?: 0
         val handled = state.taskHandledUserCount.coerceAtLeast(0)
         val records = state.recordEntries.filter { it.taskId == state.taskId }
-        val messaged = records.count {
-            it.outcome == UserTaskRecord.Outcome.BLANK_PROBE_VERIFIED ||
-                it.outcome == UserTaskRecord.Outcome.PROFILE_OPENED
-        }
+        val messaged = records.count { it.outcome.countsAsMessaged() }
         val queueLabel = AutomationStore.getLocalTaskQueueSession()
             ?.takeIf { session -> session.status in setOf(LocalTaskQueueStatus.RUNNING, LocalTaskQueueStatus.PAUSED) }
             ?.let { session -> "队列 ${session.activeTaskIndex + 1}/${session.tasks.size}" }

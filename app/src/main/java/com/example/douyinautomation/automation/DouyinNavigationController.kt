@@ -650,8 +650,19 @@ class DouyinNavigationController(
             .plus(TuningConstants.NavigationFlow.REMOTE_RESUME_EXTRA_SWIPES)
             .coerceAtMost(TuningConstants.NavigationFlow.MAX_REMOTE_RESUME_SWIPES)
         queryTransitionHandled = false
-        pendingStartMessage = startMessage.trim()
-        pendingSafetyProbe = safetyProbe
+        pendingStartMessage = taskSnapshot?.messageTemplate?.trim().orEmpty().ifBlank { startMessage.trim() }
+        pendingSafetyProbe = taskSnapshot?.let { snapshot ->
+            snapshot.executionMode == TaskExecutionMode.SAFE_BLANK_PROBE
+        } ?: safetyProbe
+        logger.info(
+            "task_message_mode",
+            attributes = mapOf(
+                "safety_probe" to pendingSafetyProbe,
+                "message_length" to pendingStartMessage.length,
+                "marketing_reason" to (taskSnapshot?.frozenMarketingContent?.reason ?: "none"),
+                "resolved_index" to (taskSnapshot?.frozenMarketingContent?.resolvedIndex ?: -1),
+            ),
+        )
         pausedPhase = null
         initialOcrAttempts = 0
         nestedCommentSurfaceOcrAttempts = 0
@@ -2113,10 +2124,10 @@ class DouyinNavigationController(
             }
         }
         // Some current Douyin builds leave the User tab visually selected but expose an
-        // off-screen ViewPager subtree to accessibility. Every search-target comment task is
-        // allowed one OCR-assisted geometry fallback here; it verifies the same first card twice
-        // and never advances to a later result when that proof is unavailable.
-        if (rowMatch == null && minimumAnchorTop == null && isSearchTargetProfileCommentTask()) {
+        // off-screen ViewPager subtree to accessibility. Search-target comment tasks and the
+        // first B-end private-message row share one OCR-assisted geometry fallback: verify the
+        // same first card twice and never tap a later result when that proof is unavailable.
+        if (rowMatch == null && minimumAnchorTop == null && allowsFirstVisibleUserOcrFallback()) {
             resolveP0FirstUserOcrFallback(rowContext)?.let { resolution ->
                 rowContext = resolution.context
                 rowMatch = resolution.match
@@ -2521,6 +2532,12 @@ class DouyinNavigationController(
         val snapshot = activeTaskSnapshot ?: return false
         return snapshot.taskType == AutomationTaskType.COMMENT_PRIVATE_MESSAGE &&
             snapshot.commentConfig?.entryMode == CommentPrivateMessageEntryMode.SEARCH_TARGET_PROFILE
+    }
+
+    private fun allowsFirstVisibleUserOcrFallback(): Boolean {
+        val snapshot = activeTaskSnapshot ?: return false
+        return snapshot.taskType == AutomationTaskType.PROFILE_PRIVATE_MESSAGE ||
+            isSearchTargetProfileCommentTask()
     }
 
     /**
@@ -4170,9 +4187,14 @@ class DouyinNavigationController(
         }.getOrDefault(base)
     }
 
-    /** Returns to user results after a verified blank-message rejection, then selects the next row. */
+    /** Returns to user results after a verified send or blank probe, then selects the next row. */
     private suspend fun advanceAfterEmptyMessageProbe() {
         if (!taskActive) return
+        val maxUsers = activeTaskSnapshot?.maxUsers
+        if (maxUsers != null && processedUserIdentityRecords.size >= maxUsers) {
+            completeTaskAtUserLimit(maxUsers)
+            return
+        }
         val previousAnchorBottom = lastProcessedUserAnchorBottom
         val currentJob = coroutineContext[Job]
         messageEntryPostconditionJob?.takeUnless { it === currentJob }?.cancel()
@@ -4571,16 +4593,28 @@ class DouyinNavigationController(
         }
     }
 
-    private fun completeMessageSent() {
-        timeoutJob?.cancel()
-        initialObservationJob?.cancel()
-        messageResultJob?.cancel()
-        taskActive = false
-        keyword = null
-        activeTaskSnapshot = null
+    private suspend fun completeMessageSent() {
+        if (!taskActive || phase != AutomationPhase.WAITING_FOR_MESSAGE_RESULT) return
+        val currentJob = coroutineContext[Job]
+        timeoutJob?.takeUnless { it === currentJob }?.cancel()
+        messageResultJob?.takeUnless { it === currentJob }?.cancel()
+        messageResultJob = null
+        restrictedUserSkips = 0
+        enrichCurrentUserDisplayNameFromDirectMessage(currentWindowContext() ?: latestContext)
         phase = AutomationPhase.COMPLETED_MESSAGE_SENT
         AutomationStore.publishPhase(phase)
         logger.info("message_send_completed", message = "One operator-requested message was verified in the conversation")
+        AutomationStore.recordUserTaskFinished(
+            identityFingerprint = currentUserIdentityFingerprint,
+            outcome = UserTaskRecord.Outcome.MESSAGE_SENT,
+            reason = "The operator-requested message was verified in the conversation",
+            page = PageKind.DIRECT_MESSAGE,
+            displayName = currentUserDisplayName,
+        )
+        currentUserIdentityFingerprint = null
+        currentUserDisplayName = null
+        currentUserDisplayNameSource = null
+        advanceAfterEmptyMessageProbe()
     }
 
     private fun completeTaskAtUserLimit(maxUsers: Int) {

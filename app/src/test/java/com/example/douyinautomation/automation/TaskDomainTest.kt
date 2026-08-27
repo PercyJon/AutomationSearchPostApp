@@ -173,6 +173,53 @@ class TaskDomainTest {
     }
 
     @Test
+    fun `non-empty marketing copy freezes into real send`() {
+        val bundle = MarketingContentBundle(
+            profiles = mapOf(
+                MarketingContentType.BIZ_DM to MarketingContentProfile(
+                    contentType = MarketingContentType.BIZ_DM,
+                    slots = listOf("你好，这是测试营销内容", "", "", "", ""),
+                    selectedIndex = 0,
+                    randomEnabled = false,
+                ),
+            ),
+        )
+        val snapshot = TaskDraft(
+            id = "biz-real-send",
+            name = "B端真实发送",
+            customKeywords = listOf("46821855471"),
+            maxUsers = 1,
+        ).toSnapshot(
+            presets = SearchPresetCatalog("test", emptyList(), 0L),
+            nowMillis = 1L,
+            marketingBundle = bundle,
+        )
+
+        assertEquals(TaskExecutionMode.REAL_SEND_REQUIRES_CONFIRMATION, snapshot.executionMode)
+        assertEquals("你好，这是测试营销内容", snapshot.messageTemplate)
+        assertEquals(0, snapshot.frozenMarketingContent?.resolvedIndex)
+        assertEquals("selected", snapshot.frozenMarketingContent?.reason)
+    }
+
+    @Test
+    fun `empty marketing copy keeps blank probe`() {
+        val snapshot = TaskDraft(
+            id = "biz-probe",
+            name = "B端探测",
+            customKeywords = listOf("46821855471"),
+            maxUsers = 1,
+        ).toSnapshot(
+            presets = SearchPresetCatalog("test", emptyList(), 0L),
+            nowMillis = 1L,
+            marketingBundle = MarketingContentBundle(),
+        )
+
+        assertEquals(TaskExecutionMode.SAFE_BLANK_PROBE, snapshot.executionMode)
+        assertEquals(null, snapshot.messageTemplate)
+        assertEquals("empty", snapshot.frozenMarketingContent?.reason)
+    }
+
+    @Test
     fun `task query cursor advances in frozen order and stops at the end`() {
         val cursor = TaskQueryCursor(listOf("广东红木家具", "广东实木餐桌"))
 
