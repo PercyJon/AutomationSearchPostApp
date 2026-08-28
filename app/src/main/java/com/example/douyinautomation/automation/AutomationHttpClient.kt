@@ -2,6 +2,7 @@ package com.example.douyinautomation.automation
 
 import android.os.Build
 import java.io.BufferedInputStream
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.charset.StandardCharsets
@@ -224,6 +225,87 @@ class AutomationHttpClient(
     suspend fun logout() = withContext(Dispatchers.IO) {
         execute("/automation/mobile/logout", "POST")
         Unit
+    }
+
+    suspend fun checkAppUpdate(versionCode: Int): AppUpdateCheckResult = withContext(Dispatchers.IO) {
+        val payload = execute(
+            path = "/automation/mobile/app-update?version_code=$versionCode&package_name=$PACKAGE_NAME",
+            method = "GET",
+        ).asObject()
+        if (!payload.optBoolean("update_available", false)) {
+            return@withContext AppUpdateCheckResult(updateAvailable = false)
+        }
+        val version = payload.optInt("version_code")
+        val sha = payload.optString("sha256").trim()
+        if (version < 1 || sha.isBlank()) {
+            throw AutomationGatewayException(200, "更新服务返回了不完整的版本信息")
+        }
+        AppUpdateCheckResult(
+            updateAvailable = true,
+            update = AppUpdateInfo(
+                forceUpdate = payload.optBoolean("force_update", false),
+                versionCode = version,
+                versionName = payload.optString("version_name").ifBlank { version.toString() },
+                title = payload.optString("title").ifBlank { "发现新版本" },
+                releaseNotes = payload.optString("release_notes"),
+                fileSize = payload.optLong("file_size"),
+                sha256 = sha.lowercase(),
+            ),
+        )
+    }
+
+    suspend fun downloadAppUpdate(
+        versionCode: Int,
+        destination: File,
+        onProgress: (written: Long, total: Long) -> Unit,
+    ): File = withContext(Dispatchers.IO) {
+        val connection = connectionFactory(
+            URL(endpointUrl("/automation/mobile/app-update/download?version_code=$versionCode&package_name=$PACKAGE_NAME")),
+        )
+        try {
+            connection.requestMethod = "GET"
+            connection.connectTimeout = connectTimeoutMillis
+            connection.readTimeout = readTimeoutMillis
+            connection.useCaches = false
+            connection.doInput = true
+            connection.setRequestProperty("Accept", "*/*")
+            config.licenseToken.takeIf(String::isNotBlank)?.let {
+                connection.setRequestProperty("Authorization", "Bearer $it")
+            }
+            val statusCode = connection.responseCode
+            if (statusCode !in 200..299) {
+                val raw = (connection.errorStream ?: connection.inputStream)
+                    ?.let { BufferedInputStream(it).use { input -> input.readBytes().toString(StandardCharsets.UTF_8) } }
+                    .orEmpty()
+                val message = runCatching { JSONObject(raw).optString("msg") }.getOrNull()
+                    ?.takeIf(String::isNotBlank)
+                    ?: "下载更新失败"
+                throw AutomationGatewayException(statusCode, message)
+            }
+            val total = connection.contentLengthLong.takeIf { it > 0 } ?: -1L
+            destination.parentFile?.mkdirs()
+            val temp = File(destination.parentFile, "${destination.name}.part")
+            var written = 0L
+            connection.inputStream.use { input ->
+                temp.outputStream().use { output ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read <= 0) break
+                        output.write(buffer, 0, read)
+                        written += read
+                        onProgress(written, if (total > 0) total else written)
+                    }
+                }
+            }
+            if (!temp.renameTo(destination)) {
+                temp.copyTo(destination, overwrite = true)
+                temp.delete()
+            }
+            destination
+        } finally {
+            connection.disconnect()
+        }
     }
 
     private fun execute(

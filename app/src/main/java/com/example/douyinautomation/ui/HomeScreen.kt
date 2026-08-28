@@ -115,6 +115,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import com.example.douyinautomation.BuildConfig
 import com.example.douyinautomation.CommentRegressionPreset
+import com.example.douyinautomation.automation.AppUpdateController
+import com.example.douyinautomation.automation.AppUpdatePolicy
 import com.example.douyinautomation.automation.AutomationCommand
 import com.example.douyinautomation.automation.AutomationActionIntervalPolicy
 import com.example.douyinautomation.automation.AutomationActionIntervalSettingsStore
@@ -226,6 +228,13 @@ fun AppHomeScreen(
     commentP0LaunchToken: Int = 0,
     commentRegressionPreset: CommentRegressionPreset? = null,
 ) {
+    val automationState by AutomationStore.uiState.collectAsState()
+    LaunchedEffect(Unit) {
+        AppUpdateController.autoCheckOnce(
+            AppUpdatePolicy.shouldDeferForRunningTask(automationState.phase),
+        )
+    }
+    AppUpdateHost()
     var section by rememberSaveable(initialSection) { mutableStateOf(initialSection ?: HomeSection.HOME.name) }
     var detailTaskId by rememberSaveable { mutableStateOf<String?>(null) }
     var showCreateTask by rememberSaveable { mutableStateOf(false) }
@@ -473,6 +482,11 @@ fun AppHomeScreen(
                 onOpenSettings = { section = HomeSection.SETTINGS.name },
                 onOpenDiagnostics = { section = HomeSection.DIAGNOSTICS.name },
                 onOpenComponentGallery = { section = HomeSection.UI_GALLERY.name },
+                onCheckUpdate = {
+                    AppUpdateController.checkManually(
+                        AppUpdatePolicy.shouldDeferForRunningTask(automationState.phase),
+                    )
+                },
                 onSignOut = { AuthStore.logout(context) },
             )
 

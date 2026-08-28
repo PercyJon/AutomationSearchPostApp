@@ -21,6 +21,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Accessibility
 import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.SystemUpdate
+import com.example.douyinautomation.BuildConfig
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Info
@@ -76,6 +78,7 @@ internal fun MyPage(
     onOpenSettings: () -> Unit,
     onOpenDiagnostics: () -> Unit,
     onOpenComponentGallery: () -> Unit,
+    onCheckUpdate: () -> Unit,
     onSignOut: suspend () -> Unit,
 ) {
     val context = LocalContext.current
@@ -217,8 +220,14 @@ internal fun MyPage(
             MyMenuLine(
                 icon = Icons.Default.Cloud,
                 title = "远程任务设置",
-                showDivider = false,
                 onClick = onOpenSettings,
+            )
+            MyMenuLine(
+                icon = Icons.Default.SystemUpdate,
+                title = "检测更新",
+                trailing = BuildConfig.VERSION_NAME,
+                showDivider = false,
+                onClick = onCheckUpdate,
             )
         }
         if (signedIn) {

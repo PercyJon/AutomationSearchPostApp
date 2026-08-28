@@ -43,6 +43,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.example.douyinautomation.automation.AppUpdateInfo
+import com.example.douyinautomation.automation.AppUpdateStage
+import com.example.douyinautomation.automation.AppUpdateUiState
 import com.example.douyinautomation.ui.components.AppButtonRow
 import com.example.douyinautomation.ui.components.AppCard
 import com.example.douyinautomation.ui.components.AppChoiceChip
@@ -186,6 +189,25 @@ internal fun ComponentGalleryScreen(onBack: () -> Unit) {
                     title = "自动化服务",
                     enabled = switchOn,
                     onEnable = { switchOn = true },
+                )
+            }
+
+            GallerySection("版本更新弹窗") {
+                AppUpdateDialog(
+                    state = AppUpdateUiState(
+                        stage = AppUpdateStage.READY,
+                        update = AppUpdateInfo(
+                            forceUpdate = false,
+                            versionCode = 15,
+                            versionName = "0.3.5",
+                            title = "发现新版本",
+                            releaseNotes = "优化启动速度，修复私信探测等待过长。",
+                            fileSize = 32L * 1024L * 1024L,
+                            sha256 = "abc",
+                        ),
+                    ),
+                    onDismiss = {},
+                    onUpdate = {},
                 )
             }
 

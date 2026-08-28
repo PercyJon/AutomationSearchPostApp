@@ -1,6 +1,7 @@
 package com.example.douyinautomation.automation
 
 import android.provider.Settings
+import com.example.douyinautomation.BuildConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -55,7 +56,7 @@ data class AuthConfig(
     val accountName: String? = null,
     val accountUsername: String? = null,
 ) {
-    fun isUsable(): Boolean = endpoint.startsWith("https://") &&
+    fun isUsable(): Boolean = LoginEndpointPolicy.normalize(endpoint) != null &&
         licenseToken.isNotBlank() &&
         DeviceIdentity.isSha256Hash(deviceIdHash)
 }
@@ -213,7 +214,10 @@ object AuthStore {
         val store = SecureAuthStore(context.applicationContext)
         secureStore = store
         val restored = store.read()
-        _session.value = restored
+        _session.value = LoginEndpointPolicy.overlayLoopbackOrigin(
+            restored,
+            BuildConfig.AUTOMATION_API_ENDPOINT,
+        )
         _lastEndpoint.value = store.readLastEndpoint()
             ?: LoginEndpointPolicy.normalize(restored?.endpoint)
         rememberEndpoint(restored?.endpoint)
@@ -264,8 +268,8 @@ object AuthStore {
         password: String,
     ): MobileLoginResult {
         initialize(context)
-        val normalizedEndpoint = endpoint.trim().trimEnd('/')
-        require(normalizedEndpoint.startsWith("https://")) { "后端地址必须使用 HTTPS" }
+        val normalizedEndpoint = LoginEndpointPolicy.normalize(endpoint)
+            ?: throw IllegalArgumentException("后端地址必须使用 HTTPS，本机调试可用 http://127.0.0.1")
         require(username.isNotBlank()) { "请输入用户名" }
         require(password.isNotBlank()) { "请输入密码" }
         val deviceId = Settings.Secure.getString(

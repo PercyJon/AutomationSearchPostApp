@@ -20,6 +20,9 @@ android {
         targetSdk = 35
         versionCode = 14
         versionName = "0.3.4-mobile-login"
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // A deployment-specific HTTPS endpoint is injected at build time.  Keep it out of source
         // and out of the normal login UI so operators only ever enter account/password.

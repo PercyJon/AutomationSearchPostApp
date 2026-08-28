@@ -52,4 +52,32 @@ class LoginEndpointPolicyTest {
             ),
         )
     }
+
+    @Test
+    fun loopbackHttpIsAcceptedForLocalAdbReverse() {
+        assertEquals(
+            "http://127.0.0.1:8001",
+            LoginEndpointPolicy.normalize("http://127.0.0.1:8001/"),
+        )
+        assertEquals(
+            "http://localhost:8001",
+            LoginEndpointPolicy.resolvedEndpoint(
+                buildConfig = "http://localhost:8001",
+                remembered = "https://remembered.example",
+                typed = "",
+            ),
+        )
+        assertNull(LoginEndpointPolicy.normalize("http://127.0.0.1.example"))
+        val deviceIdHash = DeviceIdentity.hash("device")
+        val restored = AuthConfig("https://remembered.example", "token", deviceIdHash)
+        assertEquals(
+            "http://127.0.0.1:8001",
+            LoginEndpointPolicy.overlayLoopbackOrigin(restored, "http://127.0.0.1:8001")?.endpoint,
+        )
+        assertEquals(
+            restored.endpoint,
+            LoginEndpointPolicy.overlayLoopbackOrigin(restored, "https://managed.example")?.endpoint,
+        )
+        assertFalse(LoginEndpointPolicy.shouldShowEndpointField("http://127.0.0.1:8001"))
+    }
 }
