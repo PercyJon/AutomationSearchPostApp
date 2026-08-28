@@ -5170,16 +5170,21 @@ class DouyinNavigationController(
     }
 
     /**
-     * A transient Android/OEM banner can become the active window and intercept the next gesture
-     * (for example, the full-charge banner covering the upper search controls). Wait briefly for
-     * the Douyin window to become active again instead of sending a gesture through the overlay.
+     * A transient Android/OEM live-notification banner can become the active window and intercept
+     * the next gesture. Wait briefly for the Douyin window to become active again instead of
+     * sending a gesture through the overlay.
+     *
+     * IM/group heads-up banners are launch-only ([TransientOverlayDetector.findWaitOnly]). They
+     * must not stall search submit, user-row taps, or private-message input: a search EditText or
+     * a chat-thread 「回复」 can look like that banner and would otherwise wait the full overlay
+     * budget then skip the action.
      */
     private suspend fun waitForTargetWindow(tag: String): ScreenContext? {
         var overlayReported = false
         repeat(TuningConstants.NavigationFlow.SYSTEM_OVERLAY_WAIT_ATTEMPTS) { attempt ->
             val context = currentWindowContext()
             if (context != null) {
-                val liveOverlay = TransientOverlayDetector.find(context)
+                val liveOverlay = TransientOverlayDetector.findLiveNotification(context)
                 if (liveOverlay != null) {
                     if (!overlayReported) {
                         overlayReported = true
@@ -6181,20 +6186,12 @@ class DouyinNavigationController(
     }
 
     /**
-     * Re-read the live window immediately before tapping search. If the painted IM banner has
-     * no accessibility “回复”, do one top-chrome OCR. Wait-only overlays must not be tapped;
-     * an already-open group sheet must BACK instead of waiting.
+     * Re-read the live window immediately before tapping search. Node-only: a screenshot OCR
+     * here made every normal launch wait on ML Kit even when no IM banner was present.
      */
     private suspend fun prepareSearchLaunchContext(context: ScreenContext): ScreenContext? {
-        var live = currentWindowContext() ?: context
+        val live = currentWindowContext() ?: context
         if (abortSearchLaunchIfBlocked(live, source = "open_search_nodes")) return null
-        if (TransientOverlayDetector.findImBanner(live) == null &&
-            !GroupChatOverlayDetector.detect(live).isGroupChatOverlay
-        ) {
-            live = captureContextWithOcr(live, "im_banner_pre_search", OcrRegion.HOME_SEARCH_CHROME)
-                ?: live
-            if (abortSearchLaunchIfBlocked(live, source = "open_search_ocr")) return null
-        }
         return live
     }
 

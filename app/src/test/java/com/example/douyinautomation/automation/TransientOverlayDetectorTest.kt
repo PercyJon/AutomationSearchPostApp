@@ -220,9 +220,17 @@ class TransientOverlayDetectorTest {
     }
 
     @Test
-    fun `existing ocr reply in the top band is used without extra capture`() {
+    fun `existing ocr reply on a wide banner is used without extra capture`() {
         val context = ScreenContext(
             screenSize = ScreenSize(1080, 2412),
+            nodes = listOf(
+                NodeSnapshot(
+                    text = "岛屿",
+                    isVisibleToUser = true,
+                    isClickable = true,
+                    bounds = ScreenBounds(24, 88, 1056, 268),
+                ),
+            ),
             ocrBlocks = listOf(
                 OcrTextBlock("岛屿", ScreenBounds(160, 110, 280, 160)),
                 OcrTextBlock("回复", ScreenBounds(860, 120, 1000, 200)),
@@ -233,6 +241,60 @@ class TransientOverlayDetectorTest {
 
         assertNotNull(match)
         assertEquals("回复", match?.marker)
+    }
+
+    @Test
+    fun `ocr reply in the top band without a banner node is not an im banner`() {
+        val context = ScreenContext(
+            screenSize = ScreenSize(1080, 2412),
+            ocrBlocks = listOf(
+                OcrTextBlock("回复", ScreenBounds(860, 120, 1000, 200)),
+            ),
+        )
+
+        assertNull(TransientOverlayDetector.findImBanner(context))
+    }
+
+    @Test
+    fun `search keyword field is not an im banner`() {
+        val context = ScreenContext(
+            screenSize = ScreenSize(1080, 2412),
+            nodes = listOf(
+                NodeSnapshot(
+                    className = "android.widget.EditText",
+                    text = "红木沙发",
+                    isEditable = true,
+                    isClickable = true,
+                    bounds = ScreenBounds(24, 88, 1056, 200),
+                ),
+                NodeSnapshot(text = "搜索", isClickable = true, bounds = ScreenBounds(920, 96, 1048, 192)),
+            ),
+        )
+
+        assertNull(TransientOverlayDetector.findImBanner(context))
+        assertNull(TransientOverlayDetector.findLiveNotification(context))
+        assertFalse(TransientOverlayDetector.isBlocking(context))
+    }
+
+    @Test
+    fun `chat thread reply in the top band is not an im banner`() {
+        val context = ScreenContext(
+            screenSize = ScreenSize(1080, 2412),
+            nodes = listOf(
+                NodeSnapshot(text = "回复", isClickable = true, bounds = ScreenBounds(860, 180, 1000, 250)),
+                NodeSnapshot(
+                    className = "android.widget.EditText",
+                    hintText = "发送消息",
+                    isEditable = true,
+                    isClickable = true,
+                    bounds = ScreenBounds(40, 2200, 880, 2320),
+                ),
+            ),
+        )
+
+        assertNull(TransientOverlayDetector.findImBanner(context))
+        assertNull(TransientOverlayDetector.findLiveNotification(context))
+        assertFalse(TransientOverlayDetector.isBlocking(context))
     }
 
     private fun screenshotImBanner(includeReply: Boolean): ScreenContext {

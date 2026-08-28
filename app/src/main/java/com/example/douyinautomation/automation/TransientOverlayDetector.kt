@@ -64,8 +64,50 @@ object TransientOverlayDetector {
         findStartupAd(context) ?: findImBanner(context)
 
     /**
+     * Live-feed notification covering the top controls. Used by click-time waits.
+     * IM/group heads-up banners are launch-only ([findWaitOnly]); they must not stall
+     * search submit, user-row taps, or private-message input.
+     */
+    fun findLiveNotification(context: ScreenContext): OverlayMatch? {
+        val topLimit = (context.screenSize.height * TOP_REGION_RATIO).toInt()
+        val candidates = context.nodes.asSequence()
+            .filter { it.isVisibleToUser && it.bounds.width > 0 && it.bounds.height > 0 }
+            .filter { it.bounds.top <= topLimit }
+            .flatMap { node ->
+                node.searchableText().asSequence()
+                    .flatMap { value ->
+                        TextNormalizer.matchingTerms(value, strongLiveMarkers).asSequence()
+                            .map { marker -> OverlayMatch(marker, node.bounds) }
+                    }
+            }
+            .toList()
+
+        // A profile's own “直播中” badge is usually attached to the avatar and reports a tall
+        // avatar-sized bounds rectangle.  Height alone therefore produces a false positive and
+        // can block the real profile “发私信” button forever.  A transient notification banner
+        // must span a substantial portion of the display; small live badges are not overlays.
+        return candidates.firstOrNull { match ->
+            val screenWidth = context.screenSize.width
+            val screenHeight = context.screenSize.height
+            val wideEnough = match.bounds.width >= (screenWidth * MIN_OVERLAY_WIDTH_RATIO).toInt()
+            val spansViewport = match.bounds.left <= (screenWidth * MAX_OVERLAY_SIDE_MARGIN_RATIO).toInt() &&
+                match.bounds.right >= (screenWidth * (1f - MAX_OVERLAY_SIDE_MARGIN_RATIO)).toInt()
+            // A full-screen live-stream card also spans the viewport and carries an entry label,
+            // but it is the feed content itself rather than a banner drawn over the top controls.
+            // It must be swiped away (LIVE_ROOM) instead of being waited on as a transient
+            // overlay, so exclude nodes that occupy most of the screen height.
+            val notFullScreenCard = match.bounds.height < (screenHeight * MAX_OVERLAY_HEIGHT_RATIO).toInt()
+            wideEnough && spansViewport && notFullScreenCard
+        }
+    }
+
+    /**
      * Top IM/group heads-up that covers search and home tabs. Node-first; existing OCR blocks
      * are used only when already present. Never clicks 回复 or the banner body.
+     *
+     * 「回复」 alone in the top band is not enough: chat threads and comment rows use the same
+     * label. The reply must sit on a wide short banner covering search chrome. Search EditText
+     * nodes are excluded so a typed keyword field cannot be waited on as a heads-up.
      */
     fun findImBanner(context: ScreenContext): OverlayMatch? {
         val reply = findTopBandReply(context)
@@ -109,39 +151,6 @@ object TransientOverlayDetector {
         val bounds: ScreenBounds,
     )
 
-    private fun findLiveNotification(context: ScreenContext): OverlayMatch? {
-        val topLimit = (context.screenSize.height * TOP_REGION_RATIO).toInt()
-        val candidates = context.nodes.asSequence()
-            .filter { it.isVisibleToUser && it.bounds.width > 0 && it.bounds.height > 0 }
-            .filter { it.bounds.top <= topLimit }
-            .flatMap { node ->
-                node.searchableText().asSequence()
-                    .flatMap { value ->
-                        TextNormalizer.matchingTerms(value, strongLiveMarkers).asSequence()
-                            .map { marker -> OverlayMatch(marker, node.bounds) }
-                    }
-            }
-            .toList()
-
-        // A profile's own “直播中” badge is usually attached to the avatar and reports a tall
-        // avatar-sized bounds rectangle.  Height alone therefore produces a false positive and
-        // can block the real profile “发私信” button forever.  A transient notification banner
-        // must span a substantial portion of the display; small live badges are not overlays.
-        return candidates.firstOrNull { match ->
-            val screenWidth = context.screenSize.width
-            val screenHeight = context.screenSize.height
-            val wideEnough = match.bounds.width >= (screenWidth * MIN_OVERLAY_WIDTH_RATIO).toInt()
-            val spansViewport = match.bounds.left <= (screenWidth * MAX_OVERLAY_SIDE_MARGIN_RATIO).toInt() &&
-                match.bounds.right >= (screenWidth * (1f - MAX_OVERLAY_SIDE_MARGIN_RATIO)).toInt()
-            // A full-screen live-stream card also spans the viewport and carries an entry label,
-            // but it is the feed content itself rather than a banner drawn over the top controls.
-            // It must be swiped away (LIVE_ROOM) instead of being waited on as a transient
-            // overlay, so exclude nodes that occupy most of the screen height.
-            val notFullScreenCard = match.bounds.height < (screenHeight * MAX_OVERLAY_HEIGHT_RATIO).toInt()
-            wideEnough && spansViewport && notFullScreenCard
-        }
-    }
-
     private fun findTopBandReply(context: ScreenContext): OverlayMatch? {
         val nodeMatch = context.nodes.asSequence()
             .filter { it.isVisibleToUser && it.bounds.width > 0 && it.bounds.height > 0 }
@@ -152,7 +161,7 @@ object TransientOverlayDetector {
                         .map { marker -> OverlayMatch(marker, node.bounds) }
                 }
             }
-            .firstOrNull()
+            .firstOrNull { match -> isReplyOnImBanner(match.bounds, context) }
         if (nodeMatch != null) return nodeMatch
         return context.ocrBlocks.asSequence()
             .filter { it.bounds == ScreenBounds.EMPTY || isImTopBand(it.bounds, context.screenSize) }
@@ -160,12 +169,13 @@ object TransientOverlayDetector {
                 TextNormalizer.matchingTerms(block.text, imReplyMarkers).asSequence()
                     .map { marker -> OverlayMatch(marker, block.bounds) }
             }
-            .firstOrNull()
+            .firstOrNull { match -> isReplyOnImBanner(match.bounds, context) }
     }
 
     private fun findGeometryImBanner(context: ScreenContext): OverlayMatch? {
         return context.nodes.asSequence()
-            .filter { it.isVisibleToUser && it.isClickable && it.bounds.width > 0 && it.bounds.height > 0 }
+            .filter { it.isVisibleToUser && it.isClickable && !it.isEditable }
+            .filter { it.bounds.width > 0 && it.bounds.height > 0 }
             .filter { isImBannerGeometry(it.bounds, context.screenSize) }
             .filter { node ->
                 TextNormalizer.matchingTerms(
@@ -175,6 +185,30 @@ object TransientOverlayDetector {
             }
             .map { OverlayMatch(IM_BANNER_MARKER, it.bounds) }
             .firstOrNull()
+    }
+
+    /**
+     * A small 「回复」 chip is an IM heads-up only when it sits on a wide short banner that
+     * covers the home search chrome. Chat-thread and comment-row replies fail this check.
+     */
+    private fun isReplyOnImBanner(replyBounds: ScreenBounds, context: ScreenContext): Boolean {
+        if (replyBounds != ScreenBounds.EMPTY && isImBannerGeometry(replyBounds, context.screenSize)) {
+            return true
+        }
+        return context.nodes.any { node ->
+            node.isVisibleToUser &&
+                !node.isEditable &&
+                node.bounds.width > 0 &&
+                node.bounds.height > 0 &&
+                isImBannerGeometry(node.bounds, context.screenSize) &&
+                (replyBounds == ScreenBounds.EMPTY || containsCenter(node.bounds, replyBounds))
+        }
+    }
+
+    private fun containsCenter(outer: ScreenBounds, inner: ScreenBounds): Boolean {
+        val centerX = (inner.left + inner.right) / 2
+        val centerY = (inner.top + inner.bottom) / 2
+        return centerX in outer.left..outer.right && centerY in outer.top..outer.bottom
     }
 
     private fun isImTopBand(bounds: ScreenBounds, screenSize: ScreenSize): Boolean {
