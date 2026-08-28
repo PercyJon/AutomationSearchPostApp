@@ -33,9 +33,21 @@ class RecoveryFlowTest {
             startupAdMarker = null,
             timeoutDescription = "timeout",
         )
+        flow.onTimeout(
+            timedOutPhase = AutomationPhase.WAITING_FOR_SEARCH_ENTRY,
+            context = context,
+            page = PageKind.DIRECT_MESSAGE,
+            startupAdMarker = null,
+            timeoutDescription = "timeout",
+        )
 
         assertEquals(
-            listOf("wait_startup_ad:跳过:timeout", "retry_keyword", "reuse_search_entry_query"),
+            listOf(
+                "wait_startup_ad:跳过:timeout",
+                "retry_keyword",
+                "reuse_search_entry_query",
+                "recover_initial_surface",
+            ),
             events,
         )
     }

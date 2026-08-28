@@ -31,6 +31,30 @@ class NestedLaunchSurfacePolicyTest {
     }
 
     @Test
+    fun searchEntryWaitRecoversGroupChatOverlay() {
+        assertTrue(
+            NestedLaunchSurfacePolicy.shouldRecoverByBoundedBack(
+                phase = AutomationPhase.WAITING_FOR_SEARCH_ENTRY,
+                isCommentSurface = false,
+                isGroupChatOverlay = true,
+            ),
+        )
+        assertTrue(
+            NestedLaunchSurfacePolicy.shouldSuppressHomeSearchAction(
+                isCommentSurface = false,
+                isGroupChatOverlay = true,
+            ),
+        )
+        assertFalse(
+            NestedLaunchSurfacePolicy.shouldRecoverByBoundedBack(
+                phase = AutomationPhase.WAITING_FOR_USER_RESULTS,
+                isCommentSurface = false,
+                isGroupChatOverlay = true,
+            ),
+        )
+    }
+
+    @Test
     fun openCommentSheetSuppressesHomeSearchAction() {
         assertTrue(NestedLaunchSurfacePolicy.shouldSuppressHomeSearchAction(isCommentSurface = true))
         assertFalse(NestedLaunchSurfacePolicy.shouldSuppressHomeSearchAction(isCommentSurface = false))

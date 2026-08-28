@@ -39,6 +39,10 @@ class SearchFlowRouterTest {
             SearchFlowRouter.route(AutomationPhase.WAITING_FOR_SEARCH_ENTRY, PageKind.SEARCH_RESULTS),
         )
         assertEquals(
+            SearchFlowRoute.RECOVER_INITIAL_SURFACE,
+            SearchFlowRouter.route(AutomationPhase.WAITING_FOR_SEARCH_ENTRY, PageKind.DIRECT_MESSAGE),
+        )
+        assertEquals(
             SearchFlowRoute.SELECT_USER_TAB,
             SearchFlowRouter.route(AutomationPhase.WAITING_FOR_SEARCH_RESULTS, PageKind.SEARCH_RESULTS),
         )

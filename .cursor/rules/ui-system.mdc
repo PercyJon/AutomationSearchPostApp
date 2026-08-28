@@ -1,0 +1,17 @@
+---
+description: Android UI must reuse theme tokens and shared components, never invent per-page colors or radii
+globs: app/src/main/java/com/example/douyinautomation/ui/**/*.kt
+alwaysApply: false
+---
+
+# UI 系统
+
+设计说明见 `docs/UI_SYSTEM.md`。参考图在 `docs/ui-references/`。
+
+- 色、间距、圆角只改 `ui/theme`。
+- 按钮、输入、页签、列表行只改 `ui/components`。
+- 业务页只组合组件，不写 `Color(0xFF…)`、`RoundedCornerShape(N.dp)`。
+- pic1 管表单交互；pic2/pic3 管辅助按钮；pic4 只管历史卡片布局；首页顶部色块只学 `home-hero-layout` 的圆角覆盖，不学它的色值；app1 只管登录结构；app2 空状态；app4 详情键值；app5 下划线记录列表。不要学参考图里的金/橙色块。
+- 主色只有 `AutomationBlue`（pic2 提交按钮），边框和底用它的变淡 token。
+- 默认偏紧：小控件、小间距、Regular 字重；非必要不加粗。
+- 先改组件预览页，再改业务页。

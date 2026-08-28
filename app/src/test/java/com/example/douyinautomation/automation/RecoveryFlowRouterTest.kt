@@ -43,6 +43,10 @@ class RecoveryFlowRouterTest {
             RecoveryFlowRoute.OPEN_SEARCH,
             route(AutomationPhase.WAITING_FOR_SEARCH_ENTRY, PageKind.HOME),
         )
+        assertEquals(
+            RecoveryFlowRoute.RECOVER_INITIAL_SURFACE,
+            route(AutomationPhase.WAITING_FOR_SEARCH_ENTRY, PageKind.DIRECT_MESSAGE),
+        )
     }
 
     @Test

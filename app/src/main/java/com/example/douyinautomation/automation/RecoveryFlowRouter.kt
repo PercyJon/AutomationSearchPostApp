@@ -26,6 +26,7 @@ object RecoveryFlowRouter {
                 PageKind.SEARCH_ENTRY -> RecoveryFlowRoute.ENTER_KEYWORD
                 PageKind.SEARCH_RESULTS -> RecoveryFlowRoute.REUSE_SEARCH_ENTRY_QUERY
                 PageKind.HOME -> RecoveryFlowRoute.OPEN_SEARCH
+                PageKind.DIRECT_MESSAGE -> RecoveryFlowRoute.RECOVER_INITIAL_SURFACE
                 else -> RecoveryFlowRoute.PAUSE_TIMEOUT
             }
 

@@ -27,6 +27,7 @@ object SearchFlowRouter {
         AutomationPhase.WAITING_FOR_SEARCH_ENTRY -> when (page) {
             PageKind.SEARCH_ENTRY -> SearchFlowRoute.ENTER_KEYWORD
             PageKind.SEARCH_RESULTS -> SearchFlowRoute.REUSE_RESULTS_QUERY
+            PageKind.DIRECT_MESSAGE -> SearchFlowRoute.RECOVER_INITIAL_SURFACE
             else -> null
         }
 

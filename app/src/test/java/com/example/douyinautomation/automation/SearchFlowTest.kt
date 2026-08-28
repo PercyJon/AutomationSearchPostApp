@@ -18,6 +18,7 @@ class SearchFlowTest {
         assertTrue(flow.onPageObserved(AutomationPhase.WAITING_FOR_HOME, context, PageKind.USER_PROFILE))
         assertTrue(flow.onPageObserved(AutomationPhase.WAITING_FOR_SEARCH_ENTRY, context, PageKind.SEARCH_ENTRY))
         assertTrue(flow.onPageObserved(AutomationPhase.WAITING_FOR_SEARCH_ENTRY, context, PageKind.SEARCH_RESULTS))
+        assertTrue(flow.onPageObserved(AutomationPhase.WAITING_FOR_SEARCH_ENTRY, context, PageKind.DIRECT_MESSAGE))
         assertTrue(flow.onPageObserved(AutomationPhase.WAITING_FOR_SEARCH_RESULTS, context, PageKind.SEARCH_RESULTS))
         assertTrue(flow.onPageObserved(AutomationPhase.WAITING_FOR_USER_RESULTS, context, PageKind.USER_RESULTS))
 
@@ -27,6 +28,7 @@ class SearchFlowTest {
                 "recover_initial_surface",
                 "enter_keyword",
                 "reuse_results_query",
+                "recover_initial_surface",
                 "select_user_tab",
                 "select_visible_user",
             ),

@@ -387,6 +387,13 @@ class DouyinNavigationController(
         // operator navigates to the intended profile. Only the explicit overlay Resume action may
         // hand the verified profile to the comment runtime.
         if (phase == AutomationPhase.SUSPENDED_BEFORE_START) return
+        if (phase == AutomationPhase.WAITING_FOR_HOME) {
+            val waitOnly = TransientOverlayDetector.findWaitOnly(context)
+            if (waitOnly != null) {
+                logWaitOnlyOverlay(waitOnly, source = "accessibility_event")
+                return
+            }
+        }
         var nestedSurfaceContext = context
         val nodeDetectedSheet = CommentSurfaceDetector.detect(nestedSurfaceContext).isCommentSurface
         if (
@@ -416,18 +423,20 @@ class DouyinNavigationController(
             )
         }
         val commentSurface = CommentSurfaceDetector.detect(nestedSurfaceContext)
+        val groupChatOverlay = GroupChatOverlayDetector.detect(nestedSurfaceContext)
         if (
             NestedLaunchSurfacePolicy.shouldRecoverByBoundedBack(
                 phase = phase,
                 isCommentSurface = commentSurface.isCommentSurface,
+                isGroupChatOverlay = groupChatOverlay.isGroupChatOverlay,
             )
         ) {
             logger.info(
-                "initial_nested_comment_surface_recovery",
-                message = "A verified comment sheet is open; using bounded BACK instead of treating the launch surface as unclassified home",
+                "initial_nested_surface_recovery",
+                message = "A nested comment or group-chat sheet is open; using bounded BACK instead of tapping search",
                 attributes = mapOf(
-                    "confidence" to commentSurface.confidence,
-                    "reason_count" to commentSurface.reasons.size,
+                    "comment" to commentSurface.isCommentSurface,
+                    "group_chat" to groupChatOverlay.isGroupChatOverlay,
                     "ocr_blocks" to nestedSurfaceContext.ocrBlocks.size,
                 ),
             )
@@ -437,7 +446,7 @@ class DouyinNavigationController(
                 suppressSearchUntilBack = NestedLaunchSurfacePolicy.shouldForceInitialBack(
                     ocrConfirmedSheet = commentSurface.isCommentSurface,
                     nodeDetectedSheet = nodeDetectedSheet,
-                ),
+                ) || groupChatOverlay.isGroupChatOverlay,
             )
             return
         }
@@ -1521,11 +1530,23 @@ class DouyinNavigationController(
     }
 
     private suspend fun openSearch(context: ScreenContext) {
+        val liveContext = prepareSearchLaunchContext(context) ?: return
+        val livePage = pageDetector.detect(liveContext)
+        if (livePage.kind == PageKind.DIRECT_MESSAGE ||
+            GroupChatOverlayDetector.detect(liveContext).isGroupChatOverlay
+        ) {
+            logger.warn(
+                "search_entry_blocked_by_chat",
+                message = "Search was requested on an open chat or group sheet; returning to home instead of tapping search",
+            )
+            recoverInitialSurface(liveContext, requireHome = true, suppressSearchUntilBack = true)
+            return
+        }
         phase = AutomationPhase.OPENING_SEARCH
         AutomationStore.publishPhase(phase)
-        val semanticOutcome = clickSelector(context, DouyinSelectors.searchEntry)
+        val semanticOutcome = clickSelector(liveContext, DouyinSelectors.searchEntry)
         val structuralOutcome = if (!semanticOutcome.succeeded) {
-            clickSelector(context, DouyinSelectors.searchEntryStructural)
+            clickSelector(liveContext, DouyinSelectors.searchEntryStructural)
         } else {
             null
         }
@@ -1572,6 +1593,19 @@ class DouyinNavigationController(
                 latestContext = postSearchContext
                 AutomationStore.publishObservation(postSearchDetection)
                 enterKeyword(postSearchContext)
+                return
+            }
+            if (postSearchDetection.kind == PageKind.DIRECT_MESSAGE ||
+                GroupChatOverlayDetector.detect(postSearchContext).isGroupChatOverlay
+            ) {
+                logger.warn(
+                    "search_entry_opened_chat_instead",
+                    message = "Opening search landed in a chat or group sheet; using bounded BACK instead of waiting for a search field",
+                    attributes = mapOf("attempt" to attempt),
+                )
+                latestContext = postSearchContext
+                AutomationStore.publishObservation(postSearchDetection)
+                recoverInitialSurface(postSearchContext, requireHome = true, suppressSearchUntilBack = true)
                 return
             }
             if (postSearchDetection.kind == PageKind.SEARCH_RESULTS &&
@@ -1667,15 +1701,20 @@ class DouyinNavigationController(
             }
             initialBlindBackAttempts = 0
             val commentSurface = CommentSurfaceDetector.detect(current)
+            val groupChatOverlay = GroupChatOverlayDetector.detect(current)
             val forceBack = pendingForcedBack ||
-                NestedLaunchSurfacePolicy.shouldSuppressHomeSearchAction(commentSurface.isCommentSurface)
+                NestedLaunchSurfacePolicy.shouldSuppressHomeSearchAction(
+                    isCommentSurface = commentSurface.isCommentSurface,
+                    isGroupChatOverlay = groupChatOverlay.isGroupChatOverlay,
+                )
             if (forceBack) {
                 logger.info(
-                    "initial_nested_comment_surface_back",
-                    message = "The comment sheet is still open; issuing bounded BACK instead of tapping a search control above it",
+                    "initial_nested_surface_back",
+                    message = "A nested comment or group-chat sheet is still open; issuing bounded BACK instead of tapping a search control above it",
                     attributes = mapOf(
                         "attempt" to attempt + 1,
-                        "confidence" to commentSurface.confidence,
+                        "comment" to commentSurface.isCommentSurface,
+                        "group_chat" to groupChatOverlay.isGroupChatOverlay,
                         "forced" to pendingForcedBack,
                     ),
                 )
@@ -1736,7 +1775,8 @@ class DouyinNavigationController(
         val finalContext = currentWindowContext() ?: recentInitialTargetContext()
         if (finalContext != null &&
             !NestedLaunchSurfacePolicy.shouldSuppressHomeSearchAction(
-                CommentSurfaceDetector.detect(finalContext).isCommentSurface,
+                isCommentSurface = CommentSurfaceDetector.detect(finalContext).isCommentSurface,
+                isGroupChatOverlay = GroupChatOverlayDetector.detect(finalContext).isGroupChatOverlay,
             )
         ) {
             val finalDetection = normalizeInitialHomeDetection(finalContext)
@@ -5102,7 +5142,8 @@ class DouyinNavigationController(
         UserResultsViewportFingerprint.create(context, topRatio = TuningConstants.NavigationFlow.USER_RESULTS_TOP_RATIO)
 
     private suspend fun clickSelector(context: ScreenContext, request: SelectorRequest): ActionOutcome {
-        val liveContext = waitForTargetWindow("click_${request.name}") ?: context
+        val liveContext = waitForTargetWindow("click_${request.name}")
+            ?: return ActionOutcome.failure("Douyin window is temporarily covered or unavailable")
         val selection = selector.select(liveContext, request)
         val target = selection.node ?: return ActionOutcome.failure(selection.reasons.joinToString())
         return withLiveNode(target) { liveNode -> gestures.click(liveNode, target.bounds) }
@@ -5444,14 +5485,14 @@ class DouyinNavigationController(
 
         // A startup ad can leave the underlying HOME node tree visible. Detect it before routing
         // so a timeout can never turn into a tap through the ad banner.
-        val startupAd = context
+        val waitOnlyOverlay = context
             ?.takeIf { timedOutPhase == AutomationPhase.WAITING_FOR_HOME }
-            ?.let(TransientOverlayDetector::findStartupAd)
+            ?.let(TransientOverlayDetector::findWaitOnly)
         recoveryFlow.onTimeout(
             timedOutPhase = timedOutPhase,
             context = context,
             page = detection?.kind,
-            startupAdMarker = startupAd?.marker,
+            startupAdMarker = waitOnlyOverlay?.marker,
             timeoutDescription = timeoutDescription,
         )
     }
@@ -5462,7 +5503,7 @@ class DouyinNavigationController(
     ) {
         logger.info(
             "startup_ad_timeout_recovery_wait",
-            message = "The startup advertisement is still visible; extending the bounded wait",
+            message = "A wait-only launch overlay is still visible; extending the bounded wait",
             attributes = mapOf("marker" to marker),
         )
         await(
@@ -5816,6 +5857,13 @@ class DouyinNavigationController(
                     }
                     return@launch
                 }
+                val imBanner = TransientOverlayDetector.findImBanner(context)
+                if (imBanner != null) {
+                    logWaitOnlyOverlay(imBanner, source = "initial_observation_nodes")
+                    lastReadyKind = null
+                    readyObservations = 0
+                    return@repeat
+                }
                 val ocrSkippedReason = if (chromeProbedThisObservation) {
                     "none"
                 } else {
@@ -5840,6 +5888,13 @@ class DouyinNavigationController(
                         message = "A possible Douyin startup advertisement is visible; waiting without a gesture",
                         attributes = mapOf("marker" to startupAd.marker, "attempt" to observationAttempt + 1),
                     )
+                    lastReadyKind = null
+                    readyObservations = 0
+                    return@repeat
+                }
+                val imAfterOcr = TransientOverlayDetector.findImBanner(augmentedContext)
+                if (imAfterOcr != null) {
+                    logWaitOnlyOverlay(imAfterOcr, source = "initial_observation_ocr")
                     lastReadyKind = null
                     readyObservations = 0
                     return@repeat
@@ -6106,6 +6161,63 @@ class DouyinNavigationController(
     private fun hasInitialSearchSelectorCandidate(context: ScreenContext): Boolean =
         selector.select(context, DouyinSelectors.searchEntry).node != null ||
             selector.select(context, DouyinSelectors.searchEntryStructural).node != null
+
+    private fun logWaitOnlyOverlay(
+        match: TransientOverlayDetector.OverlayMatch,
+        source: String,
+    ) {
+        val event = if (match.marker == TransientOverlayDetector.IM_BANNER_MARKER ||
+            match.marker == "回复"
+        ) {
+            "im_banner_waiting"
+        } else {
+            "startup_ad_waiting"
+        }
+        logger.info(
+            event,
+            message = "A wait-only overlay is covering the home search chrome; waiting without a gesture",
+            attributes = mapOf("marker" to match.marker, "source" to source),
+        )
+    }
+
+    /**
+     * Re-read the live window immediately before tapping search. If the painted IM banner has
+     * no accessibility “回复”, do one top-chrome OCR. Wait-only overlays must not be tapped;
+     * an already-open group sheet must BACK instead of waiting.
+     */
+    private suspend fun prepareSearchLaunchContext(context: ScreenContext): ScreenContext? {
+        var live = currentWindowContext() ?: context
+        if (abortSearchLaunchIfBlocked(live, source = "open_search_nodes")) return null
+        if (TransientOverlayDetector.findImBanner(live) == null &&
+            !GroupChatOverlayDetector.detect(live).isGroupChatOverlay
+        ) {
+            live = captureContextWithOcr(live, "im_banner_pre_search", OcrRegion.HOME_SEARCH_CHROME)
+                ?: live
+            if (abortSearchLaunchIfBlocked(live, source = "open_search_ocr")) return null
+        }
+        return live
+    }
+
+    private fun abortSearchLaunchIfBlocked(context: ScreenContext, source: String): Boolean {
+        val waitOnly = TransientOverlayDetector.findWaitOnly(context)
+        if (waitOnly != null) {
+            logWaitOnlyOverlay(waitOnly, source = source)
+            holdHomeUntilOverlayClears()
+            return true
+        }
+        return false
+    }
+
+    /**
+     * Keep the launch observer running until the IM/ad overlay clears. Do not tap search, 回复,
+     * or issue BACK from home merely to dismiss the banner.
+     */
+    private fun holdHomeUntilOverlayClears() {
+        if (phase == AutomationPhase.WAITING_FOR_HOME) return
+        phase = AutomationPhase.WAITING_FOR_HOME
+        AutomationStore.publishPhase(phase)
+        scheduleInitialObservation()
+    }
 
     /**
      * Startup recovery must classify a sparse HOME tree exactly like the observation loop does:
