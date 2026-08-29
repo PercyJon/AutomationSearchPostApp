@@ -308,6 +308,40 @@ class AutomationHttpClient(
         }
     }
 
+    suspend fun uploadDeviceLogs(
+        appVersion: String,
+        entries: List<PersistedDeviceLog>,
+    ): Long = withContext(Dispatchers.IO) {
+        if (entries.isEmpty()) return@withContext 0L
+        val payload = execute(
+            path = "/automation/mobile/device-logs",
+            method = "POST",
+            body = JSONObject().apply {
+                put("app_version", appVersion)
+                put(
+                    "entries",
+                    JSONArray().apply {
+                        entries.forEach { entry ->
+                            put(
+                                JSONObject().apply {
+                                    put("seq", entry.seq)
+                                    put("logged_at_millis", entry.timestampMillis)
+                                    put("level", entry.level)
+                                    put("event", entry.event)
+                                    put("message", entry.message ?: JSONObject.NULL)
+                                    val attrs = JSONObject()
+                                    entry.attributes.forEach { (key, value) -> attrs.put(key, value) }
+                                    put("attributes", attrs)
+                                },
+                            )
+                        }
+                    },
+                )
+            },
+        ).asObject()
+        payload.optLong("acked_seq")
+    }
+
     private fun execute(
         path: String,
         method: String,

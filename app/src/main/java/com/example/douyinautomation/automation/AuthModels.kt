@@ -235,6 +235,8 @@ object AuthStore {
             scope.launch { state.collect { _uiState.emit(it) } }
         }
         coordinator?.start(scope)
+        DeviceLogRuntime.initialize(context)
+        DeviceLogUploader.start(scope)
         MarketingContentStore.initialize(context)
         scope.launch {
             delay(MOBILE_LOGIN_HEARTBEAT_SETTLE_MILLIS)
@@ -303,6 +305,7 @@ object AuthStore {
             delay(MOBILE_LOGIN_HEARTBEAT_SETTLE_MILLIS)
             coordinator?.verifyNow()
             runCatching { MarketingContentStore.syncFromServer() }
+            DeviceLogUploader.flush()
         }
         return MobileLoginResult(
             accountName = accountName,

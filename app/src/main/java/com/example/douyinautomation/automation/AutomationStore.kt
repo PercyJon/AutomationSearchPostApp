@@ -186,6 +186,8 @@ object AutomationStore {
     fun initialize(context: Context) {
         applicationContext = context.applicationContext
         AuthStore.initialize(context)
+        DeviceLogRuntime.initialize(context)
+        logger.persist = { entry -> DeviceLogRuntime.append(entry) }
         MarketingContentStore.initialize(context)
         PrivateMessageEntryRuleStore.initialize(context)
         synchronized(recordLock) {
@@ -1866,6 +1868,7 @@ object AutomationStore {
         }
         if (openRecords && TaskRecordsOpenPolicy.shouldOpenRecordsTab(phase)) openRecordsTab()
         if (phase in setOf(AutomationPhase.COMPLETED_TASK, AutomationPhase.FAILED, AutomationPhase.STOPPED)) {
+            DeviceLogUploader.flushAsync(storeScope)
             applicationContext?.let(FloatingOverlayService::stop)
         }
     }

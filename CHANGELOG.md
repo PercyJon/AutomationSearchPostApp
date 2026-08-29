@@ -4,6 +4,34 @@
 
 ---
 
+## [未发布] 2026-08-28 —— 设备运行日志落盘并上传
+
+### 验证前记录
+
+- 需求：换机测 B 端/评论获客时，管理端能打开该设备最近诊断日志，复制成文本贴到 Agent。
+- 范围：只用现有 DyinPoc / `DiagnosticLogger` 脱敏事件。超过 5 天直接删除。不上传截图和节点树。
+
+### 最小修改
+
+- `DiagnosticLogger` 脱敏后追加本地 JSONL；`DeviceLogUploader` 每 2 分钟及任务终态上传。
+- 独立 `POST /automation/mobile/device-logs`，失败则本地保留下次再发。未登录不上传。
+- 后台按设备查询/导出纯文本；物理设备表「查看日志」。
+
+### 验证
+
+- Android 单测：`DeviceLogStoreTest` 3 passed（脱敏、seq 续写、ack 后不重传、过期文件删除）。
+- 后台 pytest：未授权 401、绑定可写、重复 seq 幂等、设备隔离、5 天外删除。
+- Alembic：`20260828_01` → `20260828_02` 已应用到本地 MySQL；OpenAPI 已注册上传/查询/导出。
+- 真机 V2217A：安装 `versionCode=16` / `0.3.6-device-logs`。冷启动写入本地 JSONL；再次启动后 `POST /automation/mobile/device-logs` 返回 200，`acked_seq=27`。管理端导出 27 行 Agent 文本，不含 `https://` / `http://` / Bearer / token。未启动抖音。
+- 无新增 px / 点击坐标。
+
+### 下一步
+
+- 换机测 B 端/评论获客时这条通道会自然带上；管理端物理设备「查看日志」可复制给 Agent。
+- 2026-08-28：点开后台日志曾报 `Input should be a valid integer`（请求 `/devices/undefined/logs/export`）。已在管理端校验数字设备 ID 后再请求。
+
+---
+
 ## [未发布] 2026-08-28 —— 更新下载可走本机回环（adb reverse）
 
 ### 验证前记录

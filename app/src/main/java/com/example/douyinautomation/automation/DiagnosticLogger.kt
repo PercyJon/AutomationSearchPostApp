@@ -26,6 +26,9 @@ class DiagnosticLogger(
     /** A snapshot stream for diagnostics UI and test assertions. */
     val entries: StateFlow<List<DiagnosticEntry>> = _entries.asStateFlow()
 
+    /** Optional persistence after redaction; must not log tokens, URLs, or raw OCR/node text. */
+    var persist: ((DiagnosticEntry) -> Unit)? = null
+
     init {
         require(maxEntries > 0) { "maxEntries must be greater than zero" }
     }
@@ -88,12 +91,15 @@ class DiagnosticLogger(
         }
         buffer.addLast(entry)
         _entries.value = buffer.toList()
+        persist?.let { sink -> runCatching { sink(entry) } }
 
         val rendered = entry.renderForLogcat()
-        when (level) {
-            DiagnosticLevel.INFO -> Log.i(logTag, rendered)
-            DiagnosticLevel.WARN -> Log.w(logTag, rendered)
-            DiagnosticLevel.ERROR -> Log.e(logTag, rendered)
+        runCatching {
+            when (level) {
+                DiagnosticLevel.INFO -> Log.i(logTag, rendered)
+                DiagnosticLevel.WARN -> Log.w(logTag, rendered)
+                DiagnosticLevel.ERROR -> Log.e(logTag, rendered)
+            }
         }
         if (level != DiagnosticLevel.INFO) {
             DebugToast.showForEvent(entry.event)
