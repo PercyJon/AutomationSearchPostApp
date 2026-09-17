@@ -54,6 +54,65 @@ class AutomationHttpClientInstrumentedTest {
         assertTrue(connection.requestedUrl.endsWith("/api/v1/automation/mobile/private-message-entry-rules"))
     }
 
+    @Test
+    fun mobileLoginCompletesSliderCaptchaBeforePostingCredentials() = runBlocking {
+        val captcha = RecordingStubConnection(
+            """{"success":true,"data":{"enable":true,"key":"captcha-key-1","img_base":""}}""",
+        )
+        val slider = RecordingStubConnection(
+            """{"success":true,"data":{"captcha_key":"captcha-key-1","verified":true}}""",
+        )
+        val login = RecordingStubConnection(
+            """{"success":true,"data":{"license_id":20,"license_token":"mobile-license","account":{"username":"admin","name":"管理员"},"device_id_hash":"${DeviceIdentity.hash("device")}"}}""",
+        )
+        val factory: (URL) -> HttpURLConnection = { url ->
+            when {
+                url.path.endsWith("/system/auth/captcha/get") -> captcha.also { it.requestedUrl = url.toString() }
+                url.path.endsWith("/system/auth/captcha/slider/complete") -> slider.also { it.requestedUrl = url.toString() }
+                url.path.endsWith("/automation/mobile/login") -> login.also { it.requestedUrl = url.toString() }
+                else -> error("unexpected url $url")
+            }
+        }
+
+        val response = AutomationHttpClient.login(
+            endpoint = "https://api.example.test",
+            username = "admin",
+            password = "secret",
+            deviceIdHash = DeviceIdentity.hash("device"),
+            connectionFactory = factory,
+        )
+
+        assertEquals("admin", response.accountUsername)
+        assertEquals("管理员", response.accountName)
+        assertEquals("GET", captcha.requestMethod)
+        assertEquals("POST", slider.requestMethod)
+        assertTrue(slider.requestBody.toString(Charsets.UTF_8).contains("\"captcha_key\":\"captcha-key-1\""))
+        val loginBody = login.requestBody.toString(Charsets.UTF_8)
+        assertTrue(loginBody.contains("\"username\":\"admin\""))
+        assertTrue(loginBody.contains("\"captcha_key\":\"captcha-key-1\""))
+        assertTrue(loginBody.contains("\"captcha\":\"captcha-key-1\""))
+        assertTrue(login.requestedUrl.endsWith("/api/v1/automation/mobile/login"))
+        assertTrue(login.requestProperties["Authorization"] == null)
+    }
+
+    private class RecordingStubConnection(
+        private val responseBody: String,
+    ) : HttpURLConnection(URL("https://api.example.test/")) {
+        val requestProperties = linkedMapOf<String, String>()
+        val requestBody = ByteArrayOutputStream()
+        var requestedUrl: String = url.toString()
+
+        override fun connect() = Unit
+        override fun disconnect() = Unit
+        override fun usingProxy(): Boolean = false
+        override fun getResponseCode(): Int = 200
+        override fun getInputStream() = ByteArrayInputStream(responseBody.toByteArray())
+        override fun getOutputStream() = requestBody
+        override fun setRequestProperty(key: String, value: String) {
+            requestProperties[key] = value
+        }
+    }
+
     private class StubConnection(
         url: URL,
         private val responseBody: String,

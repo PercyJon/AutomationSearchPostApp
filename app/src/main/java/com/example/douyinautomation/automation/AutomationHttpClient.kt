@@ -342,6 +342,31 @@ class AutomationHttpClient(
         payload.optLong("acked_seq")
     }
 
+    private fun fetchLoginCaptcha(): LoginCaptchaChallenge {
+        val payload = execute(
+            path = "/system/auth/captcha/get",
+            method = "GET",
+            bearerToken = null,
+        ).asObject()
+        val key = payload.optString("key").trim()
+        val imageBase64 = payload.optString("img_base").trim()
+        val enabled = if (payload.has("enable")) payload.optBoolean("enable") else key.isNotBlank()
+        return LoginCaptchaChallenge(
+            enabled = enabled,
+            key = key,
+            imageBase64 = imageBase64,
+        )
+    }
+
+    private fun completeSliderCaptcha(key: String) {
+        execute(
+            path = "/system/auth/captcha/slider/complete",
+            method = "POST",
+            body = JSONObject().apply { put("captcha_key", key) },
+            bearerToken = null,
+        )
+    }
+
     private fun execute(
         path: String,
         method: String,
@@ -399,11 +424,20 @@ class AutomationHttpClient(
     private fun Any?.asArray(): JSONArray = this as? JSONArray
         ?: throw AutomationGatewayException(200, "授权服务返回的列表格式错误")
 
+    private data class LoginCaptchaChallenge(
+        val enabled: Boolean,
+        val key: String,
+        val imageBase64: String,
+    )
+
     companion object {
         /**
          * Performs the dedicated mobile login without sending a pre-existing bearer token.
          * The backend returns a device-bound license; the temporary admin session is never
          * exposed to the Android client.
+         *
+         * When the shared auth policy enables CAPTCHA, slider challenges are completed before
+         * credentials are posted. Image captchas are not collected on this screen.
          */
         suspend fun login(
             endpoint: String,
@@ -412,6 +446,9 @@ class AutomationHttpClient(
             deviceIdHash: String,
             connectTimeoutMillis: Int = DEFAULT_CONNECT_TIMEOUT_MILLIS,
             readTimeoutMillis: Int = DEFAULT_READ_TIMEOUT_MILLIS,
+            connectionFactory: (URL) -> HttpURLConnection = { url ->
+                url.openConnection() as HttpURLConnection
+            },
         ): MobileLoginWireResponse = withContext(Dispatchers.IO) {
             val client = AutomationHttpClient(
                 config = AuthConfig(
@@ -421,15 +458,32 @@ class AutomationHttpClient(
                 ),
                 connectTimeoutMillis = connectTimeoutMillis,
                 readTimeoutMillis = readTimeoutMillis,
+                connectionFactory = connectionFactory,
             )
+            val captcha = client.fetchLoginCaptcha()
+            val loginBody = JSONObject().apply {
+                put("username", username)
+                put("password", password)
+                put("device_id_hash", deviceIdHash)
+                if (captcha.enabled) {
+                    if (captcha.key.isBlank()) {
+                        throw AutomationGatewayException(500, "验证码标识缺失，请重试")
+                    }
+                    if (captcha.imageBase64.isNotBlank()) {
+                        throw AutomationGatewayException(
+                            400,
+                            "当前服务启用了图片验证码，移动端暂不支持，请联系管理员改为滑块验证或关闭验证码",
+                        )
+                    }
+                    client.completeSliderCaptcha(captcha.key)
+                    put("captcha_key", captcha.key)
+                    put("captcha", captcha.key)
+                }
+            }
             val payload = client.execute(
                 path = "/automation/mobile/login",
                 method = "POST",
-                body = JSONObject().apply {
-                    put("username", username)
-                    put("password", password)
-                    put("device_id_hash", deviceIdHash)
-                },
+                body = loginBody,
                 bearerToken = null,
             ) as? JSONObject ?: throw AutomationGatewayException(200, "登录响应数据格式错误")
             val token = payload.optString("license_token").trim()
