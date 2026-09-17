@@ -24,8 +24,8 @@ android {
             abiFilters += "arm64-v8a"
         }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        // A deployment-specific HTTPS endpoint is injected at build time.  Keep it out of source
-        // and out of the normal login UI so operators only ever enter account/password.
+        // A deployment-specific API origin is injected at build time. Keep it out of the
+        // login UI so operators only ever enter account/password.
         buildConfigField("String", "AUTOMATION_API_ENDPOINT", "\"$automationApiEndpoint\"")
     }
 

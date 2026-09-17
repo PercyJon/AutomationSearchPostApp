@@ -271,7 +271,7 @@ object AuthStore {
     ): MobileLoginResult {
         initialize(context)
         val normalizedEndpoint = LoginEndpointPolicy.normalize(endpoint)
-            ?: throw IllegalArgumentException("后端地址必须使用 HTTPS，本机调试可用 http://127.0.0.1")
+            ?: throw IllegalArgumentException("后端地址无效")
         require(username.isNotBlank()) { "请输入用户名" }
         require(password.isNotBlank()) { "请输入密码" }
         val deviceId = Settings.Secure.getString(

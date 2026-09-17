@@ -33,6 +33,7 @@ class AuthModelsTest {
         assertTrue(!AuthConfig("https://api.example.test", "token", "not-a-device-hash").isUsable())
         assertTrue(AuthConfig("http://127.0.0.1:8001", "token", deviceIdHash).isUsable())
         assertTrue(AuthConfig("http://localhost:8001", "token", deviceIdHash).isUsable())
+        assertTrue(AuthConfig("http://hk.sxjjerp.com:9999", "token", deviceIdHash).isUsable())
     }
 
     @Test

@@ -72,25 +72,15 @@ internal fun AutomationAppSessionGate(
             commentRegressionPreset = commentRegressionPreset,
         )
     } else {
-        LoginScreen(endpoint = BuildConfig.AUTOMATION_API_ENDPOINT)
+        LoginScreen()
     }
 }
 
 @Composable
-private fun LoginScreen(endpoint: String) {
+private fun LoginScreen() {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
-    val rememberedEndpoint by AuthStore.lastEndpoint.collectAsState()
-    val showEndpointField = LoginEndpointPolicy.shouldShowEndpointField(endpoint)
-    var typedEndpoint by rememberSaveable {
-        mutableStateOf(LoginEndpointPolicy.normalize(rememberedEndpoint).orEmpty())
-    }
-    val resolvedEndpoint = LoginEndpointPolicy.resolvedEndpoint(
-        buildConfig = endpoint,
-        remembered = rememberedEndpoint,
-        typed = typedEndpoint,
-    )
-    val endpointReady = resolvedEndpoint != null
+    val resolvedEndpoint = LoginEndpointPolicy.normalize(BuildConfig.AUTOMATION_API_ENDPOINT)
     var username by rememberSaveable { mutableStateOf("") }
     // Passwords deliberately stay out of SavedState so process restore cannot retain one.
     var password by remember { mutableStateOf("") }
@@ -146,19 +136,6 @@ private fun LoginScreen(endpoint: String) {
                     )
                 }
                 Column(verticalArrangement = Arrangement.spacedBy(AutomationSpacing.Card)) {
-                    if (showEndpointField) {
-                        AppLoginField(
-                            value = typedEndpoint,
-                            onValueChange = {
-                                typedEndpoint = it
-                                message = null
-                            },
-                            placeholder = "服务地址",
-                            leadingIcon = Icons.Default.Lock,
-                            enabled = !submitting,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                        )
-                    }
                     AppLoginField(
                         value = username,
                         onValueChange = {
@@ -202,13 +179,6 @@ private fun LoginScreen(endpoint: String) {
                             )
                         },
                     )
-                    if (showEndpointField && !endpointReady) {
-                        Text(
-                            "请填写以 https:// 开头的服务地址后再登录。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = AutomationLoginOnBlue.copy(alpha = 0.9f),
-                        )
-                    }
                     message?.let {
                         Text(it, style = MaterialTheme.typography.bodySmall, color = AutomationError)
                     }
@@ -216,7 +186,7 @@ private fun LoginScreen(endpoint: String) {
                         text = if (submitting) "登录中" else "登录",
                         onClick = ::submit,
                         modifier = Modifier.fillMaxWidth(),
-                        enabled = endpointReady && username.isNotBlank() && password.isNotBlank(),
+                        enabled = resolvedEndpoint != null && username.isNotBlank() && password.isNotBlank(),
                         loading = submitting,
                     )
                 }

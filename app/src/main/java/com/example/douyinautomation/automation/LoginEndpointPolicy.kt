@@ -3,24 +3,33 @@ package com.example.douyinautomation.automation
 import java.net.URI
 
 /**
- * Login uses a build-injected HTTPS origin when present. Otherwise a previously successful
- * origin, then a recovery field the operator can fill, can unlock the same account/password form.
- *
- * Cleartext is only accepted for loopback (`127.0.0.1` / `localhost`) so a USB `adb reverse`
- * session can hit the developer machine without opening HTTP to the public internet.
+ * Login uses the build-injected origin. Cleartext is accepted for loopback
+ * (`127.0.0.1` / `localhost`) and the fixed production host `hk.sxjjerp.com`.
  */
 object LoginEndpointPolicy {
+    const val PRODUCTION_HTTP_HOST = "hk.sxjjerp.com"
+
     fun normalize(raw: String?): String? {
         val value = raw?.trim()?.trimEnd('/').orEmpty()
         if (value.startsWith("https://") && value.length > "https://".length) return value
-        return value.takeIf(::isLoopbackHttp)
+        return value.takeIf(::isAllowedHttp)
     }
 
     fun isLoopbackHttp(raw: String): Boolean {
-        val uri = runCatching { URI(raw) }.getOrNull() ?: return false
-        if (uri.scheme != "http") return false
+        val uri = httpUri(raw) ?: return false
         val host = uri.host?.lowercase() ?: return false
         return host == "127.0.0.1" || host == "localhost"
+    }
+
+    fun isAllowedHttp(raw: String): Boolean {
+        val uri = httpUri(raw) ?: return false
+        val host = uri.host?.lowercase() ?: return false
+        return host == "127.0.0.1" || host == "localhost" || host == PRODUCTION_HTTP_HOST
+    }
+
+    private fun httpUri(raw: String): URI? {
+        val uri = runCatching { URI(raw) }.getOrNull() ?: return null
+        return uri.takeIf { it.scheme == "http" && !it.host.isNullOrBlank() }
     }
 
     fun resolvedEndpoint(

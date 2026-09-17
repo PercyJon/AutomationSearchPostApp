@@ -80,4 +80,33 @@ class LoginEndpointPolicyTest {
         )
         assertFalse(LoginEndpointPolicy.shouldShowEndpointField("http://127.0.0.1:8001"))
     }
+
+    @Test
+    fun productionHttpOriginIsAcceptedAndHidesTheEndpointField() {
+        assertEquals(
+            "http://hk.sxjjerp.com:9999",
+            LoginEndpointPolicy.normalize("http://hk.sxjjerp.com:9999/"),
+        )
+        assertEquals(
+            "http://hk.sxjjerp.com:9999",
+            LoginEndpointPolicy.resolvedEndpoint(
+                buildConfig = "http://hk.sxjjerp.com:9999/",
+                remembered = "https://remembered.example",
+                typed = "https://typed.example",
+            ),
+        )
+        assertFalse(LoginEndpointPolicy.shouldShowEndpointField("http://hk.sxjjerp.com:9999/"))
+        val restored = AuthConfig(
+            "https://remembered.example",
+            "token",
+            DeviceIdentity.hash("device"),
+        )
+        assertEquals(
+            restored.endpoint,
+            LoginEndpointPolicy.overlayLoopbackOrigin(
+                restored,
+                "http://hk.sxjjerp.com:9999",
+            )?.endpoint,
+        )
+    }
 }
